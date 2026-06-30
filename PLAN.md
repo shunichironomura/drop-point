@@ -17,6 +17,100 @@ Key decisions carried into this plan:
 - Pickup is repeatable until explicit close or expiry; pickup never auto-deletes.
 - Keep a functional core and imperative shell: domain rules, token handling, envelope validation, and status transitions should be pure and easy to test; HTTP, SQLite, filesystem, clocks, and logging remain at the shell.
 
+## Implementation structure and naming targets
+
+Use this initial Go layout unless implementation experience justifies a simpler equivalent:
+
+```text
+cmd/drop-point/
+internal/config/
+internal/httpapi/
+internal/droppoint/
+internal/store/
+internal/blobstore/
+internal/token/
+internal/cryptoenv/
+internal/cleanup/
+web/drop-page/
+```
+
+- `internal/droppoint` contains domain logic and status transition rules.
+- `internal/httpapi` contains route handlers and request/response DTOs.
+- `internal/store` contains SQLite persistence.
+- `internal/blobstore` contains filesystem payload/envelope writes.
+- `internal/cryptoenv` contains envelope schema validation, protocol reference helpers, and test-vector helpers; production relay request handling must not decrypt user payloads.
+- `web/drop-page` contains static sender-facing HTML, CSS, and JavaScript.
+
+The canonical operator binary is `drop-point`. Target command shape:
+
+```text
+drop-point serve --config ./config.json
+drop-point token generate
+drop-point migrate
+drop-point cleanup expired
+drop-point inspect drop-point <dp_...>
+```
+
+The initial implementation may run `serve` by default when no subcommand is provided, but documentation should converge on explicit subcommands as they become available.
+
+Canonical HTTP handler names:
+
+```go
+HandleCreateDropPoint
+HandleServeDropPage
+HandleSubmitDrop
+HandleGetDropPointStatus
+HandlePickupPayload
+HandleCloseDropPoint
+HandleHealth
+```
+
+The domain service boundary should stay close to:
+
+```go
+type DropPointService interface {
+    CreateDropPoint(ctx context.Context, req CreateDropPointRequest) (*CreateDropPointResponse, error)
+    GetDropPointStatus(ctx context.Context, id string, pickupToken string) (*DropPointStatusResponse, error)
+    BeginDrop(ctx context.Context, dropToken string) (*DropPoint, error)
+    CommitDrop(ctx context.Context, dropToken string, result CommitDropResult) error
+    AbortDrop(ctx context.Context, dropToken string, cause error) error
+    PickupPayload(ctx context.Context, id string, pickupToken string) (*PickupPayloadResult, error)
+    CloseDropPoint(ctx context.Context, id string, pickupToken string) error
+    ExpireDropPoints(ctx context.Context, now time.Time) error
+}
+```
+
+Canonical SQLite repository method names:
+
+```text
+CreateDropPoint
+FindDropPointByID
+FindOpenDropPointByDropTokenHash
+AuthorizePickupToken
+BeginReceivingDrop
+CommitReceivedDrop
+ResetReceivingDrop
+MarkFirstPickedUp
+CloseDropPoint
+ExpireDropPoints
+CountActiveDropPointsByAPITokenID
+DeleteDropPointFiles
+```
+
+Canonical domain error names:
+
+```text
+ErrDropPointNotFound
+ErrDropPointExpired
+ErrDropPointClosed
+ErrDropPointNotOpen
+ErrDropAlreadyExists
+ErrDropTokenInvalid
+ErrPickupTokenInvalid
+ErrPayloadTooLarge
+ErrEnvelopeInvalid
+```
+
 ## Phase 0: service skeleton and development foundation
 
 ### Goal
@@ -27,8 +121,8 @@ Create the minimal runnable Go service foundation that later phases build on. Th
 
 - Initialize the Go module and `cmd/drop-point` entrypoint, producing the `drop-point` CLI/binary.
 - Add JSON config loading and validation.
-- Add SQLite initialization and schema migration for `drop_points`.
-- Add data directory initialization with restrictive permissions.
+- Add SQLite initialization and schema migration for `drop_points` using the schema in `SPEC.md`.
+- Add data directory initialization with restrictive permissions; use `/var/lib/drop-point` as the canonical system data directory in examples and packaged configurations.
 - Add an HTTP router with unauthenticated, low-information `/health`.
 - Add request logging and panic recovery.
 - Add basic tests for config, storage, and server packages.
@@ -87,6 +181,7 @@ Expose receiver-initiated drop point creation through the HTTP API.
 ### Deliverables
 
 - Add bearer-token authentication for `POST /api/drop-points`.
+- Add `drop-point token generate` to create a high-entropy plaintext API token and print the matching `sha256:<lowercase-hex-sha256>` config entry once.
 - Map configured API token hashes to `api_token_id` labels.
 - Validate `ttl_seconds`, `max_bytes`, and `single_use` against configuration.
 - Enforce `max_active_drop_points` per API token, using the token-specific override when present and the default otherwise.
@@ -217,7 +312,9 @@ The relay itself still does not decrypt user payloads in production request hand
   - bundle manifest build/parse;
   - payload splitting by manifest sizes;
   - filename and MIME sanitization helpers for receivers.
-- Generate deterministic positive test vectors with fixed recipient key, sender ephemeral key, nonces, manifests, and payload bytes.
+- Generate deterministic positive test vectors with fixed recipient private key, sender ephemeral private key, nonces, manifests, and payload bytes.
+- Include intermediate values in positive test-vector documentation: `shared_secret`, `metadata_key`, `payload_key`, `encrypted_metadata`, and `encrypted_payload`.
+- Document language-specific protocol implementation pointers for Go, Node.js/TypeScript, Python, Swift, Rust, and browser WebCrypto, including raw 32-byte X25519 public keys, HKDF salt/info byte strings, and AES-GCM `ciphertext || tag` handling.
 - Generate negative test vectors for:
   - tampered payload ciphertext/tag;
   - tampered metadata ciphertext/tag;
@@ -327,6 +424,7 @@ Make the service understandable and safely deployable without tying it to one ho
   - local development flow;
   - API examples;
   - sender secure-context requirement;
+  - WebCrypto X25519 browser support expectations and the unsupported-browser error path;
   - token generation and configuration guidance;
   - data directory and cleanup behavior.
 - Add a configuration reference.
