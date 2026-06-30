@@ -2,9 +2,11 @@
 // relay. It owns the data directory, the SQLite connection, and schema
 // migrations.
 //
-// Phase 0 provides connection lifecycle and the initial schema. Higher-level
-// repository methods (create, lookup, status transitions) are attached to Store
-// in later phases.
+// storage.go provides the connection lifecycle and data-directory setup;
+// migrate.go holds the versioned schema. The drop point repository methods on
+// Store — create, lookup, capability-token authorization, and status
+// transitions — live in droppoints.go and map between database rows and the
+// pure domain types.
 package storage
 
 import (
