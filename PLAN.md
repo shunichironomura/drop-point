@@ -430,6 +430,8 @@ Validate the complete service behavior under realistic failure, concurrency, and
 
 ## Phase 9: operator documentation and deployment packaging
 
+Status: Completed on 2026-07-01.
+
 ### Goal
 
 Make the service understandable and safely deployable without tying it to one hosting provider.
