@@ -64,64 +64,76 @@ This document lists repository files in dependency-first review order. Local scr
     - Repository create, lookup, token mismatch, quota, close, expiry, pickup timestamp, and receiving-reset tests.
 
 20. `internal/blobstore/blobstore.go`
-    - Filesystem encrypted payload/envelope storage with atomic temporary writes, fsync, rename, and idempotent deletion.
+    - Filesystem encrypted payload/envelope storage with atomic writes, exact-byte reads, fsync, rename, and idempotent deletion.
 
 21. `internal/blobstore/blobstore_test.go`
-    - Blob storage exact-byte, oversize, and idempotent deletion tests.
+    - Blob storage exact-byte write/read, oversize, and idempotent deletion tests.
 
-22. `internal/cryptoenv/envelope.go`
+22. `internal/cleanup/cleanup.go`
+    - Expiry cleanup service that marks expired drop points and deletes payload directories idempotently.
+
+23. `internal/cleanup/cleanup_test.go`
+    - Cleanup tests for expired ready/open drop points and repeated runs.
+
+24. `internal/cryptoenv/envelope.go`
     - Relay-side protocol envelope schema validation and base64url helpers.
 
-23. `internal/cryptoenv/envelope_test.go`
+25. `internal/cryptoenv/envelope_test.go`
     - Envelope shape, algorithm, length, padding, and unknown-field validation tests.
 
-24. `internal/httpapi/health.go`
+26. `internal/httpapi/health.go`
     - Low-information `/health` handler.
 
-25. `internal/httpapi/responses.go`
+27. `internal/httpapi/responses.go`
     - Shared JSON response and error helpers for API handlers.
 
-26. `internal/httpapi/auth.go`
+28. `internal/httpapi/auth.go`
     - Bearer API token parsing and configured token-hash authentication.
 
-27. `internal/httpapi/create.go`
+29. `internal/httpapi/create.go`
     - Authenticated drop point creation handler, request validation, quota enforcement, and drop-link construction.
 
-28. `internal/httpapi/receiver.go`
+30. `internal/httpapi/receiver.go`
     - Pickup-token authorization, receiver status, close API handlers, and blob-store interface.
 
-29. `internal/httpapi/drop.go`
+31. `internal/httpapi/drop.go`
     - Encrypted multipart drop endpoint, envelope validation, streaming size enforcement, and ready-state commit handling.
 
-30. `internal/httpapi/middleware.go`
+32. `internal/httpapi/pickup.go`
+    - Multipart encrypted pickup endpoint and first-pickup timestamp recording.
+
+33. `internal/httpapi/middleware.go`
     - Request logging, token-path redaction, and panic recovery middleware.
 
-31. `internal/httpapi/router.go`
+34. `internal/httpapi/router.go`
     - HTTP route assembly and dependency injection.
 
-32. `internal/httpapi/router_test.go`
+35. `internal/httpapi/router_test.go`
     - Health, method rejection, redaction, and recovery tests.
 
-33. `internal/httpapi/create_test.go`
+36. `internal/httpapi/create_test.go`
     - Authenticated create API tests for valid, invalid, disabled, quota, and limit cases.
 
-34. `internal/httpapi/receiver_test.go`
+37. `internal/httpapi/receiver_test.go`
     - Receiver status and close API tests for pickup-token scoping, expiry reporting, retry safety, and file-pointer cleanup.
 
-35. `internal/httpapi/drop_test.go`
+38. `internal/httpapi/drop_test.go`
     - Drop endpoint tests for valid encrypted storage, second-drop rejection, oversize reset, malformed reset, authorization scoping, and concurrency.
 
-36. `internal/server/server.go`
+39. `internal/httpapi/pickup_test.go`
+    - Pickup tests for ready retrieval, repeatability, first-pickup timestamps, and rejection cases.
+
+40. `internal/server/server.go`
     - Imperative shell wiring config, data directory, SQLite repository, blob store, and HTTP server.
 
-37. `internal/server/server_test.go`
+41. `internal/server/server_test.go`
     - Server initialization and health routing tests.
 
-38. `cmd/drop-point/main.go`
-    - `drop-point` CLI entrypoint, default `serve` command, and API token generation command.
+42. `cmd/drop-point/main.go`
+    - `drop-point` CLI entrypoint, default `serve` command, API token generation command, and cleanup command.
 
-39. `cmd/drop-point/main_test.go`
+43. `cmd/drop-point/main_test.go`
     - CLI token generation command tests.
 
-40. `CODE_REVIEW_ORDER.md`
+44. `CODE_REVIEW_ORDER.md`
     - This review-order index. Update it whenever repository files change.

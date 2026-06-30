@@ -276,6 +276,8 @@ Accept a single encrypted drop and store its envelope and payload durably withou
 
 ## Phase 5: pickup endpoint and expiry cleanup
 
+Status: Completed on 2026-07-01.
+
 ### Goal
 
 Let receivers retrieve ciphertext reliably and clean up closed or expired drop points.

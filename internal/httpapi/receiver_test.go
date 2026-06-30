@@ -136,6 +136,14 @@ func (f *fakeCloseBlobStore) WriteDrop(context.Context, string, []byte, io.Reade
 	return droppoint.CommitDropResult{}, errors.New("not implemented")
 }
 
+func (f *fakeCloseBlobStore) ReadEnvelope(context.Context, string) ([]byte, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (f *fakeCloseBlobStore) OpenPayload(context.Context, string) (io.ReadCloser, error) {
+	return nil, errors.New("not implemented")
+}
+
 func (f *fakeCloseBlobStore) DeleteDropPoint(_ context.Context, id string) error {
 	f.deleted = append(f.deleted, id)
 	return nil
