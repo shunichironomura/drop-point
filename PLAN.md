@@ -210,6 +210,8 @@ Expose receiver-initiated drop point creation through the HTTP API.
 
 ## Phase 3: receiver status and close APIs
 
+Status: Completed on 2026-07-01.
+
 ### Goal
 
 Expose the receiver-side lifecycle endpoints that are needed before sender uploads are enabled.

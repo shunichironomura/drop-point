@@ -75,29 +75,35 @@ This document lists repository files in dependency-first review order. Local scr
 23. `internal/httpapi/create.go`
     - Authenticated drop point creation handler, request validation, quota enforcement, and drop-link construction.
 
-24. `internal/httpapi/middleware.go`
+24. `internal/httpapi/receiver.go`
+    - Pickup-token authorization, receiver status, and close API handlers.
+
+25. `internal/httpapi/middleware.go`
     - Request logging, token-path redaction, and panic recovery middleware.
 
-25. `internal/httpapi/router.go`
+26. `internal/httpapi/router.go`
     - HTTP route assembly and dependency injection.
 
-26. `internal/httpapi/router_test.go`
+27. `internal/httpapi/router_test.go`
     - Health, method rejection, redaction, and recovery tests.
 
-27. `internal/httpapi/create_test.go`
+28. `internal/httpapi/create_test.go`
     - Authenticated create API tests for valid, invalid, disabled, quota, and limit cases.
 
-28. `internal/server/server.go`
+29. `internal/httpapi/receiver_test.go`
+    - Receiver status and close API tests for pickup-token scoping, expiry reporting, retry safety, and file-pointer cleanup.
+
+30. `internal/server/server.go`
     - Imperative shell wiring config, data directory, SQLite repository, and HTTP server.
 
-29. `internal/server/server_test.go`
+31. `internal/server/server_test.go`
     - Server initialization and health routing tests.
 
-30. `cmd/drop-point/main.go`
+32. `cmd/drop-point/main.go`
     - `drop-point` CLI entrypoint, default `serve` command, and API token generation command.
 
-31. `cmd/drop-point/main_test.go`
+33. `cmd/drop-point/main_test.go`
     - CLI token generation command tests.
 
-32. `CODE_REVIEW_ORDER.md`
+34. `CODE_REVIEW_ORDER.md`
     - This review-order index. Update it whenever repository files change.
