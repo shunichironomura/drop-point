@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Drop files</title>
+  <link rel="stylesheet" href="/drop-assets/styles.css">
+</head>
+<body>
+  <main class="shell">
+    <section class="card">
+      <h1>Drop files</h1>
+      <p class="intro">This drop point accepts one encrypted file bundle.</p>
+      <div id="status" class="status" role="status" aria-live="polite">Checking drop link...</div>
+      <label class="picker">
+        <span>Choose files</span>
+        <input id="files" type="file" multiple disabled>
+      </label>
+      <button id="submit" type="button" disabled>Drop encrypted files</button>
+      <p class="small">Files are encrypted in this browser before upload. Plaintext filenames and contents are never submitted to the relay.</p>
+    </section>
+  </main>
+  <script src="/drop-assets/app.js" defer></script>
+</body>
+</html>

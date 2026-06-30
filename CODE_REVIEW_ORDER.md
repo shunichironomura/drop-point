@@ -96,59 +96,77 @@ This document lists repository files in dependency-first review order. Local scr
 30. `docs/protocol-reference.md`
     - Protocol implementation pointers and deterministic positive/negative test-vector documentation.
 
-31. `internal/httpapi/health.go`
+31. `web/drop-page/index.html`
+    - Sender-facing mobile-friendly drop page shell and canonical UI copy.
+
+32. `web/drop-page/styles.css`
+    - Sender-facing drop page styles.
+
+33. `web/drop-page/app.js`
+    - Browser WebCrypto X25519/HKDF/AES-GCM bundle encryption and multipart encrypted drop submission.
+
+34. `web/drop-page/assets.go`
+    - Embedded static asset filesystem for the drop page.
+
+35. `internal/httpapi/health.go`
     - Low-information `/health` handler.
 
-32. `internal/httpapi/responses.go`
+36. `internal/httpapi/responses.go`
     - Shared JSON response and error helpers for API handlers.
 
-33. `internal/httpapi/auth.go`
+37. `internal/httpapi/auth.go`
     - Bearer API token parsing and configured token-hash authentication.
 
-34. `internal/httpapi/create.go`
+38. `internal/httpapi/create.go`
     - Authenticated drop point creation handler, request validation, quota enforcement, and drop-link construction.
 
-35. `internal/httpapi/receiver.go`
+39. `internal/httpapi/receiver.go`
     - Pickup-token authorization, receiver status, close API handlers, and blob-store interface.
 
-36. `internal/httpapi/drop.go`
+40. `internal/httpapi/drop.go`
     - Encrypted multipart drop endpoint, envelope validation, streaming size enforcement, and ready-state commit handling.
 
-37. `internal/httpapi/pickup.go`
+41. `internal/httpapi/pickup.go`
     - Multipart encrypted pickup endpoint and first-pickup timestamp recording.
 
-38. `internal/httpapi/middleware.go`
+42. `internal/httpapi/drop_page.go`
+    - Sender-facing drop page and same-origin asset HTTP handlers with strict security headers.
+
+43. `internal/httpapi/middleware.go`
     - Request logging, token-path redaction, and panic recovery middleware.
 
-39. `internal/httpapi/router.go`
+44. `internal/httpapi/router.go`
     - HTTP route assembly and dependency injection.
 
-40. `internal/httpapi/router_test.go`
+45. `internal/httpapi/router_test.go`
     - Health, method rejection, redaction, and recovery tests.
 
-41. `internal/httpapi/create_test.go`
+46. `internal/httpapi/create_test.go`
     - Authenticated create API tests for valid, invalid, disabled, quota, and limit cases.
 
-42. `internal/httpapi/receiver_test.go`
+47. `internal/httpapi/receiver_test.go`
     - Receiver status and close API tests for pickup-token scoping, expiry reporting, retry safety, and file-pointer cleanup.
 
-43. `internal/httpapi/drop_test.go`
+48. `internal/httpapi/drop_test.go`
     - Drop endpoint tests for valid encrypted storage, second-drop rejection, oversize reset, malformed reset, authorization scoping, and concurrency.
 
-44. `internal/httpapi/pickup_test.go`
+49. `internal/httpapi/pickup_test.go`
     - Pickup tests for ready retrieval, repeatability, first-pickup timestamps, and rejection cases.
 
-45. `internal/server/server.go`
+50. `internal/httpapi/drop_page_test.go`
+    - Drop page security header, copy, asset, and token-redaction tests.
+
+51. `internal/server/server.go`
     - Imperative shell wiring config, data directory, SQLite repository, blob store, and HTTP server.
 
-46. `internal/server/server_test.go`
+52. `internal/server/server_test.go`
     - Server initialization and health routing tests.
 
-47. `cmd/drop-point/main.go`
+53. `cmd/drop-point/main.go`
     - `drop-point` CLI entrypoint, default `serve` command, API token generation command, and cleanup command.
 
-48. `cmd/drop-point/main_test.go`
+54. `cmd/drop-point/main_test.go`
     - CLI token generation command tests.
 
-49. `CODE_REVIEW_ORDER.md`
+55. `CODE_REVIEW_ORDER.md`
     - This review-order index. Update it whenever repository files change.

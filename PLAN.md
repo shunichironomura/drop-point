@@ -352,6 +352,8 @@ The relay itself still does not decrypt user payloads in production request hand
 
 ## Phase 7: sender-facing drop page with browser encryption
 
+Status: Completed on 2026-07-01.
+
 ### Goal
 
 Implement the mobile-friendly sender page that reads the fragment key, encrypts locally with WebCrypto, and submits the encrypted drop.
