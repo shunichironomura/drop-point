@@ -132,41 +132,47 @@ This document lists repository files in dependency-first review order. Local scr
 42. `internal/httpapi/drop_page.go`
     - Sender-facing drop page and same-origin asset HTTP handlers with strict security headers.
 
-43. `internal/httpapi/middleware.go`
+43. `internal/httpapi/cors.go`
+    - Same-origin CORS/preflight policy for browser requests while preserving non-browser bearer-token clients.
+
+44. `internal/httpapi/middleware.go`
     - Request logging, token-path redaction, and panic recovery middleware.
 
-44. `internal/httpapi/router.go`
+45. `internal/httpapi/router.go`
     - HTTP route assembly and dependency injection.
 
-45. `internal/httpapi/router_test.go`
+46. `internal/httpapi/router_test.go`
     - Health, method rejection, redaction, and recovery tests.
 
-46. `internal/httpapi/create_test.go`
+47. `internal/httpapi/create_test.go`
     - Authenticated create API tests for valid, invalid, disabled, quota, and limit cases.
 
-47. `internal/httpapi/receiver_test.go`
+48. `internal/httpapi/receiver_test.go`
     - Receiver status and close API tests for pickup-token scoping, expiry reporting, retry safety, and file-pointer cleanup.
 
-48. `internal/httpapi/drop_test.go`
+49. `internal/httpapi/drop_test.go`
     - Drop endpoint tests for valid encrypted storage, second-drop rejection, oversize reset, malformed reset, authorization scoping, and concurrency.
 
-49. `internal/httpapi/pickup_test.go`
+50. `internal/httpapi/pickup_test.go`
     - Pickup tests for ready retrieval, repeatability, first-pickup timestamps, and rejection cases.
 
-50. `internal/httpapi/drop_page_test.go`
+51. `internal/httpapi/drop_page_test.go`
     - Drop page security header, copy, asset, and token-redaction tests.
 
-51. `internal/server/server.go`
+52. `internal/httpapi/integration_test.go`
+    - End-to-end create/drop/status/pickup/close, failure, concurrency, cleanup, CORS, redaction, and disk-write failure tests.
+
+53. `internal/server/server.go`
     - Imperative shell wiring config, data directory, SQLite repository, blob store, and HTTP server.
 
-52. `internal/server/server_test.go`
+54. `internal/server/server_test.go`
     - Server initialization and health routing tests.
 
-53. `cmd/drop-point/main.go`
+55. `cmd/drop-point/main.go`
     - `drop-point` CLI entrypoint, default `serve` command, API token generation command, and cleanup command.
 
-54. `cmd/drop-point/main_test.go`
+56. `cmd/drop-point/main_test.go`
     - CLI token generation command tests.
 
-55. `CODE_REVIEW_ORDER.md`
+57. `CODE_REVIEW_ORDER.md`
     - This review-order index. Update it whenever repository files change.
