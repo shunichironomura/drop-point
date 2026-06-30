@@ -113,6 +113,8 @@ ErrEnvelopeInvalid
 
 ## Phase 0: service skeleton and development foundation
 
+Status: Completed on 2026-07-01.
+
 ### Goal
 
 Create the minimal runnable Go service foundation that later phases build on. This phase is explicit because the current repository has no implementation baseline.
