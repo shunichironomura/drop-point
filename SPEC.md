@@ -113,6 +113,8 @@ API tokens are long random secrets. Stored API token material MUST be hashed at 
 
 The drop token is embedded in the drop link path. Possession authorizes the sender to submit exactly one encrypted drop before expiry. It MUST NOT authorize status polling, pickup, or close.
 
+Because the drop token appears in URL paths, it may be exposed by application, proxy, tunnel, CDN, or browser history logs unless those layers are configured carefully. A leaked drop token within the TTL can let an attacker pre-empt the legitimate sender by dropping junk first; it does not authorize pickup or decryption. Operators MUST redact token-bearing paths and SHOULD keep TTLs short.
+
 ### 6.3 Pickup token
 
 The pickup token is returned only to the receiver at drop point creation. Possession authorizes status polling, pickup, and close for that drop point. It MUST NOT authorize dropping a payload.
@@ -129,6 +131,10 @@ Capability tokens and public IDs SHOULD use type prefixes for operator readabili
 | API token | `api_` |
 
 Capability token secret material MUST carry at least 256 bits of entropy and SHOULD be encoded as base64url without padding. Raw capability tokens MUST NOT be logged and MUST NOT be stored at rest.
+
+### 6.5 Cookie-free authentication posture
+
+Core DropPoint APIs MUST NOT rely on cookies or other ambient browser credentials for authorization. Receiver APIs use bearer tokens, and sender APIs use short-lived capability URLs. This keeps the core relay largely outside classic cookie-based CSRF assumptions; future browser-facing administrative surfaces, if any, MUST define their own CSRF protections separately.
 
 ## 7. HTTP API
 
@@ -302,6 +308,34 @@ A drop point record contains at least:
 | `expires_at` | TTL expiry timestamp. |
 | `max_bytes` | Max encrypted payload size for this drop point. |
 
+The default SQLite schema for the local implementation is:
+
+```sql
+CREATE TABLE drop_points (
+  id TEXT PRIMARY KEY,
+  api_token_id TEXT NOT NULL,
+  client_name TEXT,
+  drop_token_hash TEXT NOT NULL UNIQUE,
+  pickup_token_hash TEXT NOT NULL,
+  status TEXT NOT NULL,
+  payload_path TEXT,
+  envelope_path TEXT,
+  encrypted_size INTEGER,
+  created_at TEXT NOT NULL,
+  dropped_at TEXT,
+  first_picked_up_at TEXT,
+  closed_at TEXT,
+  expires_at TEXT NOT NULL,
+  max_bytes INTEGER NOT NULL
+);
+
+CREATE INDEX idx_drop_points_status_expires_at
+  ON drop_points (status, expires_at);
+
+CREATE INDEX idx_drop_points_api_token_status
+  ON drop_points (api_token_id, status);
+```
+
 The default local storage layout is:
 
 ```text
@@ -345,8 +379,11 @@ Configuration rules:
 - `base_url` MUST include scheme and host and MUST NOT include query or fragment components.
 - Sender-facing drop pages MUST be served to browsers over HTTPS, except for browser-recognized local secure contexts such as `localhost`.
 - LAN-IP-over-HTTP is not supported for browser encryption because WebCrypto requires a secure context.
+- The canonical system data directory is `/var/lib/drop-point`; local development configurations MAY use a project-local data directory.
+- The shipped default encrypted payload limit is 52428800 bytes, and the shipped maximum encrypted payload limit is 52428800 bytes.
 - Plaintext API tokens MUST NOT be stored in configuration.
 - `api_tokens[].secret_hash` uses `sha256:<lowercase-hex-sha256>` for high-entropy random API tokens.
+- Implementations SHOULD provide an operator command that generates a high-entropy plaintext API token and prints the corresponding `sha256:<lowercase-hex-sha256>` configuration entry exactly once.
 
 ## 10. Encryption protocol
 
@@ -483,6 +520,8 @@ Rules:
 - The drop page MUST reject missing, non-base64url, or non-32-byte `pk` values.
 - The drop page MUST feature-detect X25519 support in WebCrypto and show an explicit unsupported-environment error if unavailable.
 
+Native WebCrypto X25519 support is required for the relay-served drop page. It reached all major browser engines by 2025, with Chrome stable support in Chrome 137. Operators serving unmanaged or old sender browsers SHOULD document that unsupported browsers will see the explicit unsupported-environment error.
+
 ### 10.10 Encryption procedure
 
 The sender:
@@ -558,6 +597,12 @@ Drop requests use `multipart/form-data` with:
 Pickup responses use `multipart/mixed` with the same two logical parts.
 
 Cryptographic material MUST NOT be carried in custom `X-*` headers, except that a protocol-version header MAY be used as a non-authoritative routing hint.
+
+### 10.14 Payload size and buffering constraints
+
+This protocol version encrypts each bundle as one AES-GCM message. Sender implementations generally need the selected bundle bytes, manifest, and resulting ciphertext available as whole messages while encrypting. Receiver implementations MUST NOT use decrypted payload bytes as trusted plaintext until AES-GCM authentication has succeeded for the whole payload. The relay may stream ciphertext for storage and pickup, but cryptographic clients should treat configured `max_bytes` as a memory and authentication boundary as well as a network/storage boundary.
+
+Chunked or framed AEAD payloads are outside this protocol version and require a future incompatible protocol version.
 
 ## 11. Bundle manifest
 
@@ -658,9 +703,36 @@ Logs MUST NOT include:
 
 HTTP access logs MUST redact token-bearing paths such as `/drop/:drop_token` and `/api/drops/:drop_token`.
 
+Recommended structured log events include:
+
+```json
+{ "event": "drop_point.created", "drop_point_id": "dp_...", "api_token_id": "desktop-main", "expires_at": "2026-06-30T12:15:00Z" }
+```
+
+```json
+{ "event": "drop.completed", "drop_point_id": "dp_...", "encrypted_size": 2849123, "dropped_at": "2026-06-30T12:03:12Z" }
+```
+
+```json
+{ "event": "payload.picked_up", "drop_point_id": "dp_...", "first_pickup": true }
+```
+
 Metrics SHOULD avoid high-cardinality or sensitive labels such as drop point IDs, token prefixes, IP addresses, filenames, MIME types, and storage paths.
 
-Recommended metric concepts include counts of created drop points, current open drop points, completed drops, failed drops, pickups, expirations, closes, payload bytes, cleanup runs, and cleanup-deleted payloads.
+Recommended metric names include:
+
+- `droppoint_drop_points_created_total`
+- `droppoint_drop_points_open`
+- `droppoint_drop_points_expired_total`
+- `droppoint_drop_points_closed_total`
+- `droppoint_drops_completed_total`
+- `droppoint_drops_failed_total`
+- `droppoint_pickups_total`
+- `droppoint_payload_bytes_total`
+- `droppoint_cleanup_runs_total`
+- `droppoint_cleanup_deleted_payloads_total`
+
+Recommended metric labels are `api_token_id`, `status`, `result`, and `reason`. Metrics MUST NOT use high-cardinality labels such as `drop_point_id`, token prefixes, IP address, filename, MIME type, or storage path.
 
 ## 16. Sender-facing page requirements
 
