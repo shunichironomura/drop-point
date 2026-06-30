@@ -140,6 +140,8 @@ Create the minimal runnable Go service foundation that later phases build on. Th
 
 ## Phase 1: domain, tokens, and persistence core
 
+Status: Completed on 2026-07-01.
+
 ### Goal
 
 Build the reusable functional core for drop point lifecycle rules, token generation/hashing, and SQLite persistence before adding HTTP behavior.

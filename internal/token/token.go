@@ -1,0 +1,112 @@
+package token
+
+import (
+	"crypto/rand"
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/base64"
+	"encoding/hex"
+	"fmt"
+	"strings"
+)
+
+const (
+	DropPointIDPrefix = "dp_"
+	DropTokenPrefix   = "drop_"
+	PickupTokenPrefix = "pick_"
+	APITokenPrefix    = "api_"
+
+	// EntropyBytes gives every generated capability token at least 256 bits of
+	// CSPRNG entropy. Public drop point IDs use the same size for simplicity.
+	EntropyBytes = 32
+
+	HashSchemeSHA256 = "sha256"
+)
+
+var encoding = base64.RawURLEncoding
+
+// GenerateDropPointID returns a public drop point identifier with a dp_ prefix.
+func GenerateDropPointID() (string, error) {
+	return Generate(DropPointIDPrefix)
+}
+
+// GenerateDropToken returns a sender capability token with a drop_ prefix.
+func GenerateDropToken() (string, error) {
+	return Generate(DropTokenPrefix)
+}
+
+// GeneratePickupToken returns a receiver capability token with a pick_ prefix.
+func GeneratePickupToken() (string, error) {
+	return Generate(PickupTokenPrefix)
+}
+
+// GenerateAPIToken returns an operator API bearer token with an api_ prefix.
+func GenerateAPIToken() (string, error) {
+	return Generate(APITokenPrefix)
+}
+
+// Generate returns prefix followed by 32 bytes of base64url-without-padding
+// CSPRNG output.
+func Generate(prefix string) (string, error) {
+	if prefix == "" {
+		return "", fmt.Errorf("token prefix must not be empty")
+	}
+	secret := make([]byte, EntropyBytes)
+	if _, err := rand.Read(secret); err != nil {
+		return "", fmt.Errorf("generate token entropy: %w", err)
+	}
+	return prefix + encoding.EncodeToString(secret), nil
+}
+
+// DecodeSecret decodes the base64url secret bytes after prefix.
+func DecodeSecret(value, prefix string) ([]byte, error) {
+	if !strings.HasPrefix(value, prefix) {
+		return nil, fmt.Errorf("token must use %q prefix", prefix)
+	}
+	secret, err := encoding.DecodeString(strings.TrimPrefix(value, prefix))
+	if err != nil {
+		return nil, fmt.Errorf("decode token secret: %w", err)
+	}
+	return secret, nil
+}
+
+// HashSecret returns sha256:<lowercase-hex-sha256> for a plaintext token.
+func HashSecret(plaintext string) string {
+	sum := sha256.Sum256([]byte(plaintext))
+	return HashSchemeSHA256 + ":" + hex.EncodeToString(sum[:])
+}
+
+// VerifySecretHash compares a plaintext token to a stored sha256:<hex> hash in
+// constant time when the stored hash shape is valid.
+func VerifySecretHash(plaintext string, storedHash string) bool {
+	if !ValidSHA256Hash(storedHash) {
+		return false
+	}
+	computed := HashSecret(plaintext)
+	return subtle.ConstantTimeCompare([]byte(computed), []byte(storedHash)) == 1
+}
+
+// EqualHash compares two stored token hashes in constant time when both use the
+// supported hash format.
+func EqualHash(a, b string) bool {
+	if !ValidSHA256Hash(a) || !ValidSHA256Hash(b) {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
+}
+
+// ValidSHA256Hash reports whether hash uses sha256:<64 lowercase hex digits>.
+func ValidSHA256Hash(hash string) bool {
+	if len(hash) != len(HashSchemeSHA256)+1+64 {
+		return false
+	}
+	if !strings.HasPrefix(hash, HashSchemeSHA256+":") {
+		return false
+	}
+	for _, r := range hash[len(HashSchemeSHA256)+1:] {
+		if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
+			return false
+		}
+	}
+	return true
+}
