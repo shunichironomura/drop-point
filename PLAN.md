@@ -17,24 +17,30 @@ Key decisions carried into this plan:
 - Pickup is repeatable until explicit close or expiry; pickup never auto-deletes.
 - Keep a functional core and imperative shell: domain rules, token handling, envelope validation, and status transitions should be pure and easy to test; HTTP, SQLite, filesystem, clocks, and logging remain at the shell.
 
-## Current baseline: service skeleton
+## Phase 0: service skeleton and development foundation
 
-Current repository state already contains the initial service skeleton:
+### Goal
 
-- Go module and `cmd/droppoint` entrypoint.
-- JSON config loading and validation.
-- SQLite initialization and schema migration for `drop_points`.
-- Data directory initialization.
-- HTTP router with `/health`.
-- Request logging and panic recovery.
-- Basic tests for config, storage, and server packages.
+Create the minimal runnable Go service foundation that later phases build on. This phase is explicit because the current repository has no implementation baseline.
 
-Before starting feature work, preserve these baseline guarantees:
+### Deliverables
+
+- Initialize the Go module and `cmd/drop-point` entrypoint, producing the `drop-point` CLI/binary.
+- Add JSON config loading and validation.
+- Add SQLite initialization and schema migration for `drop_points`.
+- Add data directory initialization with restrictive permissions.
+- Add an HTTP router with unauthenticated, low-information `/health`.
+- Add request logging and panic recovery.
+- Add basic tests for config, storage, and server packages.
+- Update `CODE_REVIEW_ORDER.md` as implementation files are created.
+
+### Acceptance criteria
 
 - `go test ./...` passes.
-- The service starts with defaults on `127.0.0.1:8080`.
+- The `drop-point` binary starts with defaults on `127.0.0.1:8080`.
 - The configured data directory is created with restrictive permissions.
 - SQLite uses WAL, foreign keys, and a busy timeout.
+- `/health` returns a successful low-information response.
 
 ## Phase 1: domain, tokens, and persistence core
 

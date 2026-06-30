@@ -43,6 +43,7 @@ DropPoint does not provide:
 | Term | Meaning |
 | --- | --- |
 | DropPoint | Product/service name. |
+| `drop-point` | Operator CLI/binary name for running the relay. |
 | drop point | One temporary handoff session created by a receiver. |
 | receiver | Client that creates the drop point, owns the private key, and picks up the payload. |
 | sender / uploader | Person or client that opens the drop link and drops encrypted files. |
@@ -304,7 +305,7 @@ A drop point record contains at least:
 The default local storage layout is:
 
 ```text
-/var/lib/droppoint/
+/var/lib/drop-point/
 ├── relay.db
 └── drop-points/
     └── <drop-point-id>/
@@ -322,7 +323,7 @@ DropPoint configuration contains:
 {
   "listen_addr": "127.0.0.1:8080",
   "base_url": "https://drop.example.com",
-  "data_dir": "/var/lib/droppoint",
+  "data_dir": "/var/lib/drop-point",
   "default_ttl_seconds": 600,
   "max_ttl_seconds": 900,
   "default_max_bytes": 52428800,
