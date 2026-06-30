@@ -183,8 +183,11 @@ This document lists repository files in dependency-first review order. Local scr
 59. `docs/deployment.md`
     - Build, systemd, reverse-proxy/tunnel, secure-context, request-size, and log-redaction guidance.
 
-60. `README.md`
+60. `docs/client-integration.md`
+    - Generic receiver/client integration boundary and durable local storage ordering guidance.
+
+61. `README.md`
     - Product overview, local development flow, security model, and operator entry points.
 
-61. `CODE_REVIEW_ORDER.md`
+62. `CODE_REVIEW_ORDER.md`
     - This review-order index. Update it whenever repository files change.
