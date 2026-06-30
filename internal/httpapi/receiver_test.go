@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -129,6 +130,10 @@ func TestCloseDeletesPayloadFilesWhenPresent(t *testing.T) {
 
 type fakeCloseBlobStore struct {
 	deleted []string
+}
+
+func (f *fakeCloseBlobStore) WriteDrop(context.Context, string, []byte, io.Reader, int64) (droppoint.CommitDropResult, error) {
+	return droppoint.CommitDropResult{}, errors.New("not implemented")
 }
 
 func (f *fakeCloseBlobStore) DeleteDropPoint(_ context.Context, id string) error {

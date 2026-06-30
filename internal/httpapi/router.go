@@ -69,6 +69,14 @@ func NewRouterWithDependencies(deps Dependencies) http.Handler {
 			http.NotFound(w, r)
 		}
 	})
+	mux.HandleFunc("/api/drops/", func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPut && dropTokenFromPath(r.URL.Path) != "":
+			HandleSubmitDrop(deps)(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	})
 
 	return RecoverPanics(logger, LogRequests(logger, mux))
 }

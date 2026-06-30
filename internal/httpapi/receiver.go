@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -11,8 +12,9 @@ import (
 	"github.com/shunichironomura/drop-point/internal/token"
 )
 
-// BlobStore is the receiver-side subset of blob storage used by close.
+// BlobStore is the filesystem payload boundary used by HTTP handlers.
 type BlobStore interface {
+	WriteDrop(ctx context.Context, id string, envelope []byte, payload io.Reader, maxBytes int64) (droppoint.CommitDropResult, error)
 	DeleteDropPoint(ctx context.Context, id string) error
 }
 
