@@ -19,15 +19,16 @@ const (
 )
 
 var (
-	ErrDropPointNotFound  = errors.New("drop point not found")
-	ErrDropPointExpired   = errors.New("drop point expired")
-	ErrDropPointClosed    = errors.New("drop point closed")
-	ErrDropPointNotOpen   = errors.New("drop point is not open")
-	ErrDropAlreadyExists  = errors.New("drop already exists")
-	ErrDropTokenInvalid   = errors.New("drop token invalid")
-	ErrPickupTokenInvalid = errors.New("pickup token invalid")
-	ErrPayloadTooLarge    = errors.New("payload too large")
-	ErrEnvelopeInvalid    = errors.New("envelope invalid")
+	ErrDropPointNotFound            = errors.New("drop point not found")
+	ErrDropPointExpired             = errors.New("drop point expired")
+	ErrDropPointClosed              = errors.New("drop point closed")
+	ErrDropPointNotOpen             = errors.New("drop point is not open")
+	ErrDropAlreadyExists            = errors.New("drop already exists")
+	ErrActiveDropPointQuotaExceeded = errors.New("active drop point quota exceeded")
+	ErrDropTokenInvalid             = errors.New("drop token invalid")
+	ErrPickupTokenInvalid           = errors.New("pickup token invalid")
+	ErrPayloadTooLarge              = errors.New("payload too large")
+	ErrEnvelopeInvalid              = errors.New("envelope invalid")
 )
 
 // DropPoint is the domain entity. Token fields contain hashes only; raw

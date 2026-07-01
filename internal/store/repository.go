@@ -9,9 +9,31 @@ import (
 
 	"github.com/shunichironomura/drop-point/internal/droppoint"
 	"github.com/shunichironomura/drop-point/internal/token"
+	"modernc.org/sqlite"
+	sqlite3 "modernc.org/sqlite/lib"
 )
 
 const sqliteTimeFormat = "2006-01-02T15:04:05.000000000Z07:00"
+
+const insertDropPointSQL = `
+INSERT INTO drop_points (
+  id, api_token_id, client_name, drop_token_hash, pickup_token_hash, status,
+  payload_path, envelope_path, encrypted_size, created_at, dropped_at,
+  first_picked_up_at, closed_at, expires_at, max_bytes
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+
+const insertDropPointWithinQuotaSQL = `
+INSERT INTO drop_points (
+  id, api_token_id, client_name, drop_token_hash, pickup_token_hash, status,
+  payload_path, envelope_path, encrypted_size, created_at, dropped_at,
+  first_picked_up_at, closed_at, expires_at, max_bytes
+)
+SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+WHERE (
+  SELECT count(*)
+  FROM drop_points
+  WHERE api_token_id = ? AND status IN (?, ?, ?) AND expires_at > ?
+) < ?`
 
 // Repository provides typed persistence operations for drop point lifecycle rows.
 type Repository struct {
@@ -26,35 +48,44 @@ func NewRepository(db *sql.DB) *Repository {
 // CreateDropPoint inserts a new drop point row. The supplied entity must contain
 // token hashes only.
 func (r *Repository) CreateDropPoint(ctx context.Context, dp droppoint.DropPoint) error {
-	if r == nil || r.db == nil {
-		return fmt.Errorf("repository database handle must not be nil")
+	if err := r.ensureReady(); err != nil {
+		return err
 	}
-	_, err := r.db.ExecContext(ctx, `
-INSERT INTO drop_points (
-  id, api_token_id, client_name, drop_token_hash, pickup_token_hash, status,
-  payload_path, envelope_path, encrypted_size, created_at, dropped_at,
-  first_picked_up_at, closed_at, expires_at, max_bytes
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		dp.ID,
-		dp.APITokenID,
-		nullString(dp.ClientName),
-		dp.DropTokenHash,
-		dp.PickupTokenHash,
-		string(dp.Status),
-		nullString(dp.PayloadPath),
-		nullString(dp.EnvelopePath),
-		nullInt64(dp.EncryptedSize, dp.EncryptedSize > 0),
-		formatTime(dp.CreatedAt),
-		nullTime(dp.DroppedAt),
-		nullTime(dp.FirstPickedUpAt),
-		nullTime(dp.ClosedAt),
-		formatTime(dp.ExpiresAt),
-		dp.MaxBytes,
-	)
-	if err != nil {
+	if _, err := r.db.ExecContext(ctx, insertDropPointSQL, dropPointInsertArgs(dp)...); err != nil {
 		return fmt.Errorf("create drop point %q: %w", dp.ID, err)
 	}
 	return nil
+}
+
+// CreateDropPointWithinQuota inserts a new drop point only if doing so keeps the
+// API token's active open/receiving/ready drop point count below maxActive.
+func (r *Repository) CreateDropPointWithinQuota(ctx context.Context, dp droppoint.DropPoint, maxActive int, now time.Time) error {
+	if err := r.ensureReady(); err != nil {
+		return err
+	}
+	if maxActive <= 0 {
+		return fmt.Errorf("max active drop points must be positive")
+	}
+	args := append(dropPointInsertArgs(dp),
+		dp.APITokenID,
+		string(droppoint.StatusOpen),
+		string(droppoint.StatusReceiving),
+		string(droppoint.StatusReady),
+		formatTime(now),
+		maxActive,
+	)
+	result, err := r.db.ExecContext(ctx, insertDropPointWithinQuotaSQL, args...)
+	if err != nil {
+		return fmt.Errorf("create drop point %q within quota: %w", dp.ID, err)
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("create drop point %q within quota: rows affected: %w", dp.ID, err)
+	}
+	if changed == 1 {
+		return nil
+	}
+	return droppoint.ErrActiveDropPointQuotaExceeded
 }
 
 // FindDropPointByID returns a drop point by public ID.
@@ -340,10 +371,53 @@ WHERE id = ? AND status IN (?, ?, ?)`,
 }
 
 func (r *Repository) queryOne(ctx context.Context, query string, args ...any) (*droppoint.DropPoint, error) {
-	if r == nil || r.db == nil {
-		return nil, fmt.Errorf("repository database handle must not be nil")
+	if err := r.ensureReady(); err != nil {
+		return nil, err
 	}
 	return scanDropPoint(r.db.QueryRowContext(ctx, query, args...))
+}
+
+func (r *Repository) ensureReady() error {
+	if r == nil || r.db == nil {
+		return fmt.Errorf("repository database handle must not be nil")
+	}
+	return nil
+}
+
+func dropPointInsertArgs(dp droppoint.DropPoint) []any {
+	return []any{
+		dp.ID,
+		dp.APITokenID,
+		nullString(dp.ClientName),
+		dp.DropTokenHash,
+		dp.PickupTokenHash,
+		string(dp.Status),
+		nullString(dp.PayloadPath),
+		nullString(dp.EnvelopePath),
+		nullInt64(dp.EncryptedSize, dp.EncryptedSize > 0),
+		formatTime(dp.CreatedAt),
+		nullTime(dp.DroppedAt),
+		nullTime(dp.FirstPickedUpAt),
+		nullTime(dp.ClosedAt),
+		formatTime(dp.ExpiresAt),
+		dp.MaxBytes,
+	}
+}
+
+// IsUniqueConstraint reports whether err wraps a SQLite primary-key or UNIQUE
+// constraint failure. It intentionally checks driver result codes rather than
+// localized or version-specific error text.
+func IsUniqueConstraint(err error) bool {
+	var sqliteErr *sqlite.Error
+	if !errors.As(err, &sqliteErr) {
+		return false
+	}
+	switch sqliteErr.Code() {
+	case sqlite3.SQLITE_CONSTRAINT_PRIMARYKEY, sqlite3.SQLITE_CONSTRAINT_UNIQUE:
+		return true
+	default:
+		return false
+	}
 }
 
 type scanner interface {
