@@ -19,7 +19,7 @@ func TestServeDropPageHasSecurityHeadersAndCopy(t *testing.T) {
 		t.Fatalf("status = %d body=%s", recorder.Code, recorder.Body.String())
 	}
 	body := recorder.Body.String()
-	for _, want := range []string{"Drop files", "Choose files", "Selected files", "Drop encrypted files"} {
+	for _, want := range []string{"Drop files", "Choose files", "Or drag files here", "Selected files", "Drop encrypted files"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("body missing %q: %s", want, body)
 		}
@@ -49,7 +49,7 @@ func TestDropAssetsAreSameOriginOnlyAndNoThirdPartyScripts(t *testing.T) {
 		t.Fatalf("app.js status = %d", recorder.Code)
 	}
 	app := recorder.Body.String()
-	for _, want := range []string{"window.isSecureContext", "X25519", "#", "FormData", "updateSelectedFiles", "Ready for pickup"} {
+	for _, want := range []string{"window.isSecureContext", "X25519", "#", "FormData", "dataTransfer", "handleDroppedFiles", "updateSelectedFiles", "Ready for pickup"} {
 		if !strings.Contains(app, want) {
 			t.Fatalf("app.js missing %q", want)
 		}
