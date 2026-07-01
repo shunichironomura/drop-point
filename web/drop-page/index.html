@@ -16,6 +16,10 @@
         <span>Choose files</span>
         <input id="files" type="file" multiple disabled>
       </label>
+      <section id="selection" class="selection" aria-live="polite" hidden>
+        <h2>Selected files</h2>
+        <ul id="selected-files"></ul>
+      </section>
       <button id="submit" type="button" disabled>Drop encrypted files</button>
       <p class="small">Files are encrypted in this browser before upload. Plaintext filenames and contents are never submitted to the relay.</p>
     </section>

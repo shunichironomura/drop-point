@@ -13,8 +13,12 @@ const state = {
 const filesInput = document.getElementById('files');
 const submitButton = document.getElementById('submit');
 const statusBox = document.getElementById('status');
+const selectionBox = document.getElementById('selection');
+const selectedFilesList = document.getElementById('selected-files');
 
 init().catch((error) => showError(error.message || 'This drop point cannot be used.'));
+
+filesInput.addEventListener('change', updateSelectedFiles);
 
 submitButton.addEventListener('click', () => {
   dropSelectedFiles().catch((error) => showError(error.message || 'Dropping files failed.'));
@@ -27,8 +31,33 @@ async function init() {
   state.recipientPublicKey = parseFragmentPublicKey(location.hash);
   await assertX25519Support(state.recipientPublicKey);
   filesInput.disabled = false;
-  submitButton.disabled = false;
+  updateSelectedFiles();
   showStatus('Choose files');
+}
+
+function updateSelectedFiles() {
+  const files = [...filesInput.files];
+  submitButton.disabled = files.length === 0;
+  renderSelectedFiles(files);
+  if (files.length === 0) {
+    showStatus('Choose files');
+    return;
+  }
+  showStatus(`${files.length} ${files.length === 1 ? 'file' : 'files'} selected. Ready to drop encrypted files.`);
+}
+
+function renderSelectedFiles(files) {
+  selectedFilesList.replaceChildren(...files.map((file) => {
+    const item = document.createElement('li');
+    const name = document.createElement('span');
+    name.textContent = file.name || 'file';
+    const size = document.createElement('span');
+    size.className = 'file-size';
+    size.textContent = ` (${formatBytes(file.size)})`;
+    item.append(name, size);
+    return item;
+  }));
+  selectionBox.hidden = files.length === 0;
 }
 
 async function dropSelectedFiles() {
@@ -167,6 +196,24 @@ function encodeBase64URL(bytes) {
     binary += String.fromCharCode(byte);
   }
   return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+}
+
+function formatBytes(size) {
+  if (!Number.isFinite(size) || size < 0) {
+    return 'unknown size';
+  }
+  if (size < 1024) {
+    return `${size} B`;
+  }
+  const units = ['KiB', 'MiB', 'GiB'];
+  let value = size / 1024;
+  for (const unit of units) {
+    if (value < 1024 || unit === units[units.length - 1]) {
+      return `${value.toFixed(value < 10 ? 1 : 0)} ${unit}`;
+    }
+    value /= 1024;
+  }
+  return `${size} B`;
 }
 
 function showStatus(message) {
