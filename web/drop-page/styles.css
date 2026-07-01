@@ -48,6 +48,32 @@ h1 {
   background: #14532d;
 }
 
+.selection {
+  margin: 1rem 0;
+  padding: 1rem;
+  border: 1px solid #334155;
+  border-radius: 0.75rem;
+  background: #0f172a;
+}
+
+.selection h2 {
+  margin: 0 0 0.75rem;
+  font-size: 1rem;
+}
+
+.selection ul {
+  margin: 0;
+  padding-left: 1.25rem;
+}
+
+.selection li + li {
+  margin-top: 0.4rem;
+}
+
+.file-size {
+  color: #94a3b8;
+}
+
 .picker, button {
   display: block;
   width: 100%;
