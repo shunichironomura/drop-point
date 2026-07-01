@@ -24,7 +24,7 @@ func TestServeDropPageHasSecurityHeadersAndCopy(t *testing.T) {
 			t.Fatalf("body missing %q: %s", want, body)
 		}
 	}
-	if got := recorder.Header().Get("Content-Security-Policy"); !strings.Contains(got, "default-src 'none'") || !strings.Contains(got, "script-src 'self'") {
+	if got := recorder.Header().Get("Content-Security-Policy"); !strings.Contains(got, "default-src 'none'") || !strings.Contains(got, "script-src 'self'") || !strings.Contains(got, "img-src blob:") {
 		t.Fatalf("CSP = %q", got)
 	}
 	if got := recorder.Header().Get("X-Content-Type-Options"); got != "nosniff" {
@@ -105,6 +105,36 @@ func TestDropPageCanRemoveSpecificSelectedFile(t *testing.T) {
 	for _, want := range []string{"Remove", "aria-label", "function removeSelectedFile(index)", "filter((_file, fileIndex) => fileIndex !== index)"} {
 		if !strings.Contains(app, want) {
 			t.Fatalf("app.js missing per-file removal behavior %q", want)
+		}
+	}
+}
+
+func TestDropPageSelectedImageFilesUseLocalThumbnails(t *testing.T) {
+	handler := NewRouter(log.New(&bytes.Buffer{}, "", 0))
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/drop-assets/app.js", nil)
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("app.js status = %d", recorder.Code)
+	}
+
+	app := recorder.Body.String()
+	for _, want := range []string{"file-thumbnail", "IMAGE_TYPE_PREFIX", "URL.createObjectURL(file)", "URL.revokeObjectURL(url)", "pagehide"} {
+		if !strings.Contains(app, want) {
+			t.Fatalf("app.js missing image-thumbnail behavior %q", want)
+		}
+	}
+
+	recorder = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodGet, "/drop-assets/styles.css", nil)
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("styles.css status = %d", recorder.Code)
+	}
+	styles := recorder.Body.String()
+	for _, want := range []string{".file-thumbnail", "object-fit: cover", ".file-summary"} {
+		if !strings.Contains(styles, want) {
+			t.Fatalf("styles.css missing image-thumbnail style %q", want)
 		}
 	}
 }

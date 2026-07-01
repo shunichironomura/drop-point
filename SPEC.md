@@ -196,6 +196,7 @@ The response is the sender-facing HTML/JS/CSS page. The page MUST:
 - Detect `window.isSecureContext` and `crypto.subtle` support.
 - Show a clear error if the page is not running in a secure context.
 - Show a clear error for a missing or malformed public key.
+- Show selected image files with local thumbnail previews next to the file name and size, without sending plaintext preview bytes to the relay or third parties.
 - Use no third-party scripts.
 - Use a strict Content Security Policy.
 - Set defensive sender-facing security headers such as `X-Content-Type-Options: nosniff`, `Referrer-Policy`, and a restrictive `Permissions-Policy`.
