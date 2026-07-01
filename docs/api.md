@@ -16,6 +16,7 @@ Response:
 ```json
 {
   "drop_point_id": "dp_...",
+  "display_name": "calm-otter",
   "drop_link": "https://drop.example.com/drop/drop_...",
   "pickup_token": "pick_...",
   "expires_at": "2026-06-30T12:15:00Z",
@@ -23,13 +24,33 @@ Response:
 }
 ```
 
-Append the receiver-generated public key and returned expiry timestamp locally:
+Display `display_name` to the receiver so the sender can compare it with the name shown on the drop page. Append the receiver-generated public key and returned expiry timestamp locally:
 
 ```text
 #v=2&pk=<base64url(raw-32-byte-x25519-public-key)>&exp=<urlencoded expires_at>
 ```
 
-The `exp` fragment parameter is optional for compatibility, but including it lets the sender page display a countdown.
+The `exp` fragment parameter is optional for compatibility. Current sender pages fetch the authoritative display name and expiry from the relay using the drop token.
+
+## Sender metadata
+
+The static sender page fetches server-bound, sender-safe metadata before enabling uploads:
+
+```sh
+curl -sS https://drop.example.com/api/drops/$DROP_TOKEN
+```
+
+Response:
+
+```json
+{
+  "display_name": "calm-otter",
+  "expires_at": "2026-06-30T12:15:00Z",
+  "max_bytes": 52428800
+}
+```
+
+This endpoint is authorized only by the drop token and does not expose receiver-only pickup state.
 
 ## Sender encrypted drop framing
 
@@ -54,7 +75,7 @@ curl -sS https://drop.example.com/api/drop-points/$DROP_POINT_ID/status \
   -H "Authorization: Bearer $PICKUP_TOKEN"
 ```
 
-Response includes `status`, `encrypted_size`, `dropped_at`, `first_picked_up_at`, and `expires_at`.
+Response includes `status`, `display_name`, `encrypted_size`, `dropped_at`, `first_picked_up_at`, and `expires_at`.
 
 ## Pickup encrypted payload
 

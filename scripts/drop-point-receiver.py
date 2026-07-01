@@ -87,6 +87,7 @@ def create_drop_point(args: argparse.Namespace) -> None:
     state = {
         "base_url": base_url,
         "drop_point_id": created["drop_point_id"],
+        "display_name": created["display_name"],
         "pickup_token": created["pickup_token"],
         "recipient_private_key": b64u_encode(private_key_raw),
         "recipient_public_key": b64u_encode(public_key_raw),
@@ -97,6 +98,7 @@ def create_drop_point(args: argparse.Namespace) -> None:
     }
     write_private_state(args.state, state)
     print(f"State written to: {args.state}")
+    print(f"Drop name: {created['display_name']}")
     print("Share this sender link:")
     print(drop_link_with_fragment)
 

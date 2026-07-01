@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/shunichironomura/drop-point/internal/dropname"
 	"github.com/shunichironomura/drop-point/internal/droppoint"
 	"github.com/shunichironomura/drop-point/internal/store"
 	"github.com/shunichironomura/drop-point/internal/token"
@@ -27,6 +28,7 @@ type createDropPointRequest struct {
 
 type createDropPointResponse struct {
 	DropPointID string    `json:"drop_point_id"`
+	DisplayName string    `json:"display_name"`
 	DropLink    string    `json:"drop_link"`
 	PickupToken string    `json:"pickup_token"`
 	ExpiresAt   time.Time `json:"expires_at"`
@@ -82,6 +84,7 @@ func HandleCreateDropPoint(deps Dependencies) http.HandlerFunc {
 
 		writeJSON(w, http.StatusCreated, createDropPointResponse{
 			DropPointID: created.DropPointID,
+			DisplayName: created.DisplayName,
 			DropLink:    dropLink(deps.Config.BaseURL, created.DropToken),
 			PickupToken: created.PickupToken,
 			ExpiresAt:   created.ExpiresAt,
@@ -128,10 +131,15 @@ func createDropPoint(ctx context.Context, deps Dependencies, apiTokenID string, 
 		if err != nil {
 			return droppoint.CreateDropPointResponse{}, err
 		}
+		displayName, err := dropname.Generate()
+		if err != nil {
+			return droppoint.CreateDropPointResponse{}, err
+		}
 		dp, err := droppoint.New(droppoint.CreateDropPointRequest{
 			ID:              id,
 			APITokenID:      apiTokenID,
 			ClientName:      clientName,
+			DisplayName:     displayName,
 			DropTokenHash:   token.HashSecret(dropToken),
 			PickupTokenHash: token.HashSecret(pickupToken),
 			TTL:             ttl,
@@ -148,6 +156,7 @@ func createDropPoint(ctx context.Context, deps Dependencies, apiTokenID string, 
 		}
 		return droppoint.CreateDropPointResponse{
 			DropPointID: id,
+			DisplayName: displayName,
 			DropToken:   dropToken,
 			PickupToken: pickupToken,
 			ExpiresAt:   dp.ExpiresAt,

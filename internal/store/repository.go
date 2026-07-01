@@ -19,18 +19,18 @@ const sqliteTimeFormat = "2006-01-02T15:04:05.000000000Z07:00"
 
 const insertDropPointSQL = `
 INSERT INTO drop_points (
-  id, api_token_id, client_name, drop_token_hash, pickup_token_hash, status,
+  id, api_token_id, client_name, display_name, drop_token_hash, pickup_token_hash, status,
   payload_path, envelope_path, encrypted_size, created_at, dropped_at,
   first_picked_up_at, closed_at, expires_at, max_bytes
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 const insertDropPointWithinQuotaSQL = `
 INSERT INTO drop_points (
-  id, api_token_id, client_name, drop_token_hash, pickup_token_hash, status,
+  id, api_token_id, client_name, display_name, drop_token_hash, pickup_token_hash, status,
   payload_path, envelope_path, encrypted_size, created_at, dropped_at,
   first_picked_up_at, closed_at, expires_at, max_bytes
 )
-SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
 WHERE (
   SELECT count(*)
   FROM drop_points
@@ -93,7 +93,7 @@ func (r *Repository) CreateDropPointWithinQuota(ctx context.Context, dp droppoin
 // FindDropPointByID returns a drop point by public ID.
 func (r *Repository) FindDropPointByID(ctx context.Context, id string) (*droppoint.DropPoint, error) {
 	dp, err := r.queryOne(ctx, `
-SELECT id, api_token_id, client_name, drop_token_hash, pickup_token_hash, status,
+SELECT id, api_token_id, client_name, display_name, drop_token_hash, pickup_token_hash, status,
        payload_path, envelope_path, encrypted_size, created_at, dropped_at,
        first_picked_up_at, closed_at, expires_at, max_bytes
 FROM drop_points
@@ -107,11 +107,11 @@ WHERE id = ?`, id)
 	return dp, nil
 }
 
-// FindOpenDropPointByDropTokenHash authorizes a sender drop token hash and
-// returns the matching open drop point if it can receive a drop at now.
-func (r *Repository) FindOpenDropPointByDropTokenHash(ctx context.Context, dropTokenHash string, now time.Time) (*droppoint.DropPoint, error) {
+// FindDropPointByDropTokenHash authorizes a sender drop token hash and returns
+// the matching drop point. Expired rows are marked expired before returning.
+func (r *Repository) FindDropPointByDropTokenHash(ctx context.Context, dropTokenHash string, now time.Time) (*droppoint.DropPoint, error) {
 	dp, err := r.queryOne(ctx, `
-SELECT id, api_token_id, client_name, drop_token_hash, pickup_token_hash, status,
+SELECT id, api_token_id, client_name, display_name, drop_token_hash, pickup_token_hash, status,
        payload_path, envelope_path, encrypted_size, created_at, dropped_at,
        first_picked_up_at, closed_at, expires_at, max_bytes
 FROM drop_points
@@ -124,6 +124,19 @@ WHERE drop_token_hash = ?`, dropTokenHash)
 	}
 	if dp.IsExpiredAt(now) {
 		_ = r.markExpired(ctx, dp.ID)
+		dp.Status = droppoint.StatusExpired
+	}
+	return dp, nil
+}
+
+// FindOpenDropPointByDropTokenHash authorizes a sender drop token hash and
+// returns the matching open drop point if it can receive a drop at now.
+func (r *Repository) FindOpenDropPointByDropTokenHash(ctx context.Context, dropTokenHash string, now time.Time) (*droppoint.DropPoint, error) {
+	dp, err := r.FindDropPointByDropTokenHash(ctx, dropTokenHash, now)
+	if err != nil {
+		return nil, err
+	}
+	if dp.Status == droppoint.StatusExpired {
 		return nil, droppoint.ErrDropPointExpired
 	}
 	if dp.Status == droppoint.StatusOpen {
@@ -265,7 +278,7 @@ WHERE id = ?`, string(droppoint.StatusClosed), formatTime(now), id)
 // returns the affected rows for cleanup.
 func (r *Repository) ExpireDropPoints(ctx context.Context, now time.Time) ([]droppoint.DropPoint, error) {
 	rows, err := r.db.QueryContext(ctx, `
-SELECT id, api_token_id, client_name, drop_token_hash, pickup_token_hash, status,
+SELECT id, api_token_id, client_name, display_name, drop_token_hash, pickup_token_hash, status,
        payload_path, envelope_path, encrypted_size, created_at, dropped_at,
        first_picked_up_at, closed_at, expires_at, max_bytes
 FROM drop_points
@@ -385,6 +398,7 @@ func dropPointInsertArgs(dp droppoint.DropPoint) []any {
 		dp.ID,
 		dp.APITokenID,
 		nullString(dp.ClientName),
+		dp.DisplayName,
 		dp.DropTokenHash,
 		dp.PickupTokenHash,
 		string(dp.Status),
@@ -438,6 +452,7 @@ func scanDropPoint(row scanner) (*droppoint.DropPoint, error) {
 		&dp.ID,
 		&dp.APITokenID,
 		&clientName,
+		&dp.DisplayName,
 		&dp.DropTokenHash,
 		&dp.PickupTokenHash,
 		&status,

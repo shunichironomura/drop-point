@@ -31,11 +31,12 @@ For local browser encryption, use `http://localhost` or HTTPS. LAN-IP-over-HTTP 
 
 1. Create a drop point with a configured API token.
 2. Generate a recipient X25519 key pair locally.
-3. Append `#v=2&pk=<base64url(raw-32-byte-public-key)>` to the returned drop link.
-4. Share the full drop link with the sender.
-5. Poll status until `ready`.
-6. Pick up the encrypted envelope and payload.
-7. Decrypt locally, validate the manifest, durably store plaintext if desired, then close the drop point.
+3. Show the returned human-readable drop name to the receiver.
+4. Append `#v=2&pk=<base64url(raw-32-byte-public-key)>` to the returned drop link.
+5. Share the full drop link with the sender and ask them to compare the drop name shown on the page.
+6. Poll status until `ready`.
+7. Pick up the encrypted envelope and payload.
+8. Decrypt locally, validate the manifest, durably store plaintext if desired, then close the drop point.
 
 See `docs/local-testing.md` for a Python receiver/sender simulation, `docs/api.md` for curl examples, `docs/protocol-reference.md` for protocol vectors, and `docs/client-integration.md` for generic receiver/client integration guidance.
 

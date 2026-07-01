@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"os"
 	"path/filepath"
 	"testing"
@@ -61,17 +62,52 @@ func TestMigrationCreatesDropPointsSchema(t *testing.T) {
 		}
 	}
 
+	assertDropPointsColumnExists(t, db.SQLDB(), "display_name")
+
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	_, err := db.SQLDB().ExecContext(context.Background(), `
 INSERT INTO drop_points (
-  id, api_token_id, client_name, drop_token_hash, pickup_token_hash, status,
+  id, api_token_id, client_name, display_name, drop_token_hash, pickup_token_hash, status,
   created_at, expires_at, max_bytes
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		"dp_test", "desktop-main", "test-client", "sha256:drop", "sha256:pick", "open", now, now, 1024,
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		"dp_test", "desktop-main", "test-client", "calm-otter", "sha256:drop", "sha256:pick", "open", now, now, 1024,
 	)
 	if err != nil {
 		t.Fatalf("insert drop point row: %v", err)
 	}
+}
+
+func TestMigrationAddsDisplayNameToLegacySchema(t *testing.T) {
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer db.Close()
+
+	if _, err := db.ExecContext(context.Background(), `
+CREATE TABLE drop_points (
+  id TEXT PRIMARY KEY,
+  api_token_id TEXT NOT NULL,
+  client_name TEXT,
+  drop_token_hash TEXT NOT NULL UNIQUE,
+  pickup_token_hash TEXT NOT NULL,
+  status TEXT NOT NULL,
+  payload_path TEXT,
+  envelope_path TEXT,
+  encrypted_size INTEGER,
+  created_at TEXT NOT NULL,
+  dropped_at TEXT,
+  first_picked_up_at TEXT,
+  closed_at TEXT,
+  expires_at TEXT NOT NULL,
+  max_bytes INTEGER NOT NULL
+)`); err != nil {
+		t.Fatalf("create legacy schema: %v", err)
+	}
+	if err := Migrate(context.Background(), db); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+	assertDropPointsColumnExists(t, db, "display_name")
 }
 
 func TestOpenCreatesRestrictiveDatabaseFile(t *testing.T) {
@@ -85,6 +121,35 @@ func TestOpenCreatesRestrictiveDatabaseFile(t *testing.T) {
 	if got := info.Mode().Perm(); got != 0o600 {
 		t.Fatalf("database mode = %o, want 600", got)
 	}
+}
+
+func assertDropPointsColumnExists(t *testing.T, db *sql.DB, name string) {
+	t.Helper()
+	rows, err := db.QueryContext(context.Background(), "PRAGMA table_info(drop_points)")
+	if err != nil {
+		t.Fatalf("PRAGMA table_info: %v", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var (
+			cid        int
+			columnName string
+			columnType string
+			notNull    int
+			defaultVal sql.NullString
+			pk         int
+		)
+		if err := rows.Scan(&cid, &columnName, &columnType, &notNull, &defaultVal, &pk); err != nil {
+			t.Fatalf("scan table_info: %v", err)
+		}
+		if columnName == name {
+			return
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("scan table_info: %v", err)
+	}
+	t.Fatalf("drop_points.%s column not found", name)
 }
 
 func openTestDB(t *testing.T) *DB {

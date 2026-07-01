@@ -39,6 +39,17 @@ h1 {
   color: #cbd5e1;
 }
 
+.drop-name {
+  margin: 1rem 0 0;
+  color: #e2e8f0;
+  font-size: 1.1rem;
+}
+
+.drop-name strong {
+  color: #bae6fd;
+  overflow-wrap: anywhere;
+}
+
 .status {
   margin: 1.5rem 0;
   padding: 1rem;
