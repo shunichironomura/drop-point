@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/shunichironomura/drop-point/internal/droppoint"
+	"github.com/shunichironomura/drop-point/internal/store"
 	"github.com/shunichironomura/drop-point/internal/token"
 )
 
@@ -69,18 +70,12 @@ func HandleCreateDropPoint(deps Dependencies) http.HandlerFunc {
 		}
 
 		now := deps.Now().UTC()
-		active, err := deps.Repository.CountActiveDropPointsByAPITokenID(r.Context(), authenticated.ID, now)
+		created, err := createDropPoint(r.Context(), deps, authenticated.ID, authenticated.MaxActiveDropPoints, req.ClientName, time.Duration(ttlSeconds)*time.Second, maxBytes, now)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, "drop_point_create_failed", "could not check active drop point quota")
-			return
-		}
-		if active >= authenticated.MaxActiveDropPoints {
-			writeError(w, http.StatusTooManyRequests, "active_drop_point_quota_exceeded", "active drop point quota exceeded")
-			return
-		}
-
-		created, err := createDropPoint(r.Context(), deps, authenticated.ID, req.ClientName, time.Duration(ttlSeconds)*time.Second, maxBytes, now)
-		if err != nil {
+			if errors.Is(err, droppoint.ErrActiveDropPointQuotaExceeded) {
+				writeError(w, http.StatusTooManyRequests, "active_drop_point_quota_exceeded", "active drop point quota exceeded")
+				return
+			}
 			writeError(w, http.StatusInternalServerError, "drop_point_create_failed", "could not create drop point")
 			return
 		}
@@ -127,7 +122,7 @@ func validateCreateRequest(w http.ResponseWriter, deps Dependencies, req createD
 	return ttlSeconds, maxBytes, true
 }
 
-func createDropPoint(ctx context.Context, deps Dependencies, apiTokenID string, clientName string, ttl time.Duration, maxBytes int64, now time.Time) (droppoint.CreateDropPointResponse, error) {
+func createDropPoint(ctx context.Context, deps Dependencies, apiTokenID string, maxActive int, clientName string, ttl time.Duration, maxBytes int64, now time.Time) (droppoint.CreateDropPointResponse, error) {
 	for attempts := 0; attempts < 3; attempts++ {
 		id, dropToken, pickupToken, err := generateDropPointSecrets()
 		if err != nil {
@@ -145,8 +140,8 @@ func createDropPoint(ctx context.Context, deps Dependencies, apiTokenID string, 
 		if err != nil {
 			return droppoint.CreateDropPointResponse{}, err
 		}
-		if err := deps.Repository.CreateDropPoint(ctx, dp); err != nil {
-			if attempts < 2 && strings.Contains(err.Error(), "UNIQUE") {
+		if err := deps.Repository.CreateDropPointWithinQuota(ctx, dp, maxActive, now); err != nil {
+			if attempts < 2 && store.IsUniqueConstraint(err) {
 				continue
 			}
 			return droppoint.CreateDropPointResponse{}, err
