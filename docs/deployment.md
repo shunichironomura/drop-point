@@ -48,6 +48,8 @@ from a timer or cron.
 - Request body limits must allow `max_bytes` plus multipart overhead.
 - TLS may terminate outside DropPoint.
 - `/health` is unauthenticated and low-information.
+- Public deployments must enforce rate limits and connection caps at the ingress or TLS terminator. Apply them to unauthenticated page/asset/health routes as well as upload routes; leaked drop links can otherwise be used to force repeated large failed uploads during their TTL.
+- Public TLS terminators should emit `Strict-Transport-Security: max-age=31536000; includeSubDomains` for the DropPoint origin after HTTPS is confirmed working. Consider HSTS preload only when every subdomain is permanently HTTPS-ready.
 
 ## Logging guidance
 
