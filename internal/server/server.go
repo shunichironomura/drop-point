@@ -17,6 +17,9 @@ import (
 
 const (
 	readHeaderTimeout = 10 * time.Second
+	readTimeout       = 2 * time.Minute
+	writeTimeout      = 2 * time.Minute
+	idleTimeout       = 2 * time.Minute
 	shutdownTimeout   = 10 * time.Second
 )
 
@@ -58,6 +61,9 @@ func New(ctx context.Context, cfg config.Config, logger *log.Logger) (*Server, e
 			Addr:              cfg.ListenAddr,
 			Handler:           handler,
 			ReadHeaderTimeout: readHeaderTimeout,
+			ReadTimeout:       readTimeout,
+			WriteTimeout:      writeTimeout,
+			IdleTimeout:       idleTimeout,
 		},
 		logger: logger,
 	}, nil
