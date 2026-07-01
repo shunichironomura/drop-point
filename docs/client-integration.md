@@ -9,11 +9,13 @@ A receiver client should run this sequence for each drop point:
 1. Generate a fresh local X25519 recipient key pair for this drop point.
 2. Call `POST /api/drop-points` with the configured API bearer token.
 3. Keep the returned `pickup_token` and local recipient private key in receiver-controlled state.
-4. Append the public-key fragment to the returned fragment-free drop link:
+4. Append the public-key and expiry fragment to the returned fragment-free drop link:
 
    ```text
-   #v=2&pk=<base64url(raw-32-byte-x25519-public-key)>
+   #v=2&pk=<base64url(raw-32-byte-x25519-public-key)>&exp=<urlencoded expires_at>
    ```
+
+   `exp` is optional for older clients, but including the returned `expires_at` lets the sender page display an expiry countdown.
 
 5. Show or share the full drop link, for example as a QR code.
 6. Poll `GET /api/drop-points/:drop_point_id/status` with the pickup token.

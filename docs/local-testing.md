@@ -93,7 +93,7 @@ In another terminal, create a drop point and print a full sender link:
   --state .local/browser-test/state.json
 ```
 
-Open the printed `http://localhost:18080/drop/...#v=2&pk=...` link in your browser,
+Open the printed `http://localhost:18080/drop/...#v=2&pk=...&exp=...` link in your browser,
 choose files, and submit the drop. Then pick up and decrypt the uploaded files:
 
 ```sh
@@ -114,7 +114,7 @@ The decrypted files are written under `.local/browser-test/output`.
   --state .local/local-test/state.json
 ```
 
-The script prints a full sender link containing `#v=2&pk=...`.
+The script prints a full sender link containing `#v=2&pk=...&exp=...`.
 
 ## 4. Sender: encrypt and drop files
 

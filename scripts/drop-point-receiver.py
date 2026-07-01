@@ -77,7 +77,8 @@ def create_drop_point(args: argparse.Namespace) -> None:
         body=request_body,
         headers={"Content-Type": "application/json"},
     )
-    drop_link_with_fragment = created["drop_link"] + "#v=2&pk=" + b64u_encode(public_key_raw)
+    fragment = parse.urlencode({"v": "2", "pk": b64u_encode(public_key_raw), "exp": created["expires_at"]})
+    drop_link_with_fragment = created["drop_link"] + "#" + fragment
     state = {
         "base_url": base_url,
         "drop_point_id": created["drop_point_id"],
