@@ -79,6 +79,22 @@ func NewRouterWithDependencies(deps Dependencies) http.Handler {
 			http.NotFound(w, r)
 		}
 	})
+	mux.HandleFunc("/drop/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.Header().Set("Allow", "GET")
+			writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
+			return
+		}
+		HandleServeDropPage(w, r)
+	})
+	mux.HandleFunc("/drop-assets/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.Header().Set("Allow", "GET")
+			writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
+			return
+		}
+		HandleDropPageAsset(w, r)
+	})
 
 	return RecoverPanics(logger, LogRequests(logger, mux))
 }
