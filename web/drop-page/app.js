@@ -69,14 +69,18 @@ function handleDroppedFiles(event) {
   }
   event.preventDefault();
   dropZone.classList.remove('drag-over');
-  const files = Array.from(event.dataTransfer.files);
-  if (files.length === 0) {
+  const droppedFiles = Array.from(event.dataTransfer.files);
+  if (droppedFiles.length === 0) {
     return;
   }
   if (typeof DataTransfer === 'undefined') {
     showStatus('Drag-and-drop file selection is not supported in this browser. Use Choose files instead.');
     return;
   }
+  setSelectedFiles([...filesInput.files, ...droppedFiles]);
+}
+
+function setSelectedFiles(files) {
   const transfer = new DataTransfer();
   for (const file of files) {
     transfer.items.add(file);
