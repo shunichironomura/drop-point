@@ -40,6 +40,12 @@ h1 {
   background: #1e293b;
 }
 
+.expiry {
+  margin: -0.5rem 0 1.5rem;
+  color: #cbd5e1;
+  font-weight: 700;
+}
+
 .status.error {
   background: #7f1d1d;
 }

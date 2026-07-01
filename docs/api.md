@@ -23,11 +23,13 @@ Response:
 }
 ```
 
-Append the receiver-generated public key fragment locally:
+Append the receiver-generated public key and returned expiry timestamp locally:
 
 ```text
-#v=2&pk=<base64url(raw-32-byte-x25519-public-key)>
+#v=2&pk=<base64url(raw-32-byte-x25519-public-key)>&exp=<urlencoded expires_at>
 ```
+
+The `exp` fragment parameter is optional for compatibility, but including it lets the sender page display a countdown.
 
 ## Sender encrypted drop framing
 

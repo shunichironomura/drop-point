@@ -503,21 +503,25 @@ Metadata and payload use separate derived AES keys, so equality between the two 
 The receiver appends this fragment to the drop link:
 
 ```text
-#v=2&pk=<base64url(recipient_public_key, 32 raw bytes)>
+#v=2&pk=<base64url(recipient_public_key, 32 raw bytes)>&exp=<urlencoded RFC3339 expires_at>
 ```
+
+The `exp` value is optional for backward compatibility but SHOULD be included so the sender page can display an expiry countdown.
 
 Example full drop link:
 
 ```text
-https://drop.example.com/drop/drop_...#v=2&pk=<base64url-raw-x25519-public-key>
+https://drop.example.com/drop/drop_...#v=2&pk=<base64url-raw-x25519-public-key>&exp=2026-06-30T12%3A15%3A00Z
 ```
 
 Rules:
 
 - `v=2` identifies the fixed wire protocol in this section.
 - `pk` is the raw 32-byte X25519 receiver public key encoded as base64url without padding.
+- `exp`, when present, is the drop point `expires_at` timestamp encoded with `encodeURIComponent` / URL encoding.
 - The fragment is not sent to the relay by normal HTTP requests.
 - The drop page MUST reject missing, non-base64url, or non-32-byte `pk` values.
+- The drop page MUST reject an invalid `exp` value when it is present.
 - The drop page MUST feature-detect X25519 support in WebCrypto and show an explicit unsupported-environment error if unavailable.
 
 Native WebCrypto X25519 support is required for the relay-served drop page. It reached all major browser engines by 2025, with Chrome stable support in Chrome 137. Operators serving unmanaged or old sender browsers SHOULD document that unsupported browsers will see the explicit unsupported-environment error.
