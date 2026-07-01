@@ -126,18 +126,10 @@ WHERE drop_token_hash = ?`, dropTokenHash)
 		_ = r.markExpired(ctx, dp.ID)
 		return nil, droppoint.ErrDropPointExpired
 	}
-	switch dp.Status {
-	case droppoint.StatusOpen:
+	if dp.Status == droppoint.StatusOpen {
 		return dp, nil
-	case droppoint.StatusReady:
-		return nil, droppoint.ErrDropAlreadyExists
-	case droppoint.StatusClosed:
-		return nil, droppoint.ErrDropPointClosed
-	case droppoint.StatusExpired:
-		return nil, droppoint.ErrDropPointExpired
-	default:
-		return nil, droppoint.ErrDropPointNotOpen
 	}
+	return nil, errorForUnavailableStatus(dp.Status)
 }
 
 // AuthorizePickupToken returns the drop point only when pickupTokenHash belongs
@@ -344,9 +336,11 @@ func (r *Repository) classifyMutationMiss(ctx context.Context, id string, now ti
 		_ = r.markExpired(ctx, id)
 		return droppoint.ErrDropPointExpired
 	}
-	switch dp.Status {
-	case droppoint.StatusOpen, droppoint.StatusReceiving:
-		return droppoint.ErrDropPointNotOpen
+	return errorForUnavailableStatus(dp.Status)
+}
+
+func errorForUnavailableStatus(status droppoint.Status) error {
+	switch status {
 	case droppoint.StatusReady:
 		return droppoint.ErrDropAlreadyExists
 	case droppoint.StatusClosed:

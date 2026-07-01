@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"time"
@@ -12,6 +11,7 @@ import (
 	"github.com/shunichironomura/drop-point/internal/blobstore"
 	"github.com/shunichironomura/drop-point/internal/config"
 	"github.com/shunichironomura/drop-point/internal/httpapi"
+	"github.com/shunichironomura/drop-point/internal/logutil"
 	"github.com/shunichironomura/drop-point/internal/store"
 )
 
@@ -36,7 +36,7 @@ type Server struct {
 // New validates cfg, initializes local durable state, and builds the HTTP
 // server without binding a network listener.
 func New(ctx context.Context, cfg config.Config, logger *log.Logger) (*Server, error) {
-	logger = defaultLogger(logger)
+	logger = logutil.DefaultLogger(logger)
 
 	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("validate config: %w", err)
@@ -112,11 +112,4 @@ func (s *Server) Close() error {
 		return nil
 	}
 	return s.Store.Close()
-}
-
-func defaultLogger(logger *log.Logger) *log.Logger {
-	if logger != nil {
-		return logger
-	}
-	return log.New(io.Discard, "", 0)
 }

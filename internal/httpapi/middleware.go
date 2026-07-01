@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/shunichironomura/drop-point/internal/logutil"
 )
 
 // SetNoSniff applies a global MIME-sniffing opt-out to all routes.
@@ -18,7 +20,7 @@ func SetNoSniff(next http.Handler) http.Handler {
 
 // LogRequests emits one compact access log line per request.
 func LogRequests(logger *log.Logger, next http.Handler) http.Handler {
-	logger = defaultLogger(logger)
+	logger = logutil.DefaultLogger(logger)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		recorder := &statusRecorder{ResponseWriter: w}
@@ -38,7 +40,7 @@ func LogRequests(logger *log.Logger, next http.Handler) http.Handler {
 
 // RecoverPanics converts panics into low-information HTTP 500 responses.
 func RecoverPanics(logger *log.Logger, next http.Handler) http.Handler {
-	logger = defaultLogger(logger)
+	logger = logutil.DefaultLogger(logger)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
 			if recovered := recover(); recovered != nil {
