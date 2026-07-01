@@ -174,5 +174,17 @@ This document lists repository files in dependency-first review order. Local scr
 56. `cmd/drop-point/main_test.go`
     - CLI token generation command tests.
 
-57. `CODE_REVIEW_ORDER.md`
+57. `docs/configuration.md`
+    - Operator configuration reference and token hash guidance.
+
+58. `docs/api.md`
+    - Receiver API and encrypted drop framing reference with curl examples.
+
+59. `docs/deployment.md`
+    - Build, systemd, reverse-proxy/tunnel, secure-context, request-size, and log-redaction guidance.
+
+60. `README.md`
+    - Product overview, local development flow, security model, and operator entry points.
+
+61. `CODE_REVIEW_ORDER.md`
     - This review-order index. Update it whenever repository files change.
