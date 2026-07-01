@@ -471,6 +471,8 @@ Make the service understandable and safely deployable without tying it to one ho
 
 ## Phase 10: optional Procnote/client integration boundary
 
+Status: Completed on 2026-07-01.
+
 ### Goal
 
 Keep DropPoint generic while documenting how a client such as Procnote should integrate safely.
