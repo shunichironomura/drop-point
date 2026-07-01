@@ -65,20 +65,7 @@ HandleCloseDropPoint
 HandleHealth
 ```
 
-The domain service boundary should stay close to:
-
-```go
-type DropPointService interface {
-    CreateDropPoint(ctx context.Context, req CreateDropPointRequest) (*CreateDropPointResponse, error)
-    GetDropPointStatus(ctx context.Context, id string, pickupToken string) (*DropPointStatusResponse, error)
-    BeginDrop(ctx context.Context, dropToken string) (*DropPoint, error)
-    CommitDrop(ctx context.Context, dropToken string, result CommitDropResult) error
-    AbortDrop(ctx context.Context, dropToken string, cause error) error
-    PickupPayload(ctx context.Context, id string, pickupToken string) (*PickupPayloadResult, error)
-    CloseDropPoint(ctx context.Context, id string, pickupToken string) error
-    ExpireDropPoints(ctx context.Context, now time.Time) error
-}
-```
+The relay does not maintain a separate exported domain service interface. HTTP handlers call the repository/blob-store shell interfaces directly, while `internal/droppoint` keeps pure lifecycle types, transition rules, and shared request/result structs used by persistence and storage.
 
 Canonical SQLite repository method names:
 
