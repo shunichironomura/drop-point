@@ -204,26 +204,29 @@ This document lists repository files in dependency-first review order. Local scr
 66. `scripts/drop-point-receiver.py`
     - Python receiver simulation for create, status, pickup, decrypt, and close.
 
-67. `scripts/drop-point-sender.py`
+67. `scripts/drop-point-qr.py`
+    - Python public-endpoint mobile test helper for creating a drop point, saving receiver state, and rendering the sender link as a QR code.
+
+68. `scripts/drop-point-sender.py`
     - Python sender simulation for fragment parsing, browser-equivalent encryption, and encrypted drop upload.
 
-68. `docs/configuration.md`
+69. `docs/configuration.md`
     - Operator configuration reference and token hash guidance.
 
-69. `docs/api.md`
+70. `docs/api.md`
     - Receiver API and encrypted drop framing reference with curl examples.
 
-70. `docs/deployment.md`
+71. `docs/deployment.md`
     - Build, systemd, reverse-proxy/tunnel, secure-context, request-size, and log-redaction guidance.
 
-71. `docs/client-integration.md`
+72. `docs/client-integration.md`
     - Generic receiver/client integration boundary and durable local storage ordering guidance.
 
-72. `docs/local-testing.md`
+73. `docs/local-testing.md`
     - Local testing workflow using the Python receiver and sender simulation scripts.
 
-73. `README.md`
+74. `README.md`
     - Product overview, local development flow, security model, and operator entry points.
 
-74. `CODE_REVIEW_ORDER.md`
+75. `CODE_REVIEW_ORDER.md`
     - This review-order index. Update it whenever repository files change.
