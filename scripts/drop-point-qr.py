@@ -19,7 +19,6 @@ import qrcode
 
 from drop_point_protocol import b64u_encode, generate_x25519_keypair
 
-DEFAULT_BASE_URL = "https://droppoint.ut-issl.com"
 DEFAULT_TOKEN_ENV = "DROP_POINT_API_TOKEN"
 DEFAULT_STATE_PATH = Path(".local/drop-point-mobile-test-state.json")
 # Cloudflare Browser Integrity Check rejects Python urllib's default user
@@ -42,8 +41,8 @@ def main() -> int:
     )
     parser.add_argument(
         "--base-url",
-        default=os.environ.get("DROP_POINT_BASE_URL", DEFAULT_BASE_URL),
-        help=f"DropPoint public base URL (default: {DEFAULT_BASE_URL}; env override: DROP_POINT_BASE_URL)",
+        default=os.environ.get("DROP_POINT_BASE_URL"),
+        help="DropPoint public base URL (or set DROP_POINT_BASE_URL)",
     )
     parser.add_argument(
         "--api-token-env",
@@ -65,11 +64,12 @@ def main() -> int:
     args = parser.parse_args()
 
     try:
+        base_url = read_base_url(args.base_url)
         api_token = read_api_token(args.api_token_env)
         private_key_raw, public_key_raw = generate_x25519_keypair()
-        created = create_drop_point(args, api_token)
+        created = create_drop_point(args, base_url, api_token)
         drop_link_with_fragment = append_sender_fragment(created["drop_link"], public_key_raw, created["expires_at"])
-        state = receiver_state(args.base_url, created, private_key_raw, public_key_raw, drop_link_with_fragment)
+        state = receiver_state(base_url, created, private_key_raw, public_key_raw, drop_link_with_fragment)
         write_private_state(args.state, state)
 
         print(f"State written to: {args.state}")
@@ -94,6 +94,13 @@ def main() -> int:
         return 1
 
 
+def read_base_url(value: str | None) -> str:
+    base_url = (value or "").strip().rstrip("/")
+    if not base_url:
+        raise ValueError("set DROP_POINT_BASE_URL or pass --base-url explicitly")
+    return base_url
+
+
 def read_api_token(env_name: str) -> str:
     token = os.environ.get(env_name, "").strip()
     if not token:
@@ -101,8 +108,7 @@ def read_api_token(env_name: str) -> str:
     return token
 
 
-def create_drop_point(args: argparse.Namespace, api_token: str) -> dict:
-    base_url = args.base_url.rstrip("/")
+def create_drop_point(args: argparse.Namespace, base_url: str, api_token: str) -> dict:
     request_body = json.dumps(
         {
             "client_name": args.client_name,
