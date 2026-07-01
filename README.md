@@ -37,7 +37,7 @@ For local browser encryption, use `http://localhost` or HTTPS. LAN-IP-over-HTTP 
 6. Pick up the encrypted envelope and payload.
 7. Decrypt locally, validate the manifest, durably store plaintext if desired, then close the drop point.
 
-See `docs/api.md` for curl examples, `docs/protocol-reference.md` for protocol vectors, and `docs/client-integration.md` for generic receiver/client integration guidance.
+See `docs/local-testing.md` for a Python receiver/sender simulation, `docs/api.md` for curl examples, `docs/protocol-reference.md` for protocol vectors, and `docs/client-integration.md` for generic receiver/client integration guidance.
 
 ## Operations
 
