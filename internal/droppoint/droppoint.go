@@ -1,7 +1,6 @@
 package droppoint
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"time"
@@ -78,35 +77,6 @@ type CommitDropResult struct {
 	EnvelopePath  string
 	PayloadPath   string
 	EncryptedSize int64
-}
-
-// DropPointStatusResponse is the receiver status DTO produced by the domain
-// service and serialized by HTTP handlers.
-type DropPointStatusResponse struct {
-	Status          Status
-	EncryptedSize   int64
-	DroppedAt       *time.Time
-	FirstPickedUpAt *time.Time
-	ExpiresAt       time.Time
-}
-
-// PickupPayloadResult identifies the encrypted objects available for pickup.
-type PickupPayloadResult struct {
-	EnvelopePath  string
-	PayloadPath   string
-	EncryptedSize int64
-}
-
-// DropPointService names the domain service boundary expected by the relay.
-type DropPointService interface {
-	CreateDropPoint(ctx context.Context, req CreateDropPointRequest) (*CreateDropPointResponse, error)
-	GetDropPointStatus(ctx context.Context, id string, pickupToken string) (*DropPointStatusResponse, error)
-	BeginDrop(ctx context.Context, dropToken string) (*DropPoint, error)
-	CommitDrop(ctx context.Context, dropToken string, result CommitDropResult) error
-	AbortDrop(ctx context.Context, dropToken string, cause error) error
-	PickupPayload(ctx context.Context, id string, pickupToken string) (*PickupPayloadResult, error)
-	CloseDropPoint(ctx context.Context, id string, pickupToken string) error
-	ExpireDropPoints(ctx context.Context, now time.Time) error
 }
 
 // New constructs a new open drop point from validated inputs.
