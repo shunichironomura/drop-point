@@ -13,6 +13,8 @@ import (
 	sqlite3 "modernc.org/sqlite/lib"
 )
 
+// sqliteTimeFormat must stay fixed-width and all writes must use UTC so SQLite
+// TEXT comparisons on expires_at preserve chronological ordering.
 const sqliteTimeFormat = "2006-01-02T15:04:05.000000000Z07:00"
 
 const insertDropPointSQL = `
