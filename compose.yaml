@@ -1,0 +1,15 @@
+services:
+  drop-point:
+    build:
+      context: .
+    image: drop-point:local
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "${DROP_POINT_HOST_BIND?set DROP_POINT_HOST_BIND in .env}:${DROP_POINT_PORT?set DROP_POINT_PORT in .env}:8080"
+    volumes:
+      - drop-point-data:/var/lib/drop-point
+
+volumes:
+  drop-point-data:
