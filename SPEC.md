@@ -773,6 +773,7 @@ The drop page MUST:
 - Run in a secure browser context.
 - Read the drop token from the path and the public key from the fragment.
 - Accept one or more files and build one encrypted bundle.
+- Append newly chosen or dragged files to the current selection until the sender drops or removes files.
 - Let the sender remove individual files from the current selection before dropping.
 - Use the protocol in Section 10.
 - Submit a single envelope and a single encrypted payload.

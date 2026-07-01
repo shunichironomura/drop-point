@@ -59,6 +59,22 @@ func TestDropAssetsAreSameOriginOnlyAndNoThirdPartyScripts(t *testing.T) {
 	}
 }
 
+func TestDropPageFilePickerAppendsExistingSelection(t *testing.T) {
+	handler := NewRouter(log.New(&bytes.Buffer{}, "", 0))
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/drop-assets/app.js", nil)
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("app.js status = %d", recorder.Code)
+	}
+
+	app := recorder.Body.String()
+	want := "filesInput.addEventListener('change', () => setSelectedFiles([...state.selectedFiles, ...filesInput.files]))"
+	if !strings.Contains(app, want) {
+		t.Fatalf("app.js missing file-picker append behavior %q", want)
+	}
+}
+
 func TestDropPageDragDropAppendsExistingSelection(t *testing.T) {
 	handler := NewRouter(log.New(&bytes.Buffer{}, "", 0))
 	recorder := httptest.NewRecorder()
