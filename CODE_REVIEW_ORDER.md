@@ -36,35 +36,53 @@ This document lists repository files in dependency-first review order. Local scr
 10. `internal/config/config_test.go`
     - Config loading, validation, and data-directory tests.
 
-11. `internal/store/migrate.go`
+11. `internal/token/token.go`
+    - High-entropy token generation, hashing, and constant-time hash comparison helpers.
+
+12. `internal/token/token_test.go`
+    - Token prefix, entropy, base64url, uniqueness-shape, and hash-format tests.
+
+13. `internal/droppoint/droppoint.go`
+    - Functional drop point domain entity, lifecycle statuses, errors, request/result types, and pure transition rules.
+
+14. `internal/droppoint/droppoint_test.go`
+    - Domain lifecycle transition acceptance and rejection tests.
+
+15. `internal/store/migrate.go`
     - Idempotent SQLite schema migration for `drop_points`.
 
-12. `internal/store/store.go`
+16. `internal/store/store.go`
     - SQLite opening, runtime PRAGMA configuration, and database handle ownership.
 
-13. `internal/store/store_test.go`
+17. `internal/store/repository.go`
+    - SQLite drop point repository methods for lifecycle, token authorization, quota counting, and file-pointer cleanup.
+
+18. `internal/store/store_test.go`
     - SQLite initialization and schema tests.
 
-14. `internal/httpapi/health.go`
+19. `internal/store/repository_test.go`
+    - Repository create, lookup, token mismatch, quota, close, expiry, pickup timestamp, and receiving-reset tests.
+
+20. `internal/httpapi/health.go`
     - Low-information `/health` handler.
 
-15. `internal/httpapi/middleware.go`
+21. `internal/httpapi/middleware.go`
     - Request logging, token-path redaction, and panic recovery middleware.
 
-16. `internal/httpapi/router.go`
+22. `internal/httpapi/router.go`
     - HTTP route assembly.
 
-17. `internal/httpapi/router_test.go`
+23. `internal/httpapi/router_test.go`
     - Health, method rejection, redaction, and recovery tests.
 
-18. `internal/server/server.go`
+24. `internal/server/server.go`
     - Imperative shell wiring config, data directory, SQLite, and HTTP server.
 
-19. `internal/server/server_test.go`
+25. `internal/server/server_test.go`
     - Server initialization and health routing tests.
 
-20. `cmd/drop-point/main.go`
+26. `cmd/drop-point/main.go`
     - `drop-point` CLI entrypoint and default `serve` command.
 
-21. `CODE_REVIEW_ORDER.md`
+27. `CODE_REVIEW_ORDER.md`
     - This review-order index. Update it whenever repository files change.
