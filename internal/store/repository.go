@@ -174,11 +174,12 @@ func (r *Repository) ResetReceivingDrop(ctx context.Context, id string, now time
 	if err != nil {
 		return err
 	}
+	if dp.IsExpiredAt(now) {
+		_ = r.markExpired(ctx, id)
+		return droppoint.ErrDropPointExpired
+	}
 	if dp.Status != droppoint.StatusReceiving {
 		return droppoint.ErrDropPointNotOpen
-	}
-	if dp.IsExpiredAt(now) {
-		return r.markExpired(ctx, id)
 	}
 	_, err = r.db.ExecContext(ctx, `
 UPDATE drop_points
