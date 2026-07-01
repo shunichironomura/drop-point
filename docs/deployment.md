@@ -8,6 +8,27 @@ DropPoint is deployment-neutral. It can run behind Cloudflare Tunnel, Caddy, ano
 go build -o drop-point ./cmd/drop-point
 ```
 
+## Container image
+
+Build the included image:
+
+```sh
+docker build -t drop-point:local .
+```
+
+Run it with persistent storage and environment configuration:
+
+```sh
+docker run --rm \
+  -p 8080:8080 \
+  -v drop-point-data:/var/lib/drop-point \
+  -e DROP_POINT_BASE_URL=https://drop.example.com \
+  -e 'DROP_POINT_API_TOKENS_JSON=[{"id":"desktop-main","secret_hash":"sha256:<lowercase-hex-sha256>","enabled":true}]' \
+  drop-point:local
+```
+
+The image listens on `:8080`, stores data under `/var/lib/drop-point`, and runs as a non-root user.
+
 ## systemd example
 
 ```ini
