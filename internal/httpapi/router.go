@@ -96,7 +96,7 @@ func NewRouterWithDependencies(deps Dependencies) http.Handler {
 		HandleDropPageAsset(w, r)
 	})
 
-	return RecoverPanics(logger, LogRequests(logger, mux))
+	return RecoverPanics(logger, LogRequests(logger, ApplyCORS(deps.Config, mux)))
 }
 
 func defaultLogger(logger *log.Logger) *log.Logger {

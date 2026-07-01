@@ -389,6 +389,8 @@ Implement the mobile-friendly sender page that reads the fragment key, encrypts 
 
 ## Phase 8: end-to-end HTTP integration and hardening
 
+Status: Completed on 2026-07-01.
+
 ### Goal
 
 Validate the complete service behavior under realistic failure, concurrency, and security conditions.
