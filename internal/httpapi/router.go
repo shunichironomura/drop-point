@@ -33,70 +33,41 @@ func NewRouterWithDependencies(deps Dependencies) http.Handler {
 	}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/health" {
-			http.NotFound(w, r)
-			return
-		}
-		switch r.Method {
-		case http.MethodGet, http.MethodHead:
-			HandleHealth(w, r)
-		default:
-			w.Header().Set("Allow", "GET, HEAD")
-			http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
-		}
-	})
-	mux.HandleFunc("/api/drop-points", func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/drop-points" {
-			http.NotFound(w, r)
-			return
-		}
-		switch r.Method {
-		case http.MethodPost:
-			HandleCreateDropPoint(deps)(w, r)
-		default:
-			w.Header().Set("Allow", "POST")
-			writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
-		}
-	})
-	mux.HandleFunc("/api/drop-points/", func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.Method == http.MethodGet && dropPointIDFromStatusPath(r.URL.Path) != "":
-			HandleGetDropPointStatus(deps)(w, r)
-		case r.Method == http.MethodGet && dropPointIDFromPickupPath(r.URL.Path) != "":
-			HandlePickupPayload(deps)(w, r)
-		case r.Method == http.MethodDelete && dropPointIDFromClosePath(r.URL.Path) != "":
-			HandleCloseDropPoint(deps)(w, r)
-		default:
-			http.NotFound(w, r)
-		}
-	})
-	mux.HandleFunc("/api/drops/", func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.Method == http.MethodPut && dropTokenFromPath(r.URL.Path) != "":
-			HandleSubmitDrop(deps)(w, r)
-		default:
-			http.NotFound(w, r)
-		}
-	})
-	mux.HandleFunc("/drop/", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			w.Header().Set("Allow", "GET")
-			writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
-			return
-		}
-		HandleServeDropPage(w, r)
-	})
-	mux.HandleFunc("/drop-assets/", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			w.Header().Set("Allow", "GET")
-			writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
-			return
-		}
-		HandleDropPageAsset(w, r)
-	})
+	mux.HandleFunc("GET /health", HandleHealth)
+	mux.HandleFunc("/health", methodNotAllowed("GET, HEAD"))
+	mux.HandleFunc("POST /api/drop-points", HandleCreateDropPoint(deps))
+	mux.HandleFunc("/api/drop-points", methodNotAllowed("POST"))
+	mux.HandleFunc("GET /api/drop-points/{drop_point_id}/status", getOnly(HandleGetDropPointStatus(deps)))
+	mux.HandleFunc("/api/drop-points/{drop_point_id}/status", methodNotAllowed("GET"))
+	mux.HandleFunc("GET /api/drop-points/{drop_point_id}/pickup", getOnly(HandlePickupPayload(deps)))
+	mux.HandleFunc("/api/drop-points/{drop_point_id}/pickup", methodNotAllowed("GET"))
+	mux.HandleFunc("DELETE /api/drop-points/{drop_point_id}", HandleCloseDropPoint(deps))
+	mux.HandleFunc("/api/drop-points/{drop_point_id}", methodNotAllowed("DELETE"))
+	mux.HandleFunc("PUT /api/drops/{drop_token}", HandleSubmitDrop(deps))
+	mux.HandleFunc("/api/drops/{drop_token}", methodNotAllowed("PUT"))
+	mux.HandleFunc("GET /drop/{drop_token}", getOnly(HandleServeDropPage))
+	mux.HandleFunc("/drop/{drop_token}", methodNotAllowed("GET"))
+	mux.HandleFunc("GET /drop-assets/{asset}", getOnly(HandleDropPageAsset))
+	mux.HandleFunc("/drop-assets/{asset}", methodNotAllowed("GET"))
 
 	return RecoverPanics(logger, LogRequests(logger, SetNoSniff(ApplyCORS(deps.Config, mux))))
+}
+
+func getOnly(handler http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodHead {
+			methodNotAllowed("GET")(w, r)
+			return
+		}
+		handler(w, r)
+	}
+}
+
+func methodNotAllowed(allow string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Allow", allow)
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
+	}
 }
 
 func defaultLogger(logger *log.Logger) *log.Logger {

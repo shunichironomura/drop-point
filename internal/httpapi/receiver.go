@@ -5,7 +5,6 @@ import (
 	"errors"
 	"io"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/shunichironomura/drop-point/internal/droppoint"
@@ -31,7 +30,7 @@ type dropPointStatusResponse struct {
 // HandleGetDropPointStatus handles GET /api/drop-points/:drop_point_id/status.
 func HandleGetDropPointStatus(deps Dependencies) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		dp, ok := authorizePickup(w, r, deps, dropPointIDFromStatusPath(r.URL.Path))
+		dp, ok := authorizePickup(w, r, deps, r.PathValue("drop_point_id"))
 		if !ok {
 			return
 		}
@@ -48,7 +47,7 @@ func HandleGetDropPointStatus(deps Dependencies) http.HandlerFunc {
 // HandleCloseDropPoint handles DELETE /api/drop-points/:drop_point_id.
 func HandleCloseDropPoint(deps Dependencies) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		id := dropPointIDFromClosePath(r.URL.Path)
+		id := r.PathValue("drop_point_id")
 		dp, ok := authorizePickup(w, r, deps, id)
 		if !ok {
 			return
@@ -111,26 +110,4 @@ func authorizePickup(w http.ResponseWriter, r *http.Request, deps Dependencies, 
 		return nil, false
 	}
 	return dp, true
-}
-
-func dropPointIDFromStatusPath(path string) string {
-	if !strings.HasPrefix(path, "/api/drop-points/") || !strings.HasSuffix(path, "/status") {
-		return ""
-	}
-	id := strings.TrimSuffix(strings.TrimPrefix(path, "/api/drop-points/"), "/status")
-	if strings.Contains(id, "/") {
-		return ""
-	}
-	return id
-}
-
-func dropPointIDFromClosePath(path string) string {
-	if !strings.HasPrefix(path, "/api/drop-points/") {
-		return ""
-	}
-	id := strings.TrimPrefix(path, "/api/drop-points/")
-	if id == "" || strings.Contains(id, "/") {
-		return ""
-	}
-	return id
 }

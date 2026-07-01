@@ -2,7 +2,6 @@ package httpapi
 
 import (
 	"net/http"
-	"strings"
 
 	droppage "github.com/shunichironomura/drop-point/web/drop-page"
 )
@@ -11,10 +10,6 @@ const dropPageCSP = "default-src 'none'; script-src 'self'; style-src 'self'; co
 
 // HandleServeDropPage serves the sender-facing browser encryption page.
 func HandleServeDropPage(w http.ResponseWriter, r *http.Request) {
-	if dropTokenFromPagePath(r.URL.Path) == "" {
-		http.NotFound(w, r)
-		return
-	}
 	setDropPageSecurityHeaders(w)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
@@ -28,7 +23,7 @@ func HandleServeDropPage(w http.ResponseWriter, r *http.Request) {
 
 // HandleDropPageAsset serves same-origin static assets for the drop page.
 func HandleDropPageAsset(w http.ResponseWriter, r *http.Request) {
-	name := strings.TrimPrefix(r.URL.Path, "/drop-assets/")
+	name := r.PathValue("asset")
 	if name != "styles.css" && name != "app.js" {
 		http.NotFound(w, r)
 		return
@@ -54,15 +49,4 @@ func setDropPageSecurityHeaders(w http.ResponseWriter) {
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Referrer-Policy", "no-referrer")
 	w.Header().Set("Cross-Origin-Opener-Policy", "same-origin")
-}
-
-func dropTokenFromPagePath(path string) string {
-	if !strings.HasPrefix(path, "/drop/") {
-		return ""
-	}
-	dropToken := strings.TrimPrefix(path, "/drop/")
-	if dropToken == "" || strings.Contains(dropToken, "/") {
-		return ""
-	}
-	return dropToken
 }
