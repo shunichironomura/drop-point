@@ -1,5 +1,6 @@
 const PROTOCOL_VERSION = 2;
 const KEY_AGREEMENT = 'x25519-hkdf-sha256-aesgcm-raw32';
+const COUNTDOWN_INTERVAL_MS = 1000;
 const INFO_METADATA = new TextEncoder().encode('DropPoint/protocol/v2 key=metadata');
 const INFO_PAYLOAD = new TextEncoder().encode('DropPoint/protocol/v2 key=payload');
 const AAD_METADATA = aad('metadata');
@@ -7,12 +8,16 @@ const AAD_PAYLOAD = aad('payload');
 
 const state = {
   recipientPublicKey: null,
+  expiresAt: null,
+  countdownTimer: null,
   dropToken: location.pathname.split('/').pop(),
 };
 
 const filesInput = document.getElementById('files');
 const submitButton = document.getElementById('submit');
 const statusBox = document.getElementById('status');
+const expiryBox = document.getElementById('expiry');
+const countdownText = document.getElementById('countdown');
 const dropZone = document.getElementById('drop-zone');
 const selectionBox = document.getElementById('selection');
 const selectedFilesList = document.getElementById('selected-files');
@@ -35,8 +40,14 @@ async function init() {
   if (!window.isSecureContext || !crypto?.subtle) {
     throw new Error('This page must be opened over HTTPS or localhost to encrypt files.');
   }
-  state.recipientPublicKey = parseFragmentPublicKey(location.hash);
+  const fragment = parseDropLinkFragment(location.hash);
+  state.recipientPublicKey = fragment.recipientPublicKey;
+  state.expiresAt = fragment.expiresAt;
+  if (isExpired(state.expiresAt)) {
+    throw new Error('This drop point has expired.');
+  }
   await assertX25519Support(state.recipientPublicKey);
+  startExpiryCountdown(state.expiresAt);
   filesInput.disabled = false;
   dropZone.classList.remove('disabled');
   updateSelectedFiles();
@@ -134,16 +145,73 @@ async function dropSelectedFiles() {
   showSuccess('Files dropped successfully. Ready for pickup');
 }
 
-function parseFragmentPublicKey(hash) {
+function parseDropLinkFragment(hash) {
   const params = new URLSearchParams(hash.startsWith('#') ? hash.slice(1) : hash);
   if (params.get('v') !== String(PROTOCOL_VERSION)) {
     throw new Error('This drop link is missing its public key.');
   }
-  const publicKey = decodeBase64URL(params.get('pk') || '');
-  if (publicKey.byteLength !== 32) {
+  const recipientPublicKey = decodeBase64URL(params.get('pk') || '');
+  if (recipientPublicKey.byteLength !== 32) {
     throw new Error('This drop link is missing its public key.');
   }
-  return publicKey;
+  return { recipientPublicKey, expiresAt: parseExpiry(params.get('exp')) };
+}
+
+function parseExpiry(value) {
+  if (!value) {
+    return null;
+  }
+  const millis = Date.parse(value);
+  if (!Number.isFinite(millis)) {
+    throw new Error('This drop link has an invalid expiry timestamp.');
+  }
+  return new Date(millis);
+}
+
+function isExpired(expiresAt) {
+  return expiresAt !== null && expiresAt.getTime() <= Date.now();
+}
+
+function startExpiryCountdown(expiresAt) {
+  if (!expiresAt) {
+    expiryBox.hidden = true;
+    return;
+  }
+  expiryBox.hidden = false;
+  renderExpiryCountdown();
+  state.countdownTimer = window.setInterval(renderExpiryCountdown, COUNTDOWN_INTERVAL_MS);
+}
+
+function renderExpiryCountdown() {
+  const remainingMs = state.expiresAt.getTime() - Date.now();
+  if (remainingMs <= 0) {
+    stopExpiryCountdown();
+    countdownText.textContent = 'expired';
+    showError('This drop point has expired.');
+    return;
+  }
+  countdownText.textContent = formatRemainingTime(remainingMs);
+}
+
+function stopExpiryCountdown() {
+  if (state.countdownTimer !== null) {
+    window.clearInterval(state.countdownTimer);
+    state.countdownTimer = null;
+  }
+}
+
+function formatRemainingTime(remainingMs) {
+  const totalSeconds = Math.max(0, Math.ceil(remainingMs / 1000));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  if (hours > 0) {
+    return `${hours}h ${minutes}m ${seconds}s`;
+  }
+  if (minutes > 0) {
+    return `${minutes}m ${seconds}s`;
+  }
+  return `${seconds}s`;
 }
 
 async function assertX25519Support(recipientPublicKey) {
@@ -273,6 +341,7 @@ function showSuccess(message) {
 }
 
 function showError(message) {
+  stopExpiryCountdown();
   filesInput.disabled = true;
   submitButton.disabled = true;
   dropZone.classList.add('disabled');
