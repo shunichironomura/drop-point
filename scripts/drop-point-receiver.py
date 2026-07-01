@@ -19,6 +19,11 @@ from urllib import error, parse, request
 
 from drop_point_protocol import b64u_encode, decrypt_bundle, generate_x25519_keypair
 
+# Cloudflare Browser Integrity Check rejects Python urllib's default user
+# agent before API requests reach DropPoint, so use a stable tool-specific
+# value instead of the stdlib default.
+USER_AGENT = "DropPointReceiver/1.0"
+
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Simulate a DropPoint receiver client.")
@@ -174,7 +179,8 @@ def raw_request(
     body: bytes | None = None,
     headers: dict[str, str] | None = None,
 ) -> tuple[str, bytes]:
-    all_headers = dict(headers or {})
+    all_headers = {"User-Agent": USER_AGENT, "Accept": "application/json"}
+    all_headers.update(headers or {})
     if token:
         all_headers["Authorization"] = "Bearer " + token
     req = request.Request(url, data=body, headers=all_headers, method=method)

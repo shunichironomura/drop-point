@@ -16,6 +16,11 @@ from urllib import error, parse, request
 
 from drop_point_protocol import b64u_decode, encrypt_files
 
+# Cloudflare Browser Integrity Check rejects Python urllib's default user
+# agent before API requests reach DropPoint, so use a stable tool-specific
+# value instead of the stdlib default.
+USER_AGENT = "DropPointSender/1.0"
+
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Simulate a DropPoint sender: encrypt files locally and submit one drop.")
@@ -90,7 +95,9 @@ def multipart_body(envelope_json: bytes, encrypted_payload: bytes) -> tuple[byte
 
 
 def http_request(method: str, url: str, body: bytes | None = None, headers: dict[str, str] | None = None) -> bytes:
-    req = request.Request(url, data=body, headers=headers or {}, method=method)
+    all_headers = {"User-Agent": USER_AGENT}
+    all_headers.update(headers or {})
+    req = request.Request(url, data=body, headers=all_headers, method=method)
     try:
         with request.urlopen(req, timeout=30) as response:  # noqa: S310 - local/dev CLI target supplied by user.
             return response.read()
