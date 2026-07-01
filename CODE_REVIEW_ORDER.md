@@ -78,62 +78,77 @@ This document lists repository files in dependency-first review order. Local scr
 24. `internal/cryptoenv/envelope.go`
     - Relay-side protocol envelope schema validation and base64url helpers.
 
-25. `internal/cryptoenv/envelope_test.go`
+25. `internal/cryptoenv/manifest.go`
+    - Bundle manifest building, parsing, validation, payload splitting, filename sanitization, and MIME sanitization.
+
+26. `internal/cryptoenv/reference.go`
+    - X25519/HKDF/AES-GCM reference encrypt/decrypt implementation outside the relay path.
+
+27. `internal/cryptoenv/vectors.go`
+    - Deterministic positive protocol test-vector generation.
+
+28. `internal/cryptoenv/envelope_test.go`
     - Envelope shape, algorithm, length, padding, and unknown-field validation tests.
 
-26. `internal/httpapi/health.go`
+29. `internal/cryptoenv/reference_test.go`
+    - Reference round-trip, negative vector rejection, manifest validation, and sanitization tests.
+
+30. `docs/protocol-reference.md`
+    - Protocol implementation pointers and deterministic positive/negative test-vector documentation.
+
+31. `internal/httpapi/health.go`
     - Low-information `/health` handler.
 
-27. `internal/httpapi/responses.go`
+32. `internal/httpapi/responses.go`
     - Shared JSON response and error helpers for API handlers.
 
-28. `internal/httpapi/auth.go`
+33. `internal/httpapi/auth.go`
     - Bearer API token parsing and configured token-hash authentication.
 
-29. `internal/httpapi/create.go`
+34. `internal/httpapi/create.go`
     - Authenticated drop point creation handler, request validation, quota enforcement, and drop-link construction.
 
-30. `internal/httpapi/receiver.go`
+35. `internal/httpapi/receiver.go`
     - Pickup-token authorization, receiver status, close API handlers, and blob-store interface.
 
-31. `internal/httpapi/drop.go`
+36. `internal/httpapi/drop.go`
     - Encrypted multipart drop endpoint, envelope validation, streaming size enforcement, and ready-state commit handling.
 
-32. `internal/httpapi/pickup.go`
+37. `internal/httpapi/pickup.go`
     - Multipart encrypted pickup endpoint and first-pickup timestamp recording.
 
-33. `internal/httpapi/middleware.go`
+38. `internal/httpapi/middleware.go`
     - Request logging, token-path redaction, and panic recovery middleware.
 
-34. `internal/httpapi/router.go`
+39. `internal/httpapi/router.go`
     - HTTP route assembly and dependency injection.
 
-35. `internal/httpapi/router_test.go`
+40. `internal/httpapi/router_test.go`
     - Health, method rejection, redaction, and recovery tests.
 
-36. `internal/httpapi/create_test.go`
+41. `internal/httpapi/create_test.go`
     - Authenticated create API tests for valid, invalid, disabled, quota, and limit cases.
 
-37. `internal/httpapi/receiver_test.go`
+42. `internal/httpapi/receiver_test.go`
     - Receiver status and close API tests for pickup-token scoping, expiry reporting, retry safety, and file-pointer cleanup.
 
-38. `internal/httpapi/drop_test.go`
+43. `internal/httpapi/drop_test.go`
     - Drop endpoint tests for valid encrypted storage, second-drop rejection, oversize reset, malformed reset, authorization scoping, and concurrency.
 
-39. `internal/httpapi/pickup_test.go`
+44. `internal/httpapi/pickup_test.go`
     - Pickup tests for ready retrieval, repeatability, first-pickup timestamps, and rejection cases.
 
-40. `internal/server/server.go`
+45. `internal/server/server.go`
     - Imperative shell wiring config, data directory, SQLite repository, blob store, and HTTP server.
 
-41. `internal/server/server_test.go`
+46. `internal/server/server_test.go`
     - Server initialization and health routing tests.
 
-42. `cmd/drop-point/main.go`
+47. `cmd/drop-point/main.go`
     - `drop-point` CLI entrypoint, default `serve` command, API token generation command, and cleanup command.
 
-43. `cmd/drop-point/main_test.go`
+48. `cmd/drop-point/main_test.go`
     - CLI token generation command tests.
 
-44. `CODE_REVIEW_ORDER.md`
+49. `CODE_REVIEW_ORDER.md`
     - This review-order index. Update it whenever repository files change.

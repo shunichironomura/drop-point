@@ -306,6 +306,8 @@ Let receivers retrieve ciphertext reliably and clean up closed or expired drop p
 
 ## Phase 6: protocol reference package and test vectors
 
+Status: Completed on 2026-07-01.
+
 ### Goal
 
 Provide a reference implementation of the encryption protocol outside the relay path, so browser and non-browser clients can interoperate with confidence.

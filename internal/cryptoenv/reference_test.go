@@ -1,0 +1,181 @@
+package cryptoenv
+
+import (
+	"bytes"
+	"encoding/json"
+	"strings"
+	"testing"
+	"time"
+)
+
+func TestReferenceEncryptDecryptRoundTrip(t *testing.T) {
+	recipientPrivate := sequenceBytes(1, 32)
+	recipientPublic, err := PublicKeyFromPrivate(recipientPrivate)
+	if err != nil {
+		t.Fatalf("PublicKeyFromPrivate: %v", err)
+	}
+	files := []PlainFile{
+		{Name: "scan-01.txt", Type: "text/plain", Data: []byte("hello\n")},
+		{Name: "scan-02.bin", Type: "application/octet-stream", Data: []byte{0, 1, 2, 3}},
+	}
+
+	result, err := EncryptBundle(recipientPublic, files, EncryptOptions{
+		SenderPrivateKey: sequenceBytes(65, 32),
+		MetadataNonce:    sequenceBytes(129, AESGCMNonceBytes),
+		PayloadNonce:     sequenceBytes(161, AESGCMNonceBytes),
+		CreatedAt:        time.Date(2026, 6, 30, 12, 0, 0, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatalf("EncryptBundle: %v", err)
+	}
+	parsedEnvelope, err := ParseEnvelopeJSON(result.EnvelopeJSON)
+	if err != nil {
+		t.Fatalf("ParseEnvelopeJSON: %v", err)
+	}
+	recovered, intermediates, err := DecryptBundle(recipientPrivate, parsedEnvelope, result.EncryptedPayload)
+	if err != nil {
+		t.Fatalf("DecryptBundle: %v", err)
+	}
+	if len(recovered) != len(files) {
+		t.Fatalf("len(recovered) = %d, want %d", len(recovered), len(files))
+	}
+	for i := range files {
+		if recovered[i].SafeName != files[i].Name || recovered[i].SafeType == "" || !bytes.Equal(recovered[i].Data, files[i].Data) {
+			t.Fatalf("recovered[%d] = %+v, want %+v", i, recovered[i], files[i])
+		}
+	}
+	if !bytes.Equal(intermediates.SharedSecret, result.Intermediates.SharedSecret) {
+		t.Fatalf("shared secret mismatch")
+	}
+}
+
+func TestPositiveTestVectorsRoundTrip(t *testing.T) {
+	vectors, err := PositiveTestVectors()
+	if err != nil {
+		t.Fatalf("PositiveTestVectors: %v", err)
+	}
+	if len(vectors) != 2 {
+		t.Fatalf("len(vectors) = %d, want 2", len(vectors))
+	}
+	for _, vector := range vectors {
+		t.Run(vector.Name, func(t *testing.T) {
+			recipientPrivate, err := DecodeBase64URL(vector.RecipientPrivateKey)
+			if err != nil {
+				t.Fatalf("decode recipient private: %v", err)
+			}
+			var envelope Envelope
+			if err := json.Unmarshal([]byte(vector.EnvelopeJSON), &envelope); err != nil {
+				t.Fatalf("unmarshal envelope: %v", err)
+			}
+			encryptedPayload, err := DecodeBase64URL(vector.EncryptedPayload)
+			if err != nil {
+				t.Fatalf("decode encrypted payload: %v", err)
+			}
+			files, _, err := DecryptBundle(recipientPrivate, envelope, encryptedPayload)
+			if err != nil {
+				t.Fatalf("DecryptBundle: %v", err)
+			}
+			if len(files) == 0 {
+				t.Fatal("vector did not recover files")
+			}
+		})
+	}
+}
+
+func TestNegativeVectorsAreRejected(t *testing.T) {
+	recipientPrivate := sequenceBytes(1, 32)
+	recipientPublic, err := PublicKeyFromPrivate(recipientPrivate)
+	if err != nil {
+		t.Fatalf("PublicKeyFromPrivate: %v", err)
+	}
+	result, err := EncryptBundle(recipientPublic, []PlainFile{{Name: "scan.txt", Type: "text/plain", Data: []byte("payload")}}, EncryptOptions{
+		SenderPrivateKey: sequenceBytes(65, 32),
+		MetadataNonce:    sequenceBytes(129, AESGCMNonceBytes),
+		PayloadNonce:     sequenceBytes(161, AESGCMNonceBytes),
+		CreatedAt:        time.Date(2026, 6, 30, 12, 0, 0, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatalf("EncryptBundle: %v", err)
+	}
+
+	tests := []struct {
+		name    string
+		mutate  func(Envelope, []byte) (Envelope, []byte)
+		wantErr string
+	}{
+		{name: "tampered payload ciphertext tag", mutate: func(e Envelope, p []byte) (Envelope, []byte) { p[0] ^= 0x80; return e, p }, wantErr: "decrypt payload"},
+		{name: "tampered metadata ciphertext tag", mutate: func(e Envelope, p []byte) (Envelope, []byte) {
+			metadata, _ := DecodeBase64URL(e.EncryptedMetadata)
+			metadata[0] ^= 0x80
+			e.EncryptedMetadata = EncodeBase64URL(metadata)
+			return e, p
+		}, wantErr: "decrypt metadata"},
+		{name: "tampered nonce", mutate: func(e Envelope, p []byte) (Envelope, []byte) {
+			nonce, _ := DecodeBase64URL(e.PayloadNonce)
+			nonce[0] ^= 0x80
+			e.PayloadNonce = EncodeBase64URL(nonce)
+			return e, p
+		}, wantErr: "decrypt payload"},
+		{name: "tampered sender ephemeral public key", mutate: func(e Envelope, p []byte) (Envelope, []byte) {
+			publicKey, _ := DecodeBase64URL(e.SenderEphemeralPublicKey)
+			publicKey[0] ^= 0x80
+			e.SenderEphemeralPublicKey = EncodeBase64URL(publicKey)
+			return e, p
+		}, wantErr: "decrypt metadata"},
+		{name: "protocol version downgrade", mutate: func(e Envelope, p []byte) (Envelope, []byte) { e.ProtocolVersion = 1; return e, p }, wantErr: "envelope invalid"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			envelope, payload := tt.mutate(result.Envelope, append([]byte{}, result.EncryptedPayload...))
+			_, _, err := DecryptBundle(recipientPrivate, envelope, payload)
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("err = %v, want substring %q", err, tt.wantErr)
+			}
+		})
+	}
+
+	wrongRecipientPrivate := sequenceBytes(33, 32)
+	_, _, err = DecryptBundle(wrongRecipientPrivate, result.Envelope, result.EncryptedPayload)
+	if err == nil || !strings.Contains(err.Error(), "decrypt metadata") {
+		t.Fatalf("wrong recipient err = %v", err)
+	}
+	if _, err := SharedSecret(recipientPrivate, make([]byte, 32)); err == nil {
+		t.Fatal("low-order/all-zero X25519 public key was accepted")
+	}
+}
+
+func TestManifestValidationAndSanitization(t *testing.T) {
+	createdAt := time.Date(2026, 6, 30, 12, 0, 0, 0, time.UTC)
+	manifest, payload, err := BuildManifest([]PlainFile{{Name: "safe.txt", Type: "TEXT/PLAIN", Data: []byte("abc")}}, createdAt)
+	if err != nil {
+		t.Fatalf("BuildManifest: %v", err)
+	}
+	if err := ValidateManifest(manifest, payload); err != nil {
+		t.Fatalf("ValidateManifest: %v", err)
+	}
+	files, err := SplitPayload(manifest, payload)
+	if err != nil {
+		t.Fatalf("SplitPayload: %v", err)
+	}
+	if files[0].SafeName != "safe.txt" || files[0].SafeType != "text/plain" {
+		t.Fatalf("safe fields = %+v", files[0])
+	}
+
+	tests := map[string]func(Manifest, []byte) (Manifest, []byte){
+		"manifest size-sum mismatch": func(m Manifest, p []byte) (Manifest, []byte) { m.Files[0].Size++; return m, p },
+		"hostile filename":           func(m Manifest, p []byte) (Manifest, []byte) { m.Files[0].Name = "../evil.txt"; return m, p },
+		"hostile MIME type":          func(m Manifest, p []byte) (Manifest, []byte) { m.Files[0].Type = "text/plain\nX-Evil: 1"; return m, p },
+		"duplicate filenames": func(m Manifest, p []byte) (Manifest, []byte) {
+			m.Files = append(m.Files, ManifestFile{Name: "SAFE.txt", Type: "text/plain", Size: 0})
+			return m, p
+		},
+	}
+	for name, mutate := range tests {
+		t.Run(name, func(t *testing.T) {
+			mutatedManifest, mutatedPayload := mutate(manifest, payload)
+			if err := ValidateManifest(mutatedManifest, mutatedPayload); err == nil {
+				t.Fatal("ValidateManifest succeeded, want error")
+			}
+		})
+	}
+}
