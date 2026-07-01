@@ -59,6 +59,23 @@ func TestDropAssetsAreSameOriginOnlyAndNoThirdPartyScripts(t *testing.T) {
 	}
 }
 
+func TestDropPageDragDropAppendsExistingSelection(t *testing.T) {
+	handler := NewRouter(log.New(&bytes.Buffer{}, "", 0))
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/drop-assets/app.js", nil)
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("app.js status = %d", recorder.Code)
+	}
+
+	app := recorder.Body.String()
+	for _, want := range []string{"function setSelectedFiles(files)", "setSelectedFiles([...filesInput.files, ...droppedFiles])"} {
+		if !strings.Contains(app, want) {
+			t.Fatalf("app.js missing drag-drop append behavior %q", want)
+		}
+	}
+}
+
 func TestDropPageRequestLogRedactsDropToken(t *testing.T) {
 	var logs bytes.Buffer
 	handler := NewRouter(log.New(&logs, "", 0))
