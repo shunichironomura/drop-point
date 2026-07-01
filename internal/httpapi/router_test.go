@@ -22,6 +22,9 @@ func TestHealthReturnsLowInformationOK(t *testing.T) {
 	if got := recorder.Body.String(); got != "{\"status\":\"ok\"}\n" {
 		t.Fatalf("body = %q, want low-information health JSON", got)
 	}
+	if got := recorder.Header().Get("X-Content-Type-Options"); got != "nosniff" {
+		t.Fatalf("X-Content-Type-Options = %q, want nosniff", got)
+	}
 	if strings.Contains(recorder.Body.String(), "drop") || strings.Contains(recorder.Body.String(), "path") {
 		t.Fatalf("health body exposes operational detail: %q", recorder.Body.String())
 	}

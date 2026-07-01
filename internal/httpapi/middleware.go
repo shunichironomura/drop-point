@@ -8,6 +8,14 @@ import (
 	"time"
 )
 
+// SetNoSniff applies a global MIME-sniffing opt-out to all routes.
+func SetNoSniff(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		next.ServeHTTP(w, r)
+	})
+}
+
 // LogRequests emits one compact access log line per request.
 func LogRequests(logger *log.Logger, next http.Handler) http.Handler {
 	logger = defaultLogger(logger)

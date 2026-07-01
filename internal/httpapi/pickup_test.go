@@ -38,6 +38,9 @@ func TestPickupRetrievesReadyCiphertextAndRecordsFirstPickup(t *testing.T) {
 	if pickupRecorder.Code != http.StatusOK {
 		t.Fatalf("pickup status = %d body=%s", pickupRecorder.Code, pickupRecorder.Body.String())
 	}
+	if got := pickupRecorder.Header().Get("X-Content-Type-Options"); got != "nosniff" {
+		t.Fatalf("X-Content-Type-Options = %q, want nosniff", got)
+	}
 	gotEnvelope, gotPayload := readPickupMultipart(t, pickupRecorder)
 	if !bytes.Equal(gotEnvelope, envelope) {
 		t.Fatalf("envelope = %q, want %q", gotEnvelope, envelope)
