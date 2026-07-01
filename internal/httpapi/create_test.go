@@ -33,6 +33,9 @@ func TestCreateDropPointWithValidAPIToken(t *testing.T) {
 	if recorder.Code != http.StatusCreated {
 		t.Fatalf("status = %d body=%s", recorder.Code, recorder.Body.String())
 	}
+	if got := recorder.Header().Get("X-Content-Type-Options"); got != "nosniff" {
+		t.Fatalf("X-Content-Type-Options = %q, want nosniff", got)
+	}
 	var response createDropPointResponse
 	if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
 		t.Fatalf("decode response: %v", err)
