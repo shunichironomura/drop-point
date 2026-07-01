@@ -32,7 +32,7 @@ func TestStatusRequiresOwnPickupToken(t *testing.T) {
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("own pickup status = %d body=%s", recorder.Code, recorder.Body.String())
 	}
-	if !strings.Contains(recorder.Body.String(), `"status":"open"`) {
+	if !strings.Contains(recorder.Body.String(), `"status":"open"`) || !strings.Contains(recorder.Body.String(), `"display_name":"calm-otter"`) {
 		t.Fatalf("status body = %s", recorder.Body.String())
 	}
 
@@ -154,6 +154,7 @@ func testHTTPDropPoint(t *testing.T, id string, dropPlain string, pickupPlain st
 	dp, err := droppoint.New(droppoint.CreateDropPointRequest{
 		ID:              id,
 		APITokenID:      "desktop-main",
+		DisplayName:     "calm-otter",
 		DropTokenHash:   token.HashSecret(dropPlain),
 		PickupTokenHash: token.HashSecret(pickupPlain),
 		TTL:             10 * time.Minute,

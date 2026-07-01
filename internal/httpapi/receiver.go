@@ -21,6 +21,7 @@ type BlobStore interface {
 
 type dropPointStatusResponse struct {
 	Status          droppoint.Status `json:"status"`
+	DisplayName     string           `json:"display_name"`
 	EncryptedSize   int64            `json:"encrypted_size"`
 	DroppedAt       *time.Time       `json:"dropped_at"`
 	FirstPickedUpAt *time.Time       `json:"first_picked_up_at"`
@@ -36,6 +37,7 @@ func HandleGetDropPointStatus(deps Dependencies) http.HandlerFunc {
 		}
 		writeJSON(w, http.StatusOK, dropPointStatusResponse{
 			Status:          dp.Status,
+			DisplayName:     dp.DisplayName,
 			EncryptedSize:   dp.EncryptedSize,
 			DroppedAt:       dp.DroppedAt,
 			FirstPickedUpAt: dp.FirstPickedUpAt,

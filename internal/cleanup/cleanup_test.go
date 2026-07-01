@@ -97,6 +97,7 @@ func cleanupDropPoint(t *testing.T, id string, dropPlain string, pickupPlain str
 	dp, err := droppoint.New(droppoint.CreateDropPointRequest{
 		ID:              id,
 		APITokenID:      "desktop-main",
+		DisplayName:     "calm-otter",
 		DropTokenHash:   token.HashSecret(dropPlain),
 		PickupTokenHash: token.HashSecret(pickupPlain),
 		TTL:             10 * time.Minute,

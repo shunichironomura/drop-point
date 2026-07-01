@@ -2,7 +2,10 @@ module github.com/shunichironomura/drop-point
 
 go 1.26.4
 
-require modernc.org/sqlite v1.53.0
+require (
+	github.com/dustinkirkland/golang-petname v0.0.0-20260215035315-f0c533e9ce9b
+	modernc.org/sqlite v1.53.0
+)
 
 require (
 	github.com/dustin/go-humanize v1.0.1 // indirect

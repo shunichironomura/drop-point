@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/shunichironomura/drop-point/internal/config"
+	"github.com/shunichironomura/drop-point/internal/dropname"
 	"github.com/shunichironomura/drop-point/internal/droppoint"
 	"github.com/shunichironomura/drop-point/internal/store"
 	"github.com/shunichironomura/drop-point/internal/token"
@@ -46,6 +47,9 @@ func TestCreateDropPointWithValidAPIToken(t *testing.T) {
 	if !strings.HasPrefix(response.PickupToken, token.PickupTokenPrefix) {
 		t.Fatalf("pickup_token = %q", response.PickupToken)
 	}
+	if !dropname.Valid(response.DisplayName) {
+		t.Fatalf("display_name = %q, want adjective-noun", response.DisplayName)
+	}
 	if strings.Contains(response.DropLink, "#") {
 		t.Fatalf("drop_link contains fragment: %q", response.DropLink)
 	}
@@ -61,7 +65,7 @@ func TestCreateDropPointWithValidAPIToken(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FindDropPointByID: %v", err)
 	}
-	if dp.Status != droppoint.StatusOpen || dp.APITokenID != "desktop-main" || dp.ClientName != "test-client" {
+	if dp.Status != droppoint.StatusOpen || dp.APITokenID != "desktop-main" || dp.ClientName != "test-client" || dp.DisplayName != response.DisplayName {
 		t.Fatalf("stored drop point mismatch: %+v", dp)
 	}
 	if dp.DropTokenHash == strings.TrimPrefix(parsed.Path, "/drop/") || dp.PickupTokenHash == response.PickupToken {

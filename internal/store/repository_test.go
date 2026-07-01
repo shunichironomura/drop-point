@@ -24,7 +24,7 @@ func TestRepositoryCreateLookupAndQuota(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FindDropPointByID: %v", err)
 	}
-	if got.ID != dp.ID || got.DropTokenHash != dp.DropTokenHash || got.PickupTokenHash != dp.PickupTokenHash {
+	if got.ID != dp.ID || got.DisplayName != dp.DisplayName || got.DropTokenHash != dp.DropTokenHash || got.PickupTokenHash != dp.PickupTokenHash {
 		t.Fatalf("loaded drop point mismatch: %+v", got)
 	}
 
@@ -275,6 +275,7 @@ func testDropPoint(t *testing.T, id string, dropPlain string, pickupPlain string
 	dp, err := droppoint.New(droppoint.CreateDropPointRequest{
 		ID:              id,
 		APITokenID:      "desktop-main",
+		DisplayName:     "calm-otter",
 		DropTokenHash:   token.HashSecret(dropPlain),
 		PickupTokenHash: token.HashSecret(pickupPlain),
 		TTL:             10 * time.Minute,

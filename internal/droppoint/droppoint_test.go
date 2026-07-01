@@ -12,6 +12,7 @@ func TestNewDropPoint(t *testing.T) {
 		ID:              "dp_test",
 		APITokenID:      "desktop-main",
 		ClientName:      "client",
+		DisplayName:     "calm-otter",
 		DropTokenHash:   "sha256:drop",
 		PickupTokenHash: "sha256:pick",
 		TTL:             10 * time.Minute,
@@ -145,6 +146,7 @@ func mustDropPoint(t *testing.T, now time.Time) DropPoint {
 	dp, err := New(CreateDropPointRequest{
 		ID:              "dp_test",
 		APITokenID:      "desktop-main",
+		DisplayName:     "calm-otter",
 		DropTokenHash:   "sha256:drop",
 		PickupTokenHash: "sha256:pick",
 		TTL:             10 * time.Minute,

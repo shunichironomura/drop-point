@@ -84,7 +84,7 @@ Start the relay:
 go run ./cmd/drop-point serve --config .local/browser-test/config.json
 ```
 
-In another terminal, create a drop point and print a full sender link:
+In another terminal, create a drop point and print its drop name plus a full sender link:
 
 ```sh
 ./scripts/drop-point-receiver.py create \
@@ -94,7 +94,7 @@ In another terminal, create a drop point and print a full sender link:
 ```
 
 Open the printed `http://localhost:18080/drop/...#v=2&pk=...&exp=...` link in your browser,
-choose files, and submit the drop. Then pick up and decrypt the uploaded files:
+verify that the page shows the printed drop name, choose files, and submit the drop. Then pick up and decrypt the uploaded files:
 
 ```sh
 ./scripts/drop-point-receiver.py pickup \
@@ -114,7 +114,7 @@ The decrypted files are written under `.local/browser-test/output`.
   --state .local/local-test/state.json
 ```
 
-The script prints a full sender link containing `#v=2&pk=...&exp=...`.
+The script prints the drop name and a full sender link containing `#v=2&pk=...&exp=...`.
 
 ## 4. Sender: encrypt and drop files
 

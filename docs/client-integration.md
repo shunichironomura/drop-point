@@ -8,31 +8,32 @@ A receiver client should run this sequence for each drop point:
 
 1. Generate a fresh local X25519 recipient key pair for this drop point.
 2. Call `POST /api/drop-points` with the configured API bearer token.
-3. Keep the returned `pickup_token` and local recipient private key in receiver-controlled state.
-4. Append the public-key and expiry fragment to the returned fragment-free drop link:
+3. Keep the returned `pickup_token`, `display_name`, and local recipient private key in receiver-controlled state.
+4. Show the returned `display_name` to the receiver and tell the sender to compare it with the name shown on the drop page.
+5. Append the public-key and expiry fragment to the returned fragment-free drop link:
 
    ```text
    #v=2&pk=<base64url(raw-32-byte-x25519-public-key)>&exp=<urlencoded expires_at>
    ```
 
-   `exp` is optional for older clients, but including the returned `expires_at` lets the sender page display an expiry countdown.
+   `exp` is optional for compatibility; current sender pages fetch the authoritative expiry and display name from the relay.
 
-5. Show or share the full drop link, for example as a QR code.
-6. Poll `GET /api/drop-points/:drop_point_id/status` with the pickup token.
-7. When status is `ready`, call `GET /api/drop-points/:drop_point_id/pickup`.
-8. Parse the `multipart/mixed` response into envelope JSON and encrypted payload bytes.
-9. Decrypt locally with the recipient private key using the protocol in `docs/protocol-reference.md`.
-10. Validate the decrypted manifest:
+6. Show or share the full drop link, for example as a QR code.
+7. Poll `GET /api/drop-points/:drop_point_id/status` with the pickup token.
+8. When status is `ready`, call `GET /api/drop-points/:drop_point_id/pickup`.
+9. Parse the `multipart/mixed` response into envelope JSON and encrypted payload bytes.
+10. Decrypt locally with the recipient private key using the protocol in `docs/protocol-reference.md`.
+11. Validate the decrypted manifest:
     - `protocol_version` is `2`;
     - filenames are safe base names;
     - duplicate filenames are rejected or disambiguated;
     - MIME types are advisory and sanitized;
     - sum of manifest file sizes equals decrypted payload length.
-11. Split plaintext bytes by manifest sizes.
-12. Write plaintext durably into the client-controlled storage system.
-13. Append any client-specific durable record only after plaintext storage succeeds.
-14. Call `DELETE /api/drop-points/:drop_point_id` to close and remove remote ciphertext.
-15. Delete the local recipient private key and any temporary plaintext buffers.
+12. Split plaintext bytes by manifest sizes.
+13. Write plaintext durably into the client-controlled storage system.
+14. Append any client-specific durable record only after plaintext storage succeeds.
+15. Call `DELETE /api/drop-points/:drop_point_id` to close and remove remote ciphertext.
+16. Delete the local recipient private key and any temporary plaintext buffers.
 
 ## Ordering rule
 

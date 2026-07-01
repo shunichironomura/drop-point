@@ -1,6 +1,6 @@
 # DropPoint Specification
 
-Date: 2026-06-30
+Date: 2026-07-02
 Status: Draft
 
 DropPoint is a temporary encrypted file handoff service. A receiver creates a short-lived drop point and shares a drop link. A sender opens the link, encrypts one or more files locally, and drops a single encrypted bundle. The relay stores ciphertext only. The receiver later picks up the payload and decrypts it locally.
@@ -45,6 +45,7 @@ DropPoint does not provide:
 | DropPoint | Product/service name. |
 | `drop-point` | Operator CLI/binary name for running the relay. |
 | drop point | One temporary handoff session created by a receiver. |
+| display name | Human-readable random label for a drop point, such as `calm-otter`, used only as a UX check. |
 | receiver | Client that creates the drop point, owns the private key, and picks up the payload. |
 | sender / uploader | Person or client that opens the drop link and drops encrypted files. |
 | relay | DropPoint HTTP service that stores ciphertext and operational metadata. |
@@ -65,10 +66,10 @@ Protocol terms such as `payload`, `envelope`, `ciphertext`, `nonce`, `AAD`, `pub
 
 1. The receiver authenticates to the relay and creates a drop point.
 2. The receiver locally generates a per-drop-point X25519 key pair.
-3. The relay returns a drop point ID, drop link without fragment, pickup token, expiry time, and max payload size.
-4. The receiver appends the encryption public key fragment to the drop link and displays or shares it, commonly as a QR code.
+3. The relay returns a drop point ID, display name, drop link without fragment, pickup token, expiry time, and max payload size.
+4. The receiver appends the encryption public key fragment to the drop link and displays or shares it alongside the display name, commonly as a QR code.
 5. The sender opens the drop link.
-6. The drop page reads the receiver public key from `location.hash`, encrypts a bundle locally, and submits an envelope plus encrypted payload to the relay.
+6. The drop page reads the receiver public key from `location.hash`, fetches sender-safe metadata including the server-bound display name, encrypts a bundle locally, and submits an envelope plus encrypted payload to the relay.
 7. The relay stores the envelope and encrypted payload and marks the drop point `ready` only after durable storage succeeds.
 8. The receiver polls status, picks up the envelope and encrypted payload, decrypts locally, validates the decrypted bundle, stores plaintext in its own system if desired, and then explicitly closes the drop point.
 9. The relay deletes stored ciphertext when the drop point is closed or expires.
@@ -168,12 +169,15 @@ Rules:
 - `max_bytes` MUST be positive and MUST NOT exceed the configured maximum encrypted payload size.
 - DropPoint is always single-use. If `single_use` is present, it MUST be `true`.
 - The authenticated API token's active-drop-point quota MUST be enforced.
+- The relay MUST generate a human-readable `display_name` for the drop point using an adjective-noun style such as `calm-otter`.
+- The display name is not a secret, is not an authentication factor, and MUST NOT replace capability-token checks.
 
 Response:
 
 ```json
 {
   "drop_point_id": "dp_...",
+  "display_name": "calm-otter",
   "drop_link": "https://drop.example.com/drop/drop_...",
   "pickup_token": "pick_...",
   "expires_at": "2026-06-30T12:15:00Z",
@@ -192,6 +196,7 @@ GET /drop/:drop_token
 The response is the sender-facing HTML/JS/CSS page. The page MUST:
 
 - Read the receiver public key from `location.hash`.
+- Fetch sender-safe metadata from `GET /api/drops/:drop_token` and display the returned server-bound display name before upload.
 - Require the encryption fragment format defined in Section 10.9.
 - Detect `window.isSecureContext` and `crypto.subtle` support.
 - Show a clear error if the page is not running in a secure context.
@@ -203,7 +208,31 @@ The response is the sender-facing HTML/JS/CSS page. The page MUST:
 
 The page SHOULD avoid exposing useful details about unknown or expired drop tokens.
 
-### 7.3 Submit encrypted drop
+### 7.3 Get sender drop metadata
+
+```http
+GET /api/drops/:drop_token
+```
+
+Response:
+
+```json
+{
+  "display_name": "calm-otter",
+  "expires_at": "2026-06-30T12:15:00Z",
+  "max_bytes": 52428800
+}
+```
+
+Rules:
+
+- The drop token is the only sender-side authorization requirement.
+- The endpoint MUST expose only sender-safe metadata needed by the static drop page.
+- The returned `display_name` is authoritative for the drop token and is the value the sender page displays.
+- The endpoint MUST NOT expose pickup tokens, drop point IDs, encrypted size, pickup timestamps, storage paths, or receiver-only status details.
+- Unknown, expired, closed, failed, ready, or otherwise unavailable drop points SHOULD avoid exposing their display names.
+
+### 7.4 Submit encrypted drop
 
 ```http
 PUT /api/drops/:drop_token
@@ -239,7 +268,7 @@ Response:
 { "status": "ready" }
 ```
 
-### 7.4 Poll drop point status
+### 7.5 Poll drop point status
 
 ```http
 GET /api/drop-points/:drop_point_id/status
@@ -251,6 +280,7 @@ Response:
 ```json
 {
   "status": "ready",
+  "display_name": "calm-otter",
   "encrypted_size": 2849123,
   "dropped_at": "2026-06-30T12:03:12Z",
   "first_picked_up_at": null,
@@ -260,7 +290,7 @@ Response:
 
 The pickup token MUST authorize only its own drop point.
 
-### 7.5 Pick up encrypted payload
+### 7.6 Pick up encrypted payload
 
 ```http
 GET /api/drop-points/:drop_point_id/pickup
@@ -281,7 +311,7 @@ Rules:
 - Successful pickup records `first_picked_up_at` if it was not already set.
 - Pickup MUST NOT delete payload files and MUST NOT close the drop point.
 
-### 7.6 Close drop point
+### 7.7 Close drop point
 
 ```http
 DELETE /api/drop-points/:drop_point_id
@@ -290,7 +320,7 @@ Authorization: Bearer <pickup-token>
 
 Close deletes stored envelope and payload data if present and marks the drop point `closed`. Close SHOULD be idempotent enough for receiver cleanup flows and MUST tolerate already-deleted envelope or payload files.
 
-### 7.7 Health check
+### 7.8 Health check
 
 ```http
 GET /health
@@ -307,6 +337,7 @@ A drop point record contains at least:
 | `id` | Public drop point ID. |
 | `api_token_id` | Label of the API token that created the drop point. |
 | `client_name` | Optional receiver-provided client label. |
+| `display_name` | Relay-generated human-readable drop point label. |
 | `drop_token_hash` | Hash of sender-side capability token. |
 | `pickup_token_hash` | Hash of receiver-side capability token. |
 | `status` | One of the status values in Section 5. |
@@ -329,6 +360,7 @@ CREATE TABLE drop_points (
   id TEXT PRIMARY KEY,
   api_token_id TEXT NOT NULL,
   client_name TEXT,
+  display_name TEXT NOT NULL DEFAULT '',
   drop_token_hash TEXT NOT NULL UNIQUE,
   pickup_token_hash TEXT NOT NULL,
   status TEXT NOT NULL,
@@ -535,7 +567,7 @@ The receiver appends this fragment to the drop link:
 #v=2&pk=<base64url(recipient_public_key, 32 raw bytes)>&exp=<urlencoded RFC3339 expires_at>
 ```
 
-The `exp` value is optional for backward compatibility but SHOULD be included so the sender page can display an expiry countdown.
+The `exp` value is optional for backward compatibility. Current relay-served sender pages fetch the authoritative expiry and display name from `GET /api/drops/:drop_token`, but clients SHOULD continue to include `exp` for compatibility with older pages.
 
 Example full drop link:
 
@@ -548,6 +580,7 @@ Rules:
 - `v=2` identifies the fixed wire protocol in this section.
 - `pk` is the raw 32-byte X25519 receiver public key encoded as base64url without padding.
 - `exp`, when present, is the drop point `expires_at` timestamp encoded with `encodeURIComponent` / URL encoding.
+- The display name is intentionally not authoritative when supplied in a URL; the sender page uses the server-bound metadata endpoint instead.
 - The fragment is not sent to the relay by normal HTTP requests.
 - The drop page MUST reject missing, non-base64url, or non-32-byte `pk` values.
 - The drop page MUST reject an invalid `exp` value when it is present.
@@ -716,6 +749,7 @@ The relay may store and expose only limited plaintext operational metadata:
 - Drop point ID.
 - API token ID label.
 - Client name label.
+- Display name.
 - Status.
 - Encrypted payload size.
 - Created, dropped, picked-up, closed, and expiry timestamps.
@@ -801,7 +835,7 @@ Recommended English UI copy:
 DropPoint is deployment-neutral. It may run behind a reverse proxy, tunnel, CDN, or direct TLS termination as long as these externally visible requirements hold:
 
 - `/drop/:drop_token` is reachable by sender browsers.
-- `/api/drops/:drop_token` is reachable by sender browsers.
+- `/api/drops/:drop_token` is reachable by sender browsers for metadata lookup and encrypted upload.
 - Sender browsers see an HTTPS origin or another browser-recognized secure context.
 - Receiver APIs are reachable by receiver clients.
 - Request body size limits at the application and every edge layer are compatible with configured `max_bytes` plus multipart overhead.

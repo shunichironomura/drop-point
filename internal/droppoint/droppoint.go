@@ -37,6 +37,7 @@ type DropPoint struct {
 	ID              string
 	APITokenID      string
 	ClientName      string
+	DisplayName     string
 	DropTokenHash   string
 	PickupTokenHash string
 	Status          Status
@@ -57,6 +58,7 @@ type CreateDropPointRequest struct {
 	ID              string
 	APITokenID      string
 	ClientName      string
+	DisplayName     string
 	DropTokenHash   string
 	PickupTokenHash string
 	TTL             time.Duration
@@ -67,6 +69,7 @@ type CreateDropPointRequest struct {
 // are included only in the response boundary, never in persisted rows.
 type CreateDropPointResponse struct {
 	DropPointID string
+	DisplayName string
 	DropToken   string
 	PickupToken string
 	ExpiresAt   time.Time
@@ -88,6 +91,9 @@ func New(req CreateDropPointRequest, now time.Time) (DropPoint, error) {
 	if req.APITokenID == "" {
 		return DropPoint{}, fmt.Errorf("api token id must not be empty")
 	}
+	if req.DisplayName == "" {
+		return DropPoint{}, fmt.Errorf("display name must not be empty")
+	}
 	if req.DropTokenHash == "" || req.PickupTokenHash == "" {
 		return DropPoint{}, fmt.Errorf("token hashes must not be empty")
 	}
@@ -102,6 +108,7 @@ func New(req CreateDropPointRequest, now time.Time) (DropPoint, error) {
 		ID:              req.ID,
 		APITokenID:      req.APITokenID,
 		ClientName:      req.ClientName,
+		DisplayName:     req.DisplayName,
 		DropTokenHash:   req.DropTokenHash,
 		PickupTokenHash: req.PickupTokenHash,
 		Status:          StatusOpen,

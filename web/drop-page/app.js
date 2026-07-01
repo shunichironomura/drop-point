@@ -10,7 +10,9 @@ const AAD_PAYLOAD = aad('payload');
 
 const state = {
   recipientPublicKey: null,
+  displayName: null,
   expiresAt: null,
+  maxBytes: null,
   countdownTimer: null,
   selectedFiles: [],
   thumbnailURLs: new Map(),
@@ -20,6 +22,8 @@ const state = {
 const filesInput = document.getElementById('files');
 const submitButton = document.getElementById('submit');
 const statusBox = document.getElementById('status');
+const dropNameBox = document.getElementById('drop-name');
+const dropNameText = document.getElementById('drop-name-text');
 const expiryBox = document.getElementById('expiry');
 const countdownText = document.getElementById('countdown');
 const dropZone = document.getElementById('drop-zone');
@@ -47,16 +51,20 @@ async function init() {
   }
   const fragment = parseDropLinkFragment(location.hash);
   state.recipientPublicKey = fragment.recipientPublicKey;
-  state.expiresAt = fragment.expiresAt;
+  const metadata = await fetchDropMetadata(state.dropToken);
+  state.displayName = metadata.displayName;
+  state.expiresAt = metadata.expiresAt ?? fragment.expiresAt;
+  state.maxBytes = metadata.maxBytes;
   if (isExpired(state.expiresAt)) {
     throw new Error('This drop point has expired.');
   }
   await assertX25519Support(state.recipientPublicKey);
+  renderDropName();
   startExpiryCountdown(state.expiresAt);
   filesInput.disabled = false;
   dropZone.classList.remove('disabled');
   updateSelectedFiles();
-  showStatus('Choose files');
+  showStatus(`Choose files for ${state.displayName}`);
 }
 
 function handleDragOverFiles(event) {
@@ -98,10 +106,10 @@ function updateSelectedFiles() {
   submitButton.disabled = files.length === 0;
   renderSelectedFiles(files);
   if (files.length === 0) {
-    showStatus('Choose files');
+    showStatus(state.displayName ? `Choose files for ${state.displayName}` : 'Choose files');
     return;
   }
-  showStatus(`${files.length} ${files.length === 1 ? 'file' : 'files'} selected. Ready to drop encrypted files.`);
+  showStatus(`${files.length} ${files.length === 1 ? 'file' : 'files'} selected for ${state.displayName}. Ready to drop encrypted files.`);
 }
 
 function renderSelectedFiles(files) {
@@ -206,9 +214,9 @@ async function dropSelectedFiles() {
   submitButton.disabled = true;
   dropZone.classList.add('disabled');
   renderSelectedFiles(files);
-  showStatus('Encrypting and dropping files...');
+  showStatus(`Encrypting and dropping files for ${state.displayName}...`);
   const bundle = await buildEncryptedBundle(files, state.recipientPublicKey);
-  showStatus('Dropping encrypted files...');
+  showStatus(`Dropping encrypted files for ${state.displayName}...`);
   const form = new FormData();
   form.append('envelope', new Blob([JSON.stringify(bundle.envelope)], { type: 'application/json' }));
   form.append('payload', new Blob([bundle.encryptedPayload], { type: 'application/octet-stream' }));
@@ -222,9 +230,59 @@ async function dropSelectedFiles() {
     if (response.status === 404 || response.status === 410) {
       throw new Error('This drop point has expired.');
     }
+    if (response.status === 409) {
+      throw new Error('This drop point cannot accept more files.');
+    }
     throw new Error('Network failure or drop point rejected the encrypted files.');
   }
-  showSuccess('Files dropped successfully. Ready for pickup');
+  showSuccess(`Files dropped successfully for ${state.displayName}. Ready for pickup`);
+}
+
+async function fetchDropMetadata(dropToken) {
+  const response = await fetch(`/api/drops/${encodeURIComponent(dropToken)}`, {
+    method: 'GET',
+    headers: { Accept: 'application/json' },
+    credentials: 'omit',
+    cache: 'no-store',
+  });
+  if (!response.ok) {
+    if (response.status === 404 || response.status === 410) {
+      throw new Error('This drop point has expired or cannot be used.');
+    }
+    if (response.status === 409) {
+      throw new Error('This drop point cannot accept more files.');
+    }
+    throw new Error('Could not load this drop point.');
+  }
+  const metadata = await response.json();
+  const expiresAt = parseExpiry(metadata.expires_at);
+  if (expiresAt === null) {
+    throw new Error('This drop point returned an invalid expiry timestamp.');
+  }
+  return {
+    displayName: parseDisplayName(metadata.display_name),
+    expiresAt,
+    maxBytes: parseMaxBytes(metadata.max_bytes),
+  };
+}
+
+function parseDisplayName(value) {
+  if (typeof value !== 'string' || !/^[a-z]+-[a-z]+$/.test(value)) {
+    throw new Error('This drop point returned an invalid name.');
+  }
+  return value;
+}
+
+function parseMaxBytes(value) {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
+    throw new Error('This drop point returned an invalid size limit.');
+  }
+  return value;
+}
+
+function renderDropName() {
+  dropNameText.textContent = state.displayName;
+  dropNameBox.hidden = false;
 }
 
 function parseDropLinkFragment(hash) {
@@ -245,7 +303,7 @@ function parseExpiry(value) {
   }
   const millis = Date.parse(value);
   if (!Number.isFinite(millis)) {
-    throw new Error('This drop link has an invalid expiry timestamp.');
+    throw new Error('This drop point has an invalid expiry timestamp.');
   }
   return new Date(millis);
 }
