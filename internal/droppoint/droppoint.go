@@ -137,8 +137,8 @@ func (d DropPoint) IsExpiredAt(now time.Time) bool {
 
 // BeginReceiving applies open -> receiving.
 func BeginReceiving(d DropPoint, now time.Time) (DropPoint, error) {
-	if d.IsExpiredAt(now) {
-		return d, ErrDropPointExpired
+	if expired, ok := expireIfElapsed(d, now); ok {
+		return expired, ErrDropPointExpired
 	}
 	switch d.Status {
 	case StatusOpen:
@@ -157,10 +157,18 @@ func BeginReceiving(d DropPoint, now time.Time) (DropPoint, error) {
 
 // CommitReceived applies receiving -> ready after durable writes succeed.
 func CommitReceived(d DropPoint, result CommitDropResult, now time.Time) (DropPoint, error) {
-	if d.IsExpiredAt(now) {
-		return d, ErrDropPointExpired
+	if expired, ok := expireIfElapsed(d, now); ok {
+		return expired, ErrDropPointExpired
 	}
-	if d.Status != StatusReceiving {
+	switch d.Status {
+	case StatusReceiving:
+	case StatusReady:
+		return d, ErrDropAlreadyExists
+	case StatusClosed:
+		return d, ErrDropPointClosed
+	case StatusExpired:
+		return d, ErrDropPointExpired
+	default:
 		return d, ErrDropPointNotOpen
 	}
 	if result.PayloadPath == "" || result.EnvelopePath == "" {
@@ -180,9 +188,8 @@ func CommitReceived(d DropPoint, result CommitDropResult, now time.Time) (DropPo
 
 // AbortReceiving returns receiving -> open after a failed or partial drop.
 func AbortReceiving(d DropPoint, now time.Time) (DropPoint, error) {
-	if d.IsExpiredAt(now) {
-		d.Status = StatusExpired
-		return d, ErrDropPointExpired
+	if expired, ok := expireIfElapsed(d, now); ok {
+		return expired, ErrDropPointExpired
 	}
 	if d.Status != StatusReceiving {
 		return d, ErrDropPointNotOpen
@@ -193,8 +200,8 @@ func AbortReceiving(d DropPoint, now time.Time) (DropPoint, error) {
 
 // MarkPickedUp records first pickup without making pickup terminal.
 func MarkPickedUp(d DropPoint, now time.Time) (DropPoint, error) {
-	if d.IsExpiredAt(now) {
-		return d, ErrDropPointExpired
+	if expired, ok := expireIfElapsed(d, now); ok {
+		return expired, ErrDropPointExpired
 	}
 	switch d.Status {
 	case StatusReady:
@@ -218,7 +225,10 @@ func Close(d DropPoint, now time.Time) (DropPoint, error) {
 	if d.Status == StatusClosed {
 		return d, nil
 	}
-	if d.Status == StatusExpired || d.IsExpiredAt(now) {
+	if expired, ok := expireIfElapsed(d, now); ok {
+		return expired, ErrDropPointExpired
+	}
+	if d.Status == StatusExpired {
 		return d, ErrDropPointExpired
 	}
 	if d.Status == StatusFailed {
@@ -232,6 +242,10 @@ func Close(d DropPoint, now time.Time) (DropPoint, error) {
 
 // Expire transitions any non-terminal expired drop point to expired.
 func Expire(d DropPoint, now time.Time) (DropPoint, bool) {
+	return expireIfElapsed(d, now)
+}
+
+func expireIfElapsed(d DropPoint, now time.Time) (DropPoint, bool) {
 	if !d.IsExpiredAt(now) {
 		return d, false
 	}
