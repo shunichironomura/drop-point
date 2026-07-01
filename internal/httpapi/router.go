@@ -63,6 +63,8 @@ func NewRouterWithDependencies(deps Dependencies) http.Handler {
 		switch {
 		case r.Method == http.MethodGet && dropPointIDFromStatusPath(r.URL.Path) != "":
 			HandleGetDropPointStatus(deps)(w, r)
+		case r.Method == http.MethodGet && dropPointIDFromPickupPath(r.URL.Path) != "":
+			HandlePickupPayload(deps)(w, r)
 		case r.Method == http.MethodDelete && dropPointIDFromClosePath(r.URL.Path) != "":
 			HandleCloseDropPoint(deps)(w, r)
 		default:

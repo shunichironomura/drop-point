@@ -15,6 +15,8 @@ import (
 // BlobStore is the filesystem payload boundary used by HTTP handlers.
 type BlobStore interface {
 	WriteDrop(ctx context.Context, id string, envelope []byte, payload io.Reader, maxBytes int64) (droppoint.CommitDropResult, error)
+	ReadEnvelope(ctx context.Context, relative string) ([]byte, error)
+	OpenPayload(ctx context.Context, relative string) (io.ReadCloser, error)
 	DeleteDropPoint(ctx context.Context, id string) error
 }
 

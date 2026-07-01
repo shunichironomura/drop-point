@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -24,11 +25,22 @@ func TestWriteDropStoresExactBytes(t *testing.T) {
 	if result.EncryptedSize != int64(len(payload)) {
 		t.Fatalf("EncryptedSize = %d, want %d", result.EncryptedSize, len(payload))
 	}
-	gotEnvelope := mustReadBlob(t, store, result.EnvelopePath)
+	gotEnvelope, err := store.ReadEnvelope(context.Background(), result.EnvelopePath)
+	if err != nil {
+		t.Fatalf("ReadEnvelope: %v", err)
+	}
 	if !bytes.Equal(gotEnvelope, envelope) {
 		t.Fatalf("envelope bytes = %q, want %q", gotEnvelope, envelope)
 	}
-	gotPayload := mustReadBlob(t, store, result.PayloadPath)
+	payloadReader, err := store.OpenPayload(context.Background(), result.PayloadPath)
+	if err != nil {
+		t.Fatalf("OpenPayload: %v", err)
+	}
+	gotPayload, err := io.ReadAll(payloadReader)
+	_ = payloadReader.Close()
+	if err != nil {
+		t.Fatalf("ReadAll payload: %v", err)
+	}
 	if !bytes.Equal(gotPayload, payload) {
 		t.Fatalf("payload bytes = %v, want %v", gotPayload, payload)
 	}
@@ -71,17 +83,4 @@ func newTestBlobStore(t *testing.T) *Store {
 		t.Fatalf("EnsureDataDir: %v", err)
 	}
 	return New(dataDir)
-}
-
-func mustReadBlob(t *testing.T, store *Store, relative string) []byte {
-	t.Helper()
-	path, err := store.Path(relative)
-	if err != nil {
-		t.Fatalf("Path: %v", err)
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("ReadFile %s: %v", path, err)
-	}
-	return data
 }

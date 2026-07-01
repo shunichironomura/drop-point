@@ -90,6 +90,32 @@ func (s *Store) WriteDrop(ctx context.Context, id string, envelope []byte, paylo
 	}, nil
 }
 
+// ReadEnvelope reads a stored envelope by repository-relative path.
+func (s *Store) ReadEnvelope(_ context.Context, relative string) ([]byte, error) {
+	path, err := s.Path(relative)
+	if err != nil {
+		return nil, err
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read envelope blob %q: %w", relative, err)
+	}
+	return data, nil
+}
+
+// OpenPayload opens a stored encrypted payload by repository-relative path.
+func (s *Store) OpenPayload(_ context.Context, relative string) (io.ReadCloser, error) {
+	path, err := s.Path(relative)
+	if err != nil {
+		return nil, err
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("open payload blob %q: %w", relative, err)
+	}
+	return file, nil
+}
+
 // DeleteDropPoint removes a drop point blob directory. It is idempotent.
 func (s *Store) DeleteDropPoint(_ context.Context, id string) error {
 	if err := validateID(id); err != nil {
