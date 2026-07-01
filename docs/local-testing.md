@@ -44,6 +44,67 @@ In another terminal:
 curl http://127.0.0.1:18080/health
 ```
 
+## Browser end-to-end test on the same PC
+
+To exercise the real browser sender page, browser-side encryption, and file upload flow,
+use `localhost`. Browsers treat `http://localhost` as a secure context, so WebCrypto is
+available without setting up HTTPS certificates.
+
+Create a browser test config and save the plaintext API token separately:
+
+```sh
+mkdir -p .local/browser-test
+TOKEN_OUT=$(go run ./cmd/drop-point token generate)
+API_TOKEN=$(printf '%s\n' "$TOKEN_OUT" | awk '/^api_token:/ {print $2}')
+SECRET_HASH=$(printf '%s\n' "$TOKEN_OUT" | awk '/^secret_hash:/ {print $2}')
+
+cat > .local/browser-test/config.json <<EOF
+{
+  "listen_addr": "127.0.0.1:18080",
+  "base_url": "http://localhost:18080",
+  "data_dir": ".local/browser-test/data",
+  "default_ttl_seconds": 600,
+  "max_ttl_seconds": 900,
+  "default_max_bytes": 52428800,
+  "max_bytes": 52428800,
+  "default_max_active_drop_points": 3,
+  "api_tokens": [
+    {"id":"browser-test","secret_hash":"$SECRET_HASH","enabled":true}
+  ]
+}
+EOF
+
+printf '%s\n' "$API_TOKEN" > .local/browser-test/api-token.txt
+chmod 600 .local/browser-test/config.json .local/browser-test/api-token.txt
+```
+
+Start the relay:
+
+```sh
+go run ./cmd/drop-point serve --config .local/browser-test/config.json
+```
+
+In another terminal, create a drop point and print a full sender link:
+
+```sh
+./scripts/drop-point-receiver.py create \
+  --base-url http://localhost:18080 \
+  --api-token "$(tr -d '\n' < .local/browser-test/api-token.txt)" \
+  --state .local/browser-test/state.json
+```
+
+Open the printed `http://localhost:18080/drop/...#v=2&pk=...` link in your browser,
+choose files, and submit the drop. Then pick up and decrypt the uploaded files:
+
+```sh
+./scripts/drop-point-receiver.py pickup \
+  --state .local/browser-test/state.json \
+  --out-dir .local/browser-test/output \
+  --wait
+```
+
+The decrypted files are written under `.local/browser-test/output`.
+
 ## 3. Receiver: create a drop point
 
 ```sh
