@@ -7,7 +7,6 @@ import (
 	"mime"
 	"mime/multipart"
 	"net/http"
-	"strings"
 
 	"github.com/shunichironomura/drop-point/internal/cryptoenv"
 	"github.com/shunichironomura/drop-point/internal/droppoint"
@@ -35,11 +34,7 @@ func HandleSubmitDrop(deps Dependencies) http.HandlerFunc {
 			writeError(w, http.StatusServiceUnavailable, "drop_storage_unavailable", "drop storage is unavailable")
 			return
 		}
-		dropToken := dropTokenFromPath(r.URL.Path)
-		if dropToken == "" {
-			writeError(w, http.StatusNotFound, "drop_point_not_found", "drop point not found")
-			return
-		}
+		dropToken := r.PathValue("drop_token")
 		now := deps.Now().UTC()
 		dp, err := deps.Repository.FindOpenDropPointByDropTokenHash(r.Context(), token.HashSecret(dropToken), now)
 		if err != nil {
@@ -166,17 +161,6 @@ func writeMultipartDropError(w http.ResponseWriter, err error) {
 	default:
 		writeError(w, http.StatusBadRequest, "drop_multipart_invalid", "drop must contain envelope JSON and payload octet-stream parts")
 	}
-}
-
-func dropTokenFromPath(path string) string {
-	if !strings.HasPrefix(path, "/api/drops/") {
-		return ""
-	}
-	dropToken := strings.TrimPrefix(path, "/api/drops/")
-	if dropToken == "" || strings.Contains(dropToken, "/") {
-		return ""
-	}
-	return dropToken
 }
 
 type multipartPayloadReader struct {

@@ -6,7 +6,6 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/textproto"
-	"strings"
 
 	"github.com/shunichironomura/drop-point/internal/droppoint"
 )
@@ -14,7 +13,7 @@ import (
 // HandlePickupPayload handles GET /api/drop-points/:drop_point_id/pickup.
 func HandlePickupPayload(deps Dependencies) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		id := dropPointIDFromPickupPath(r.URL.Path)
+		id := r.PathValue("drop_point_id")
 		dp, ok := authorizePickup(w, r, deps, id)
 		if !ok {
 			return
@@ -92,15 +91,4 @@ func writePickupUnavailable(w http.ResponseWriter, status droppoint.Status) {
 	default:
 		writeError(w, http.StatusConflict, "drop_not_ready", "drop point is not ready for pickup")
 	}
-}
-
-func dropPointIDFromPickupPath(path string) string {
-	if !strings.HasPrefix(path, "/api/drop-points/") || !strings.HasSuffix(path, "/pickup") {
-		return ""
-	}
-	id := strings.TrimSuffix(strings.TrimPrefix(path, "/api/drop-points/"), "/pickup")
-	if id == "" || strings.Contains(id, "/") {
-		return ""
-	}
-	return id
 }
