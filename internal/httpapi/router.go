@@ -1,12 +1,12 @@
 package httpapi
 
 import (
-	"io"
 	"log"
 	"net/http"
 	"time"
 
 	"github.com/shunichironomura/drop-point/internal/config"
+	"github.com/shunichironomura/drop-point/internal/logutil"
 	"github.com/shunichironomura/drop-point/internal/store"
 )
 
@@ -27,7 +27,7 @@ func NewRouter(logger *log.Logger) http.Handler {
 
 // NewRouterWithDependencies builds the HTTP handler tree for the relay.
 func NewRouterWithDependencies(deps Dependencies) http.Handler {
-	logger := defaultLogger(deps.Logger)
+	logger := logutil.DefaultLogger(deps.Logger)
 	if deps.Now == nil {
 		deps.Now = func() time.Time { return time.Now().UTC() }
 	}
@@ -68,11 +68,4 @@ func methodNotAllowed(allow string) http.HandlerFunc {
 		w.Header().Set("Allow", allow)
 		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
 	}
-}
-
-func defaultLogger(logger *log.Logger) *log.Logger {
-	if logger != nil {
-		return logger
-	}
-	return log.New(io.Discard, "", 0)
 }
