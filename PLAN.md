@@ -236,6 +236,8 @@ Expose the receiver-side lifecycle endpoints that are needed before sender uploa
 
 ## Phase 4: blob storage and encrypted drop endpoint
 
+Status: Completed on 2026-07-01.
+
 ### Goal
 
 Accept a single encrypted drop and store its envelope and payload durably without decrypting either.

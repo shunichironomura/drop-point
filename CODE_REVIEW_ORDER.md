@@ -63,47 +63,65 @@ This document lists repository files in dependency-first review order. Local scr
 19. `internal/store/repository_test.go`
     - Repository create, lookup, token mismatch, quota, close, expiry, pickup timestamp, and receiving-reset tests.
 
-20. `internal/httpapi/health.go`
+20. `internal/blobstore/blobstore.go`
+    - Filesystem encrypted payload/envelope storage with atomic temporary writes, fsync, rename, and idempotent deletion.
+
+21. `internal/blobstore/blobstore_test.go`
+    - Blob storage exact-byte, oversize, and idempotent deletion tests.
+
+22. `internal/cryptoenv/envelope.go`
+    - Relay-side protocol envelope schema validation and base64url helpers.
+
+23. `internal/cryptoenv/envelope_test.go`
+    - Envelope shape, algorithm, length, padding, and unknown-field validation tests.
+
+24. `internal/httpapi/health.go`
     - Low-information `/health` handler.
 
-21. `internal/httpapi/responses.go`
+25. `internal/httpapi/responses.go`
     - Shared JSON response and error helpers for API handlers.
 
-22. `internal/httpapi/auth.go`
+26. `internal/httpapi/auth.go`
     - Bearer API token parsing and configured token-hash authentication.
 
-23. `internal/httpapi/create.go`
+27. `internal/httpapi/create.go`
     - Authenticated drop point creation handler, request validation, quota enforcement, and drop-link construction.
 
-24. `internal/httpapi/receiver.go`
-    - Pickup-token authorization, receiver status, and close API handlers.
+28. `internal/httpapi/receiver.go`
+    - Pickup-token authorization, receiver status, close API handlers, and blob-store interface.
 
-25. `internal/httpapi/middleware.go`
+29. `internal/httpapi/drop.go`
+    - Encrypted multipart drop endpoint, envelope validation, streaming size enforcement, and ready-state commit handling.
+
+30. `internal/httpapi/middleware.go`
     - Request logging, token-path redaction, and panic recovery middleware.
 
-26. `internal/httpapi/router.go`
+31. `internal/httpapi/router.go`
     - HTTP route assembly and dependency injection.
 
-27. `internal/httpapi/router_test.go`
+32. `internal/httpapi/router_test.go`
     - Health, method rejection, redaction, and recovery tests.
 
-28. `internal/httpapi/create_test.go`
+33. `internal/httpapi/create_test.go`
     - Authenticated create API tests for valid, invalid, disabled, quota, and limit cases.
 
-29. `internal/httpapi/receiver_test.go`
+34. `internal/httpapi/receiver_test.go`
     - Receiver status and close API tests for pickup-token scoping, expiry reporting, retry safety, and file-pointer cleanup.
 
-30. `internal/server/server.go`
-    - Imperative shell wiring config, data directory, SQLite repository, and HTTP server.
+35. `internal/httpapi/drop_test.go`
+    - Drop endpoint tests for valid encrypted storage, second-drop rejection, oversize reset, malformed reset, authorization scoping, and concurrency.
 
-31. `internal/server/server_test.go`
+36. `internal/server/server.go`
+    - Imperative shell wiring config, data directory, SQLite repository, blob store, and HTTP server.
+
+37. `internal/server/server_test.go`
     - Server initialization and health routing tests.
 
-32. `cmd/drop-point/main.go`
+38. `cmd/drop-point/main.go`
     - `drop-point` CLI entrypoint, default `serve` command, and API token generation command.
 
-33. `cmd/drop-point/main_test.go`
+39. `cmd/drop-point/main_test.go`
     - CLI token generation command tests.
 
-34. `CODE_REVIEW_ORDER.md`
+40. `CODE_REVIEW_ORDER.md`
     - This review-order index. Update it whenever repository files change.

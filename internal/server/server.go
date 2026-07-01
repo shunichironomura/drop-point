@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/shunichironomura/drop-point/internal/blobstore"
 	"github.com/shunichironomura/drop-point/internal/config"
 	"github.com/shunichironomura/drop-point/internal/httpapi"
 	"github.com/shunichironomura/drop-point/internal/store"
@@ -24,6 +25,7 @@ type Server struct {
 	Config     config.Config
 	Store      *store.DB
 	Repository *store.Repository
+	BlobStore  *blobstore.Store
 	HTTPServer *http.Server
 	logger     *log.Logger
 }
@@ -45,11 +47,13 @@ func New(ctx context.Context, cfg config.Config, logger *log.Logger) (*Server, e
 	}
 
 	repository := store.NewRepository(db.SQLDB())
-	handler := httpapi.NewRouterWithDependencies(httpapi.Dependencies{Config: cfg, Repository: repository, Logger: logger})
+	blobStore := blobstore.New(cfg.DataDir)
+	handler := httpapi.NewRouterWithDependencies(httpapi.Dependencies{Config: cfg, Repository: repository, BlobStore: blobStore, Logger: logger})
 	return &Server{
 		Config:     cfg,
 		Store:      db,
 		Repository: repository,
+		BlobStore:  blobStore,
 		HTTPServer: &http.Server{
 			Addr:              cfg.ListenAddr,
 			Handler:           handler,
