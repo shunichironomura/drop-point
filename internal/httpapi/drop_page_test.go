@@ -49,7 +49,7 @@ func TestDropAssetsAreSameOriginOnlyAndNoThirdPartyScripts(t *testing.T) {
 		t.Fatalf("app.js status = %d", recorder.Code)
 	}
 	app := recorder.Body.String()
-	for _, want := range []string{"window.isSecureContext", "X25519", "#", "FormData", "dataTransfer", "handleDroppedFiles", "formatRemainingTime", "updateSelectedFiles", "Ready for pickup"} {
+	for _, want := range []string{"window.isSecureContext", "X25519", "#", "FormData", "dataTransfer", "handleDroppedFiles", "formatRemainingTime", "updateSelectedFiles", "removeSelectedFile", "Ready for pickup"} {
 		if !strings.Contains(app, want) {
 			t.Fatalf("app.js missing %q", want)
 		}
@@ -69,9 +69,26 @@ func TestDropPageDragDropAppendsExistingSelection(t *testing.T) {
 	}
 
 	app := recorder.Body.String()
-	for _, want := range []string{"function setSelectedFiles(files)", "setSelectedFiles([...filesInput.files, ...droppedFiles])"} {
+	for _, want := range []string{"function setSelectedFiles(files)", "setSelectedFiles([...state.selectedFiles, ...droppedFiles])"} {
 		if !strings.Contains(app, want) {
 			t.Fatalf("app.js missing drag-drop append behavior %q", want)
+		}
+	}
+}
+
+func TestDropPageCanRemoveSpecificSelectedFile(t *testing.T) {
+	handler := NewRouter(log.New(&bytes.Buffer{}, "", 0))
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/drop-assets/app.js", nil)
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("app.js status = %d", recorder.Code)
+	}
+
+	app := recorder.Body.String()
+	for _, want := range []string{"Remove", "aria-label", "function removeSelectedFile(index)", "filter((_file, fileIndex) => fileIndex !== index)"} {
+		if !strings.Contains(app, want) {
+			t.Fatalf("app.js missing per-file removal behavior %q", want)
 		}
 	}
 }

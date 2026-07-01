@@ -10,6 +10,7 @@ const state = {
   recipientPublicKey: null,
   expiresAt: null,
   countdownTimer: null,
+  selectedFiles: [],
   dropToken: location.pathname.split('/').pop(),
 };
 
@@ -24,7 +25,7 @@ const selectedFilesList = document.getElementById('selected-files');
 
 init().catch((error) => showError(error.message || 'This drop point cannot be used.'));
 
-filesInput.addEventListener('change', updateSelectedFiles);
+filesInput.addEventListener('change', () => setSelectedFiles([...filesInput.files]));
 dropZone.addEventListener('dragenter', handleDragOverFiles);
 dropZone.addEventListener('dragover', handleDragOverFiles);
 dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
@@ -73,19 +74,12 @@ function handleDroppedFiles(event) {
   if (droppedFiles.length === 0) {
     return;
   }
-  if (typeof DataTransfer === 'undefined') {
-    showStatus('Drag-and-drop file selection is not supported in this browser. Use Choose files instead.');
-    return;
-  }
-  setSelectedFiles([...filesInput.files, ...droppedFiles]);
+  setSelectedFiles([...state.selectedFiles, ...droppedFiles]);
 }
 
 function setSelectedFiles(files) {
-  const transfer = new DataTransfer();
-  for (const file of files) {
-    transfer.items.add(file);
-  }
-  filesInput.files = transfer.files;
+  state.selectedFiles = files;
+  filesInput.value = '';
   updateSelectedFiles();
 }
 
@@ -96,7 +90,7 @@ function preventFileNavigation(event) {
 }
 
 function updateSelectedFiles() {
-  const files = [...filesInput.files];
+  const files = [...state.selectedFiles];
   submitButton.disabled = files.length === 0;
   renderSelectedFiles(files);
   if (files.length === 0) {
@@ -107,27 +101,51 @@ function updateSelectedFiles() {
 }
 
 function renderSelectedFiles(files) {
-  selectedFilesList.replaceChildren(...files.map((file) => {
+  selectedFilesList.replaceChildren(...files.map((file, index) => {
     const item = document.createElement('li');
+    item.className = 'selected-file';
+
+    const details = document.createElement('span');
+    details.className = 'file-details';
     const name = document.createElement('span');
     name.textContent = file.name || 'file';
     const size = document.createElement('span');
     size.className = 'file-size';
     size.textContent = ` (${formatBytes(file.size)})`;
-    item.append(name, size);
+    details.append(name, size);
+
+    const removeButton = document.createElement('button');
+    removeButton.type = 'button';
+    removeButton.className = 'remove-file';
+    removeButton.textContent = 'Remove';
+    removeButton.disabled = filesInput.disabled;
+    removeButton.setAttribute('aria-label', `Remove ${file.name || 'file'} from selected files`);
+    removeButton.addEventListener('click', () => removeSelectedFile(index));
+
+    item.append(details, removeButton);
     return item;
   }));
   selectionBox.hidden = files.length === 0;
 }
 
+function removeSelectedFile(index) {
+  if (filesInput.disabled) {
+    return;
+  }
+  state.selectedFiles = state.selectedFiles.filter((_file, fileIndex) => fileIndex !== index);
+  filesInput.value = '';
+  updateSelectedFiles();
+}
+
 async function dropSelectedFiles() {
-  const files = [...filesInput.files];
+  const files = [...state.selectedFiles];
   if (files.length === 0) {
     throw new Error('Choose files before dropping.');
   }
   filesInput.disabled = true;
   submitButton.disabled = true;
   dropZone.classList.add('disabled');
+  renderSelectedFiles(files);
   showStatus('Encrypting and dropping files...');
   const bundle = await buildEncryptedBundle(files, state.recipientPublicKey);
   showStatus('Dropping encrypted files...');
@@ -349,6 +367,7 @@ function showError(message) {
   filesInput.disabled = true;
   submitButton.disabled = true;
   dropZone.classList.add('disabled');
+  renderSelectedFiles([...state.selectedFiles]);
   statusBox.className = 'status error';
   statusBox.textContent = message;
 }
