@@ -6,7 +6,7 @@ import (
 	droppage "github.com/shunichironomura/drop-point/web/drop-page"
 )
 
-const dropPageCSP = "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+const dropPageCSP = "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src blob:; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
 
 // HandleServeDropPage serves the sender-facing browser encryption page.
 func HandleServeDropPage(w http.ResponseWriter, r *http.Request) {

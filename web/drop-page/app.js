@@ -1,6 +1,8 @@
 const PROTOCOL_VERSION = 2;
 const KEY_AGREEMENT = 'x25519-hkdf-sha256-aesgcm-raw32';
 const COUNTDOWN_INTERVAL_MS = 1000;
+const IMAGE_TYPE_PREFIX = 'image/';
+const IMAGE_NAME_PATTERN = /\.(?:apng|avif|bmp|gif|heic|heif|ico|jpe?g|png|svg|webp)$/i;
 const INFO_METADATA = new TextEncoder().encode('DropPoint/protocol/v2 key=metadata');
 const INFO_PAYLOAD = new TextEncoder().encode('DropPoint/protocol/v2 key=payload');
 const AAD_METADATA = aad('metadata');
@@ -11,6 +13,7 @@ const state = {
   expiresAt: null,
   countdownTimer: null,
   selectedFiles: [],
+  thumbnailURLs: new Map(),
   dropToken: location.pathname.split('/').pop(),
 };
 
@@ -32,6 +35,7 @@ dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-ove
 dropZone.addEventListener('drop', handleDroppedFiles);
 window.addEventListener('dragover', preventFileNavigation);
 window.addEventListener('drop', preventFileNavigation);
+window.addEventListener('pagehide', revokeAllThumbnailURLs);
 
 submitButton.addEventListener('click', () => {
   dropSelectedFiles().catch((error) => showError(error.message || 'Dropping files failed.'));
@@ -101,9 +105,17 @@ function updateSelectedFiles() {
 }
 
 function renderSelectedFiles(files) {
+  pruneThumbnailURLs(files);
   selectedFilesList.replaceChildren(...files.map((file, index) => {
     const item = document.createElement('li');
     item.className = 'selected-file';
+
+    const summary = document.createElement('span');
+    summary.className = 'file-summary';
+    const thumbnail = createFileThumbnail(file);
+    if (thumbnail !== null) {
+      summary.append(thumbnail);
+    }
 
     const details = document.createElement('span');
     details.className = 'file-details';
@@ -113,6 +125,7 @@ function renderSelectedFiles(files) {
     size.className = 'file-size';
     size.textContent = ` (${formatBytes(file.size)})`;
     details.append(name, size);
+    summary.append(details);
 
     const removeButton = document.createElement('button');
     removeButton.type = 'button';
@@ -122,10 +135,57 @@ function renderSelectedFiles(files) {
     removeButton.setAttribute('aria-label', `Remove ${file.name || 'file'} from selected files`);
     removeButton.addEventListener('click', () => removeSelectedFile(index));
 
-    item.append(details, removeButton);
+    item.append(summary, removeButton);
     return item;
   }));
   selectionBox.hidden = files.length === 0;
+}
+
+function createFileThumbnail(file) {
+  if (!isImageFile(file) || typeof URL.createObjectURL !== 'function') {
+    return null;
+  }
+  const image = document.createElement('img');
+  image.className = 'file-thumbnail';
+  image.alt = '';
+  image.decoding = 'async';
+  image.src = thumbnailURLFor(file);
+  image.addEventListener('error', () => {
+    image.hidden = true;
+  });
+  return image;
+}
+
+function thumbnailURLFor(file) {
+  const existingURL = state.thumbnailURLs.get(file);
+  if (existingURL) {
+    return existingURL;
+  }
+  const url = URL.createObjectURL(file);
+  state.thumbnailURLs.set(file, url);
+  return url;
+}
+
+function isImageFile(file) {
+  const mimeType = file.type || '';
+  return mimeType.startsWith(IMAGE_TYPE_PREFIX) || IMAGE_NAME_PATTERN.test(file.name || '');
+}
+
+function pruneThumbnailURLs(files) {
+  const currentFiles = new Set(files.filter(isImageFile));
+  for (const [file, url] of state.thumbnailURLs) {
+    if (!currentFiles.has(file)) {
+      URL.revokeObjectURL(url);
+      state.thumbnailURLs.delete(file);
+    }
+  }
+}
+
+function revokeAllThumbnailURLs() {
+  for (const url of state.thumbnailURLs.values()) {
+    URL.revokeObjectURL(url);
+  }
+  state.thumbnailURLs.clear();
 }
 
 function removeSelectedFile(index) {
