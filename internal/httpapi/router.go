@@ -14,6 +14,7 @@ import (
 type Dependencies struct {
 	Config     config.Config
 	Repository *store.Repository
+	BlobStore  BlobStore
 	Logger     *log.Logger
 	Now        func() time.Time
 }
@@ -56,6 +57,16 @@ func NewRouterWithDependencies(deps Dependencies) http.Handler {
 		default:
 			w.Header().Set("Allow", "POST")
 			writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
+		}
+	})
+	mux.HandleFunc("/api/drop-points/", func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && dropPointIDFromStatusPath(r.URL.Path) != "":
+			HandleGetDropPointStatus(deps)(w, r)
+		case r.Method == http.MethodDelete && dropPointIDFromClosePath(r.URL.Path) != "":
+			HandleCloseDropPoint(deps)(w, r)
+		default:
+			http.NotFound(w, r)
 		}
 	})
 

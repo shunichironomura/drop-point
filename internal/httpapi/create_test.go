@@ -149,6 +149,11 @@ func TestCreateDropPointValidatesLimitsAndQuota(t *testing.T) {
 
 func newCreateTestHandler(t *testing.T, apiTokens ...config.APIToken) (*store.Repository, http.Handler) {
 	t.Helper()
+	return newCreateTestHandlerWithBlob(t, nil, apiTokens...)
+}
+
+func newCreateTestHandlerWithBlob(t *testing.T, blob BlobStore, apiTokens ...config.APIToken) (*store.Repository, http.Handler) {
+	t.Helper()
 	dataDir := filepath.Join(t.TempDir(), "data")
 	if err := config.EnsureDataDir(dataDir); err != nil {
 		t.Fatalf("EnsureDataDir: %v", err)
@@ -165,6 +170,7 @@ func newCreateTestHandler(t *testing.T, apiTokens ...config.APIToken) (*store.Re
 	handler := NewRouterWithDependencies(Dependencies{
 		Config:     cfg,
 		Repository: repo,
+		BlobStore:  blob,
 		Logger:     log.New(&bytes.Buffer{}, "", 0),
 		Now:        func() time.Time { return time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC) },
 	})
