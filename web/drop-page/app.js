@@ -13,12 +13,19 @@ const state = {
 const filesInput = document.getElementById('files');
 const submitButton = document.getElementById('submit');
 const statusBox = document.getElementById('status');
+const dropZone = document.getElementById('drop-zone');
 const selectionBox = document.getElementById('selection');
 const selectedFilesList = document.getElementById('selected-files');
 
 init().catch((error) => showError(error.message || 'This drop point cannot be used.'));
 
 filesInput.addEventListener('change', updateSelectedFiles);
+dropZone.addEventListener('dragenter', handleDragOverFiles);
+dropZone.addEventListener('dragover', handleDragOverFiles);
+dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
+dropZone.addEventListener('drop', handleDroppedFiles);
+window.addEventListener('dragover', preventFileNavigation);
+window.addEventListener('drop', preventFileNavigation);
 
 submitButton.addEventListener('click', () => {
   dropSelectedFiles().catch((error) => showError(error.message || 'Dropping files failed.'));
@@ -31,8 +38,46 @@ async function init() {
   state.recipientPublicKey = parseFragmentPublicKey(location.hash);
   await assertX25519Support(state.recipientPublicKey);
   filesInput.disabled = false;
+  dropZone.classList.remove('disabled');
   updateSelectedFiles();
   showStatus('Choose files');
+}
+
+function handleDragOverFiles(event) {
+  if (filesInput.disabled) {
+    return;
+  }
+  event.preventDefault();
+  event.dataTransfer.dropEffect = 'copy';
+  dropZone.classList.add('drag-over');
+}
+
+function handleDroppedFiles(event) {
+  if (filesInput.disabled) {
+    return;
+  }
+  event.preventDefault();
+  dropZone.classList.remove('drag-over');
+  const files = Array.from(event.dataTransfer.files);
+  if (files.length === 0) {
+    return;
+  }
+  if (typeof DataTransfer === 'undefined') {
+    showStatus('Drag-and-drop file selection is not supported in this browser. Use Choose files instead.');
+    return;
+  }
+  const transfer = new DataTransfer();
+  for (const file of files) {
+    transfer.items.add(file);
+  }
+  filesInput.files = transfer.files;
+  updateSelectedFiles();
+}
+
+function preventFileNavigation(event) {
+  if (Array.from(event.dataTransfer?.types || []).includes('Files')) {
+    event.preventDefault();
+  }
 }
 
 function updateSelectedFiles() {
@@ -67,6 +112,7 @@ async function dropSelectedFiles() {
   }
   filesInput.disabled = true;
   submitButton.disabled = true;
+  dropZone.classList.add('disabled');
   showStatus('Encrypting and dropping files...');
   const bundle = await buildEncryptedBundle(files, state.recipientPublicKey);
   showStatus('Dropping encrypted files...');
@@ -229,6 +275,7 @@ function showSuccess(message) {
 function showError(message) {
   filesInput.disabled = true;
   submitButton.disabled = true;
+  dropZone.classList.add('disabled');
   statusBox.className = 'status error';
   statusBox.textContent = message;
 }

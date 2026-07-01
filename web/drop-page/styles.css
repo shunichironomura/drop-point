@@ -92,6 +92,21 @@ h1 {
   color: #0f172a;
 }
 
+.drop-zone {
+  margin-top: 1rem;
+  padding: 1rem;
+  border: 2px dashed #64748b;
+  border-radius: 0.9rem;
+  color: #cbd5e1;
+  text-align: center;
+}
+
+.drop-zone.drag-over {
+  border-color: #38bdf8;
+  background: #082f49;
+  color: #e0f2fe;
+}
+
 .picker input {
   inline-size: 1px;
   block-size: 1px;
@@ -105,7 +120,7 @@ button {
   cursor: pointer;
 }
 
-button:disabled, .picker:has(input:disabled) {
+button:disabled, .picker:has(input:disabled), .drop-zone.disabled {
   opacity: 0.5;
   cursor: not-allowed;
 }
