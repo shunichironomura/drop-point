@@ -12,6 +12,7 @@ import (
 
 	"github.com/shunichironomura/drop-point/internal/config"
 	"github.com/shunichironomura/drop-point/internal/server"
+	"github.com/shunichironomura/drop-point/internal/token"
 )
 
 func main() {
@@ -24,6 +25,8 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		case "help", "-h", "--help":
 			printUsage(stdout)
 			return 0
+		case "token":
+			return runToken(args[1:], stdout, stderr)
 		case "serve":
 			args = args[1:]
 		}
@@ -66,10 +69,26 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	return 0
 }
 
+func runToken(args []string, stdout io.Writer, stderr io.Writer) int {
+	if len(args) != 1 || args[0] != "generate" {
+		_, _ = fmt.Fprintln(stderr, "usage: drop-point token generate")
+		return 2
+	}
+	plaintext, err := token.GenerateAPIToken()
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "token generation error: %v\n", err)
+		return 1
+	}
+	hash := token.HashSecret(plaintext)
+	_, _ = fmt.Fprintf(stdout, "api_token: %s\nsecret_hash: %s\nconfig_entry: {\"id\":\"desktop-main\",\"secret_hash\":\"%s\",\"enabled\":true}\n", plaintext, hash, hash)
+	return 0
+}
+
 func printUsage(w io.Writer) {
 	_, _ = fmt.Fprint(w, `Usage:
   drop-point serve [--config path]
   drop-point [--config path]
+  drop-point token generate
 
 Defaults:
   listen_addr: 127.0.0.1:8080

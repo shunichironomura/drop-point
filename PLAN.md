@@ -178,6 +178,8 @@ Build the reusable functional core for drop point lifecycle rules, token generat
 
 ## Phase 2: authenticated drop point creation
 
+Status: Completed on 2026-07-01.
+
 ### Goal
 
 Expose receiver-initiated drop point creation through the HTTP API.

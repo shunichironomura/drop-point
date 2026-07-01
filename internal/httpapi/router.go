@@ -4,11 +4,32 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"time"
+
+	"github.com/shunichironomura/drop-point/internal/config"
+	"github.com/shunichironomura/drop-point/internal/store"
 )
 
-// NewRouter builds the HTTP handler tree for the relay.
+// Dependencies are the imperative-shell resources used by HTTP handlers.
+type Dependencies struct {
+	Config     config.Config
+	Repository *store.Repository
+	Logger     *log.Logger
+	Now        func() time.Time
+}
+
+// NewRouter builds the HTTP handler tree for tests that only need unauthenticated
+// routes. Production code should use NewRouterWithDependencies.
 func NewRouter(logger *log.Logger) http.Handler {
-	logger = defaultLogger(logger)
+	return NewRouterWithDependencies(Dependencies{Config: config.Default(), Logger: logger})
+}
+
+// NewRouterWithDependencies builds the HTTP handler tree for the relay.
+func NewRouterWithDependencies(deps Dependencies) http.Handler {
+	logger := defaultLogger(deps.Logger)
+	if deps.Now == nil {
+		deps.Now = func() time.Time { return time.Now().UTC() }
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
@@ -22,6 +43,19 @@ func NewRouter(logger *log.Logger) http.Handler {
 		default:
 			w.Header().Set("Allow", "GET, HEAD")
 			http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
+		}
+	})
+	mux.HandleFunc("/api/drop-points", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/drop-points" {
+			http.NotFound(w, r)
+			return
+		}
+		switch r.Method {
+		case http.MethodPost:
+			HandleCreateDropPoint(deps)(w, r)
+		default:
+			w.Header().Set("Allow", "POST")
+			writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
 		}
 	})
 
