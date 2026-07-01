@@ -240,9 +240,6 @@ func DecryptBundle(recipientPrivateKey []byte, envelope Envelope, encryptedPaylo
 	if err != nil {
 		return nil, Intermediates{}, err
 	}
-	if err := ValidateManifest(manifest, payloadPlaintext); err != nil {
-		return nil, Intermediates{}, err
-	}
 	files, err := SplitPayload(manifest, payloadPlaintext)
 	if err != nil {
 		return nil, Intermediates{}, err
