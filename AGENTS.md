@@ -1,10 +1,9 @@
 # Agent Instructions
 
-## Product specification and implementation plan
+## Product specification
 
-Use `SPEC.md` as the authoritative product, API, data, and protocol specification.
-Use `PLAN.md` as the phased implementation plan for turning the specification into code.
-When implementing or reviewing changes, keep behavior aligned with both documents; update them when intentional design or plan changes are made.
+Use `SPEC.md` as the authoritative product, API, data, protocol, and reference implementation specification.
+When implementing or reviewing changes, keep behavior aligned with it; update it when intentional design changes are made.
 
 ## Code review order document
 

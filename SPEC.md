@@ -93,6 +93,7 @@ Required transition rules:
 - `open` MAY transition to `receiving` when a valid drop starts.
 - `receiving` MUST transition to `ready` only after the envelope and payload are durably stored.
 - A failed or partial drop MUST NOT consume the single-use slot; the drop point MUST return to `open` unless it has expired or failed terminally.
+- Durable storage failures, including disk-full or write-failure paths, MUST NOT mark a drop point `ready` and MUST NOT consume the single-use slot unless it has expired or failed terminally.
 - `open`, `receiving`, and `ready` MAY transition to `closed` by receiver request.
 - Any non-terminal status whose expiry time has elapsed MUST be treated as expired and MUST NOT accept new drops or pickups.
 - Pickup records `first_picked_up_at` and optionally `last_picked_up_at`; pickup MUST NOT be modeled as a terminal status.
@@ -118,6 +119,8 @@ Because the drop token appears in URL paths, it may be exposed by application, p
 ### 6.3 Pickup token
 
 The pickup token is returned only to the receiver at drop point creation. Possession authorizes status polling, pickup, and close for that drop point. It MUST NOT authorize dropping a payload.
+
+Receiver endpoint authorization failures SHOULD avoid revealing whether the drop point ID, pickup token, expiry state, or status caused the rejection.
 
 ### 6.4 Token format
 
@@ -195,6 +198,7 @@ The response is the sender-facing HTML/JS/CSS page. The page MUST:
 - Show a clear error for a missing or malformed public key.
 - Use no third-party scripts.
 - Use a strict Content Security Policy.
+- Set defensive sender-facing security headers such as `X-Content-Type-Options: nosniff`, `Referrer-Policy`, and a restrictive `Permissions-Policy`.
 
 The page SHOULD avoid exposing useful details about unknown or expired drop tokens.
 
@@ -220,6 +224,13 @@ Rules:
 - `max_bytes` applies to the encrypted `payload` part.
 - A committed drop stores one envelope and one encrypted payload.
 - The relay MUST NOT decrypt or require plaintext metadata.
+- Before committing a drop, the relay MUST validate the relay-visible envelope shape, including:
+  - `protocol_version` is integer `2`;
+  - `key_agreement` is `x25519-hkdf-sha256-aesgcm-raw32`;
+  - base64url fields are non-empty, unpadded, and decodable;
+  - `sender_ephemeral_public_key` decodes to 32 bytes;
+  - `metadata_nonce` and `payload_nonce` decode to 12 bytes;
+  - `encrypted_metadata` is present and long enough to contain an AES-GCM tag.
 
 Response:
 
@@ -276,7 +287,7 @@ DELETE /api/drop-points/:drop_point_id
 Authorization: Bearer <pickup-token>
 ```
 
-Close deletes stored envelope and payload data if present and marks the drop point `closed`. Close SHOULD be idempotent enough for receiver cleanup flows.
+Close deletes stored envelope and payload data if present and marks the drop point `closed`. Close SHOULD be idempotent enough for receiver cleanup flows and MUST tolerate already-deleted envelope or payload files.
 
 ### 7.7 Health check
 
@@ -307,6 +318,8 @@ A drop point record contains at least:
 | `closed_at` | Explicit close timestamp. |
 | `expires_at` | TTL expiry timestamp. |
 | `max_bytes` | Max encrypted payload size for this drop point. |
+
+The default local implementation uses SQLite for relay metadata. It MUST enable WAL journal mode, foreign-key enforcement, and a busy timeout, and it SHOULD apply built-in schema migrations automatically before serving requests or running cleanup.
 
 The default SQLite schema for the local implementation is:
 
@@ -349,6 +362,10 @@ The default local storage layout is:
 
 `payload.bin` and `envelope.json` are protocol/storage terms and SHOULD keep these names.
 
+The local implementation MUST create the configured data directory and `drop-points/` subdirectory with owner-only permissions. SQLite database files and stored blob files SHOULD also use restrictive owner-only permissions.
+
+Filesystem blob writes MUST be atomic from the repository point of view: write temporary files, flush file contents where supported, rename into place only after successful writes, and flush the containing directory where supported. Close and expiry cleanup MUST be safe to repeat when blob directories or files are already gone.
+
 ## 9. Configuration surface
 
 DropPoint configuration contains:
@@ -373,6 +390,17 @@ DropPoint configuration contains:
   ]
 }
 ```
+
+The reference `drop-point` single-binary implementation provides this operator command surface:
+
+```text
+drop-point serve --config ./config.json
+drop-point --config ./config.json
+drop-point token generate
+drop-point cleanup expired --config ./config.json
+```
+
+`serve` starts the HTTP relay. Running `drop-point` without an explicit subcommand MAY default to `serve`. `token generate` prints a plaintext API token and matching configuration hash exactly once. `cleanup expired` marks expired non-terminal drop points expired and removes expired blob directories idempotently.
 
 Configuration rules:
 
@@ -774,8 +802,9 @@ DropPoint is deployment-neutral. It may run behind a reverse proxy, tunnel, CDN,
 - `/api/drops/:drop_token` is reachable by sender browsers.
 - Sender browsers see an HTTPS origin or another browser-recognized secure context.
 - Receiver APIs are reachable by receiver clients.
-- Request body size limits at every layer are compatible with configured `max_bytes` plus multipart overhead.
+- Request body size limits at the application and every edge layer are compatible with configured `max_bytes` plus multipart overhead.
 - Operators redact token-bearing paths at proxies, tunnels, CDNs, and application logs.
+- Browser CORS policy is appropriate for same-origin drop page use and does not treat CORS as an authorization mechanism for receiver APIs.
 
 ## 18. Generic client integration boundary
 
