@@ -25,7 +25,7 @@ const selectedFilesList = document.getElementById('selected-files');
 
 init().catch((error) => showError(error.message || 'This drop point cannot be used.'));
 
-filesInput.addEventListener('change', () => setSelectedFiles([...filesInput.files]));
+filesInput.addEventListener('change', () => setSelectedFiles([...state.selectedFiles, ...filesInput.files]));
 dropZone.addEventListener('dragenter', handleDragOverFiles);
 dropZone.addEventListener('dragover', handleDragOverFiles);
 dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
