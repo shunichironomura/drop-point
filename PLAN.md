@@ -357,6 +357,7 @@ Implement the mobile-friendly sender page that reads the fragment key, encrypts 
 - Feature-detect WebCrypto X25519 support and show an explicit unsupported-browser error when unavailable.
 - Parse fragment format `#v=2&pk=<base64url(raw-32-byte-x25519-public-key)>`.
 - Build a bundle manifest for one or more files.
+- Let the sender remove individual files from the selected-file list before dropping.
 - Concatenate file bytes in manifest order.
 - Generate sender ephemeral X25519 key pair and AES-GCM nonces.
 - Derive metadata and payload keys with the protocol HKDF values.

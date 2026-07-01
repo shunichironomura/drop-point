@@ -69,11 +69,24 @@ h1 {
 
 .selection ul {
   margin: 0;
-  padding-left: 1.25rem;
+  padding: 0;
+  list-style: none;
 }
 
-.selection li + li {
+.selected-file {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.selected-file + .selected-file {
   margin-top: 0.4rem;
+}
+
+.file-details {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .file-size {
@@ -124,6 +137,21 @@ button {
   background: #38bdf8;
   color: #082f49;
   cursor: pointer;
+}
+
+.remove-file {
+  width: auto;
+  flex: 0 0 auto;
+  margin: 0;
+  border: 1px solid #475569;
+  padding: 0.4rem 0.7rem;
+  background: #1e293b;
+  color: #e2e8f0;
+  font-size: 0.85rem;
+}
+
+.remove-file:hover:not(:disabled), .remove-file:focus-visible {
+  background: #334155;
 }
 
 button:disabled, .picker:has(input:disabled), .drop-zone.disabled {
