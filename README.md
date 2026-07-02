@@ -27,6 +27,8 @@ go run ./cmd/drop-point token generate
 
 For local browser encryption, use `http://localhost` or HTTPS. LAN-IP-over-HTTP is not a secure browser context and WebCrypto may be unavailable.
 
+For Docker Compose, copy `.env.example` to ignored `.env` before adding deployment-specific values.
+
 ## Basic receiver flow
 
 1. Create a drop point with a configured API token.

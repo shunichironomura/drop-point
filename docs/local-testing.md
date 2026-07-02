@@ -140,4 +140,4 @@ The sender script encrypts the manifest and payload locally and uploads only cip
   --wait
 ```
 
-By default pickup closes the remote drop point after decrypted files are written locally. Use `--no-close` to keep it open for repeated pickup testing.
+By default pickup closes the remote drop point after decrypted files are written locally and removes `recipient_private_key` from the state file. Use `--no-close` to keep it open for repeated pickup testing.

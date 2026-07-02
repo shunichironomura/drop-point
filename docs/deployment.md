@@ -29,6 +29,13 @@ docker run --rm \
 
 The image listens on `:8080`, stores data under `/var/lib/drop-point`, and runs as a non-root user.
 
+For the included Compose file, copy the template first so deployment-specific values and token hashes stay out of version control:
+
+```sh
+cp .env.example .env
+docker compose up --build
+```
+
 ## systemd example
 
 ```ini
@@ -69,7 +76,7 @@ from a timer or cron as an operational backstop.
 - Request body limits and idle/upload timeouts must allow `max_bytes` plus multipart overhead for slow mobile senders.
 - TLS may terminate outside DropPoint.
 - `/health` is unauthenticated and low-information.
-- Public deployments must enforce rate limits and connection caps at the ingress or TLS terminator. Apply them to unauthenticated page/asset/health routes as well as upload routes; leaked drop links can otherwise be used to force repeated large failed uploads during their TTL.
+- Public deployments must enforce rate limits and connection caps at the ingress or TLS terminator. Apply them to invalid `Authorization` attempts, drop-token metadata/upload routes, and unauthenticated page/asset/health routes; leaked drop links can otherwise be used to force repeated large failed uploads during their TTL.
 - Public TLS terminators should emit `Strict-Transport-Security: max-age=31536000; includeSubDomains` for the DropPoint origin after HTTPS is confirmed working. Consider HSTS preload only when every subdomain is permanently HTTPS-ready.
 
 ## Logging guidance
