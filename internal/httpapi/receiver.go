@@ -55,26 +55,24 @@ func HandleCloseDropPoint(deps Dependencies) http.HandlerFunc {
 			return
 		}
 		if dp.Status == droppoint.StatusExpired {
-			writeError(w, http.StatusGone, "drop_point_expired", "drop point has expired")
-			return
-		}
-		if (dp.PayloadPath != "" || dp.EnvelopePath != "") && deps.BlobStore == nil {
-			writeError(w, http.StatusInternalServerError, "blob_store_unavailable", "payload storage is unavailable")
-			return
-		}
-		if deps.BlobStore != nil && (dp.PayloadPath != "" || dp.EnvelopePath != "") {
-			if err := deps.BlobStore.DeleteDropPoint(r.Context(), id); err != nil {
+			if err := deleteStoredDropFiles(r.Context(), deps, dp); err != nil {
 				writeError(w, http.StatusInternalServerError, "drop_point_close_failed", "could not delete stored drop payload")
 				return
 			}
-			if err := deps.Repository.DeleteDropPointFiles(r.Context(), id); err != nil {
-				writeError(w, http.StatusInternalServerError, "drop_point_close_failed", "could not clear stored drop payload metadata")
-				return
-			}
+			writeError(w, http.StatusGone, "drop_point_expired", "drop point has expired")
+			return
+		}
+		if dropPointHasFiles(dp) && deps.BlobStore == nil {
+			writeError(w, http.StatusInternalServerError, "blob_store_unavailable", "payload storage is unavailable")
+			return
 		}
 		if err := deps.Repository.CloseDropPoint(r.Context(), id, deps.Now().UTC()); err != nil {
 			switch {
 			case errors.Is(err, droppoint.ErrDropPointExpired):
+				if err := deleteStoredDropFiles(r.Context(), deps, dp); err != nil {
+					writeError(w, http.StatusInternalServerError, "drop_point_close_failed", "could not delete stored drop payload")
+					return
+				}
 				writeError(w, http.StatusGone, "drop_point_expired", "drop point has expired")
 			case errors.Is(err, droppoint.ErrDropPointNotFound), errors.Is(err, droppoint.ErrPickupTokenInvalid):
 				writeError(w, http.StatusNotFound, "drop_point_not_found", "drop point not found")
@@ -83,8 +81,29 @@ func HandleCloseDropPoint(deps Dependencies) http.HandlerFunc {
 			}
 			return
 		}
+		if err := deleteStoredDropFiles(r.Context(), deps, dp); err != nil {
+			writeError(w, http.StatusInternalServerError, "drop_point_close_failed", "could not delete stored drop payload")
+			return
+		}
 		w.WriteHeader(http.StatusNoContent)
 	}
+}
+
+func dropPointHasFiles(dp *droppoint.DropPoint) bool {
+	return dp != nil && (dp.PayloadPath != "" || dp.EnvelopePath != "")
+}
+
+func deleteStoredDropFiles(ctx context.Context, deps Dependencies, dp *droppoint.DropPoint) error {
+	if !dropPointHasFiles(dp) {
+		return nil
+	}
+	if deps.BlobStore == nil {
+		return errors.New("payload storage is unavailable")
+	}
+	if err := deps.BlobStore.DeleteDropPoint(ctx, dp.ID); err != nil {
+		return err
+	}
+	return deps.Repository.DeleteDropPointFiles(ctx, dp.ID)
 }
 
 func authorizePickup(w http.ResponseWriter, r *http.Request, deps Dependencies, id string) (*droppoint.DropPoint, bool) {
