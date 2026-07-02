@@ -76,6 +76,17 @@ func TestDeleteDropPointIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestDeleteDropPointRejectsReservedAndNonDropPointIDs(t *testing.T) {
+	store := newTestBlobStore(t)
+	for _, id := range []string{".", "..", "other", "dp_", "dp_bad.name", "dp_bad/name", `dp_bad\\name`} {
+		t.Run(id, func(t *testing.T) {
+			if err := store.DeleteDropPoint(context.Background(), id); err == nil {
+				t.Fatal("DeleteDropPoint succeeded, want invalid id error")
+			}
+		})
+	}
+}
+
 func newTestBlobStore(t *testing.T) *Store {
 	t.Helper()
 	dataDir := filepath.Join(t.TempDir(), "data")

@@ -1,12 +1,14 @@
 package httpapi
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
 	"mime"
 	"mime/multipart"
 	"net/http"
+	"time"
 
 	"github.com/shunichironomura/drop-point/internal/cryptoenv"
 	"github.com/shunichironomura/drop-point/internal/droppoint"
@@ -14,13 +16,14 @@ import (
 )
 
 const (
-	maxEnvelopeBytes    = 1 << 20
-	multipartOverhead   = 64 << 10
-	envelopePartName    = "envelope"
-	payloadPartName     = "payload"
-	jsonContentType     = "application/json"
-	octetContentType    = "application/octet-stream"
-	multipartFormPrefix = "multipart/form-data"
+	maxEnvelopeBytes        = 1 << 20
+	multipartOverhead       = 64 << 10
+	envelopePartName        = "envelope"
+	payloadPartName         = "payload"
+	jsonContentType         = "application/json"
+	octetContentType        = "application/octet-stream"
+	multipartFormPrefix     = "multipart/form-data"
+	dropFinalizationTimeout = 10 * time.Second
 )
 
 type submitDropResponse struct {
@@ -49,8 +52,10 @@ func HandleSubmitDrop(deps Dependencies) http.HandlerFunc {
 		committed := false
 		defer func() {
 			if !committed {
-				_ = deps.BlobStore.DeleteDropPoint(r.Context(), dp.ID)
-				_ = deps.Repository.ResetReceivingDrop(r.Context(), dp.ID, deps.Now().UTC())
+				cleanupCtx, cancel := dropFinalizationContext(r.Context())
+				defer cancel()
+				_ = deps.BlobStore.DeleteDropPoint(cleanupCtx, dp.ID)
+				_ = deps.Repository.ResetReceivingDrop(cleanupCtx, dp.ID, deps.Now().UTC())
 			}
 		}()
 
@@ -70,13 +75,23 @@ func HandleSubmitDrop(deps Dependencies) http.HandlerFunc {
 			writeMultipartDropError(w, err)
 			return
 		}
-		if err := deps.Repository.CommitReceivedDrop(r.Context(), dp.ID, result, deps.Now().UTC()); err != nil {
-			writeDropAuthError(w, err)
+		commitCtx, cancel := dropFinalizationContext(r.Context())
+		commitErr := deps.Repository.CommitReceivedDrop(commitCtx, dp.ID, result, deps.Now().UTC())
+		cancel()
+		if commitErr != nil {
+			writeDropAuthError(w, commitErr)
 			return
 		}
 		committed = true
 		writeJSON(w, http.StatusOK, submitDropResponse{Status: droppoint.StatusReady})
 	}
+}
+
+func dropFinalizationContext(parent context.Context) (context.Context, context.CancelFunc) {
+	if parent == nil {
+		parent = context.Background()
+	}
+	return context.WithTimeout(context.WithoutCancel(parent), dropFinalizationTimeout)
 }
 
 func multipartDropParts(r *http.Request) ([]byte, io.Reader, error) {
@@ -153,8 +168,9 @@ func writeDropAuthError(w http.ResponseWriter, err error) {
 }
 
 func writeMultipartDropError(w http.ResponseWriter, err error) {
+	var maxBytesErr *http.MaxBytesError
 	switch {
-	case errors.Is(err, droppoint.ErrPayloadTooLarge):
+	case errors.Is(err, droppoint.ErrPayloadTooLarge), errors.As(err, &maxBytesErr):
 		writeError(w, http.StatusRequestEntityTooLarge, "payload_too_large", "encrypted payload exceeds the drop point limit")
 	case errors.Is(err, droppoint.ErrEnvelopeInvalid):
 		writeError(w, http.StatusBadRequest, "envelope_invalid", "envelope is invalid")

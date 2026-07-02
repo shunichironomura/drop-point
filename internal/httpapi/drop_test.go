@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -121,6 +122,69 @@ func TestSubmitDropRejectsMalformedMultipartWithoutConsumingSlot(t *testing.T) {
 	}
 }
 
+func TestSubmitDropResetsOpenAfterCanceledPartialUpload(t *testing.T) {
+	repo, blobs, handler := newDropTestHandler(t)
+	dp := testHTTPDropPoint(t, "dp_canceled_partial", "drop_canceled_partial", "pick_canceled_partial", dropTestNow())
+	if err := repo.CreateDropPoint(context.Background(), dp); err != nil {
+		t.Fatalf("CreateDropPoint: %v", err)
+	}
+	body, contentType := multipartDropBody(t, []byte(testEnvelopeJSON()), []byte("partial-payload"))
+	payloadOffset := bytes.Index(body, []byte("partial-payload"))
+	if payloadOffset < 0 {
+		t.Fatal("test payload bytes not found in multipart body")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	request := httptest.NewRequest(http.MethodPut, "/api/drops/drop_canceled_partial", &cancelAfterNReader{data: body, limit: payloadOffset + len("partial"), cancel: cancel}).WithContext(ctx)
+	request.Header.Set("Content-Type", contentType)
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d body=%s", recorder.Code, recorder.Body.String())
+	}
+	open, err := repo.FindOpenDropPointByDropTokenHash(context.Background(), token.HashSecret("drop_canceled_partial"), dropTestNow())
+	if err != nil {
+		t.Fatalf("FindOpenDropPointByDropTokenHash after canceled upload: %v", err)
+	}
+	if open.Status != droppoint.StatusOpen {
+		t.Fatalf("status = %q, want open", open.Status)
+	}
+	if _, err := os.Stat(filepath.Join(blobs.DropDir(dp.ID), blobstore.PayloadFileName)); !os.IsNotExist(err) {
+		t.Fatalf("payload final stat err = %v, want not exist", err)
+	}
+}
+
+func TestSubmitDropCommitsAfterRequestContextCanceledPostUpload(t *testing.T) {
+	repo, _, handler := newDropTestHandler(t)
+	dp := testHTTPDropPoint(t, "dp_canceled_commit", "drop_canceled_commit", "pick_canceled_commit", dropTestNow())
+	if err := repo.CreateDropPoint(context.Background(), dp); err != nil {
+		t.Fatalf("CreateDropPoint: %v", err)
+	}
+	body, contentType := multipartDropBody(t, []byte(testEnvelopeJSON()), []byte("payload"))
+	ctx, cancel := context.WithCancel(context.Background())
+	request := httptest.NewRequest(http.MethodPut, "/api/drops/drop_canceled_commit", &cancelOnEOFReader{reader: bytes.NewReader(body), cancel: cancel}).WithContext(ctx)
+	request.Header.Set("Content-Type", contentType)
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", recorder.Code, recorder.Body.String())
+	}
+	ready, err := repo.FindDropPointByID(context.Background(), dp.ID)
+	if err != nil {
+		t.Fatalf("FindDropPointByID: %v", err)
+	}
+	if ready.Status != droppoint.StatusReady {
+		t.Fatalf("status = %q, want ready", ready.Status)
+	}
+}
+
+func TestWriteMultipartDropErrorMapsRequestLimitToPayloadTooLarge(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	writeMultipartDropError(recorder, &http.MaxBytesError{Limit: 1})
+	if recorder.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
 func TestSubmitDropAuthorizesOnlyDropToken(t *testing.T) {
 	repo, _, handler := newDropTestHandler(t)
 	dp := testHTTPDropPoint(t, "dp_auth_drop", "drop_auth", "pick_auth", dropTestNow())
@@ -195,6 +259,14 @@ func newDropTestHandler(t *testing.T) (*store.Repository, *blobstore.Store, http
 
 func multipartDropRequest(t *testing.T, path string, envelope []byte, payload []byte) *http.Request {
 	t.Helper()
+	body, contentType := multipartDropBody(t, envelope, payload)
+	request := httptest.NewRequest(http.MethodPut, path, bytes.NewReader(body))
+	request.Header.Set("Content-Type", contentType)
+	return request
+}
+
+func multipartDropBody(t *testing.T, envelope []byte, payload []byte) ([]byte, string) {
+	t.Helper()
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
 	mustWritePart(t, writer, envelopePartName, jsonContentType, envelope)
@@ -202,9 +274,7 @@ func multipartDropRequest(t *testing.T, path string, envelope []byte, payload []
 	if err := writer.Close(); err != nil {
 		t.Fatalf("close multipart writer: %v", err)
 	}
-	request := httptest.NewRequest(http.MethodPut, path, &body)
-	request.Header.Set("Content-Type", writer.FormDataContentType())
-	return request
+	return body.Bytes(), writer.FormDataContentType()
 }
 
 func mustWritePart(t *testing.T, writer *multipart.Writer, name string, contentType string, data []byte) {
@@ -223,6 +293,42 @@ func mustWritePart(t *testing.T, writer *multipart.Writer, name string, contentT
 
 func testEnvelopeJSON() string {
 	return `{"protocol_version":2,"key_agreement":"` + cryptoenv.KeyAgreement + `","sender_ephemeral_public_key":"` + cryptoenv.EncodeBase64URL(make([]byte, 32)) + `","metadata_nonce":"` + cryptoenv.EncodeBase64URL(make([]byte, 12)) + `","payload_nonce":"` + cryptoenv.EncodeBase64URL(make([]byte, 12)) + `","encrypted_metadata":"` + cryptoenv.EncodeBase64URL(make([]byte, 16)) + `"}`
+}
+
+type cancelAfterNReader struct {
+	data     []byte
+	limit    int
+	offset   int
+	cancel   context.CancelFunc
+	canceled bool
+}
+
+func (r *cancelAfterNReader) Read(p []byte) (int, error) {
+	if r.offset >= r.limit {
+		if !r.canceled {
+			r.cancel()
+			r.canceled = true
+		}
+		return 0, io.ErrUnexpectedEOF
+	}
+	n := copy(p, r.data[r.offset:r.limit])
+	r.offset += n
+	return n, nil
+}
+
+type cancelOnEOFReader struct {
+	reader   *bytes.Reader
+	cancel   context.CancelFunc
+	canceled bool
+}
+
+func (r *cancelOnEOFReader) Read(p []byte) (int, error) {
+	n, err := r.reader.Read(p)
+	if err == io.EOF && !r.canceled {
+		r.cancel()
+		r.canceled = true
+	}
+	return n, err
 }
 
 func readBlobPath(t *testing.T, blobs *blobstore.Store, relative string) []byte {

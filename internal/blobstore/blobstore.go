@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/shunichironomura/drop-point/internal/droppoint"
+	"github.com/shunichironomura/drop-point/internal/token"
 )
 
 const (
@@ -200,7 +201,20 @@ func syncDir(path string) error {
 }
 
 func validateID(id string) error {
-	if id == "" || filepath.Base(id) != id || strings.ContainsAny(id, `/\\`) {
+	if id == "" || id == "." || id == ".." || filepath.Base(id) != id || strings.ContainsAny(id, `/\\`) {
+		return fmt.Errorf("invalid drop point id %q", id)
+	}
+	if !strings.HasPrefix(id, token.DropPointIDPrefix) {
+		return fmt.Errorf("invalid drop point id %q", id)
+	}
+	secret := strings.TrimPrefix(id, token.DropPointIDPrefix)
+	if secret == "" {
+		return fmt.Errorf("invalid drop point id %q", id)
+	}
+	for _, r := range secret {
+		if (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' || r == '_' {
+			continue
+		}
 		return fmt.Errorf("invalid drop point id %q", id)
 	}
 	return nil

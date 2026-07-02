@@ -128,6 +128,40 @@ func TestCloseDeletesPayloadFilesWhenPresent(t *testing.T) {
 	}
 }
 
+func TestCloseExpiredDropDeletesPayloadFilesWhenPresent(t *testing.T) {
+	fake := &fakeCloseBlobStore{}
+	repo, handler := newCreateTestHandlerWithBlob(t, fake)
+	now := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
+	dp := testHTTPDropPoint(t, "dp_close_expired", "drop_expired_ready", "pick_expired_ready", now.Add(-20*time.Minute))
+	if err := repo.CreateDropPoint(context.Background(), dp); err != nil {
+		t.Fatalf("CreateDropPoint: %v", err)
+	}
+	if err := repo.BeginReceivingDrop(context.Background(), dp.ID, now.Add(-19*time.Minute)); err != nil {
+		t.Fatalf("BeginReceivingDrop: %v", err)
+	}
+	if err := repo.CommitReceivedDrop(context.Background(), dp.ID, droppoint.CommitDropResult{EnvelopePath: "drop-points/dp_close_expired/envelope.json", PayloadPath: "drop-points/dp_close_expired/payload.bin", EncryptedSize: 12}, now.Add(-18*time.Minute)); err != nil {
+		t.Fatalf("CommitReceivedDrop: %v", err)
+	}
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodDelete, "/api/drop-points/"+dp.ID, nil)
+	request.Header.Set("Authorization", "Bearer pick_expired_ready")
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusGone {
+		t.Fatalf("close expired status = %d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if len(fake.deleted) != 1 || fake.deleted[0] != dp.ID {
+		t.Fatalf("deleted ids = %v, want [%s]", fake.deleted, dp.ID)
+	}
+	expired, err := repo.FindDropPointByID(context.Background(), dp.ID)
+	if err != nil {
+		t.Fatalf("FindDropPointByID: %v", err)
+	}
+	if expired.Status != droppoint.StatusExpired || expired.PayloadPath != "" || expired.EnvelopePath != "" || expired.EncryptedSize != 0 {
+		t.Fatalf("expired row mismatch: %+v", expired)
+	}
+}
+
 type fakeCloseBlobStore struct {
 	deleted []string
 }

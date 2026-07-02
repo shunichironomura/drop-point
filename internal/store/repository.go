@@ -264,14 +264,24 @@ func (r *Repository) CloseDropPoint(ctx context.Context, id string, now time.Tim
 	if dp.Status == droppoint.StatusFailed {
 		return droppoint.ErrDropPointNotOpen
 	}
-	_, err = r.db.ExecContext(ctx, `
+	res, err := r.db.ExecContext(ctx, `
 UPDATE drop_points
 SET status = ?, closed_at = ?
-WHERE id = ?`, string(droppoint.StatusClosed), formatTime(now), id)
+WHERE id = ? AND status IN (?, ?, ?) AND expires_at > ?`,
+		string(droppoint.StatusClosed), formatTime(now), id,
+		string(droppoint.StatusOpen), string(droppoint.StatusReceiving), string(droppoint.StatusReady), formatTime(now),
+	)
 	if err != nil {
 		return fmt.Errorf("close drop point %q: %w", id, err)
 	}
-	return nil
+	if changed, err := res.RowsAffected(); err == nil && changed == 1 {
+		return nil
+	}
+	err = r.classifyMutationMiss(ctx, id, now)
+	if errors.Is(err, droppoint.ErrDropPointClosed) {
+		return nil
+	}
+	return err
 }
 
 // ExpireDropPoints marks all expired non-terminal drop points expired and
