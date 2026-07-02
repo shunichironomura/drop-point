@@ -16,13 +16,13 @@ This document lists repository files in dependency-first review order. Local scr
    - Symlink to `AGENTS.md` for Claude-compatible agent instruction discovery.
 
 4. `.gitignore`
-   - Local Python bytecode and virtual-environment ignore rules for helper scripts.
+   - Local Python bytecode, virtual-environment, and deployment `.env` ignore rules.
 
 5. `.dockerignore`
    - Docker build context exclusions for VCS metadata, runtime data, and local scratch files.
 
-6. `.env`
-   - Docker Compose default local environment for host binding, service configuration, and token-hash JSON.
+6. `.env.example`
+   - Docker Compose environment template for host binding, service configuration, and token-hash JSON.
 
 7. `renovate.json5`
    - Renovate dependency-update policy, including GitHub Actions digest pinning, weekly lock-file maintenance, and CI labeling.
@@ -208,7 +208,7 @@ This document lists repository files in dependency-first review order. Local scr
     - Multi-stage non-root container image for the DropPoint relay.
 
 68. `compose.yaml`
-    - Docker Compose service definition for building and running the relay with persistent storage and `.env` configuration.
+    - Docker Compose service definition for building and running the relay with persistent storage and ignored `.env` configuration.
 
 69. `scripts/drop_point_protocol.py`
     - Shared Python DropPoint protocol helpers for local receiver/sender simulations.

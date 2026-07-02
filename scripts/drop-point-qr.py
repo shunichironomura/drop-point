@@ -89,6 +89,7 @@ def main() -> int:
 
         print("After uploading from the phone, receive with:")
         print(f"  ./scripts/drop-point-receiver.py pickup --state {args.state} --wait")
+        print("The receiver helper removes recipient_private_key from the state file after pickup and close.")
         return 0
     except Exception as exc:  # noqa: BLE001 - CLI should report any failure clearly.
         print(f"qr setup error: {exc}", file=sys.stderr)

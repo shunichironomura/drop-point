@@ -55,7 +55,10 @@ def main() -> int:
             case "create":
                 create_drop_point(args)
             case "status":
-                print(json.dumps(get_status(load_state(args.state)), indent=2))
+                state = load_state(args.state)
+                status_result = get_status(state)
+                print(json.dumps(status_result, indent=2))
+                discard_private_key_if_terminal(args.state, state, status_result)
             case "pickup":
                 pickup_drop(args)
         return 0
@@ -119,6 +122,8 @@ def pickup_drop(args: argparse.Namespace) -> None:
     if args.close:
         close_drop_point(state)
         print("closed remote drop point")
+        if discard_private_key(args.state, state):
+            print(f"removed recipient_private_key from {args.state}")
 
 
 def wait_until_ready(state: dict, timeout: float, interval: float) -> None:
@@ -150,6 +155,22 @@ def pickup_ciphertext(state: dict) -> tuple[bytes, bytes]:
 
 def close_drop_point(state: dict) -> None:
     raw_request("DELETE", api_url(state, f"/api/drop-points/{state['drop_point_id']}"), token=state["pickup_token"])
+
+
+def discard_private_key_if_terminal(path: Path, state: dict, status_result: dict) -> None:
+    if status_result.get("status") in {"closed", "expired", "failed"} and discard_private_key(path, state):
+        print(f"removed recipient_private_key from {path}")
+
+
+def discard_private_key(path: Path, state: dict) -> bool:
+    if "recipient_private_key" not in state:
+        return False
+    scrubbed = dict(state)
+    scrubbed.pop("recipient_private_key", None)
+    write_private_state(path, scrubbed)
+    state.clear()
+    state.update(scrubbed)
+    return True
 
 
 def parse_pickup_multipart(content_type: str, body: bytes) -> tuple[bytes, bytes]:

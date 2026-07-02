@@ -181,7 +181,7 @@ def _split_payload(manifest: dict, payload_plaintext: bytes) -> list[DecryptedFi
         seen_names.add(folded)
         mime_type = sanitize_mime_type(str(entry.get("type", "")))
         size = entry.get("size")
-        if not isinstance(size, int) or size < 0:
+        if isinstance(size, bool) or not isinstance(size, int) or size < 0:
             raise ValueError(f"invalid size for {name}")
         total += size
         out.append(DecryptedFile(name=name, mime_type=mime_type, data=b""))
