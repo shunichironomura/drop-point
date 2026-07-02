@@ -240,5 +240,8 @@ This document lists repository files in dependency-first review order. Local scr
 78. `README.md`
     - Product overview, local development flow, security model, and operator entry points.
 
-79. `CODE_REVIEW_ORDER.md`
+79. `CODE_REVIEW_REPORT.md`
+    - Point-in-time codebase review report covering possible bugs, code smells, and potential security vulnerabilities.
+
+80. `CODE_REVIEW_ORDER.md`
     - This review-order index. Update it whenever repository files change.
