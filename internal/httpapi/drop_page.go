@@ -48,5 +48,6 @@ func setDropPageSecurityHeaders(w http.ResponseWriter) {
 	w.Header().Set("Content-Security-Policy", dropPageCSP)
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Referrer-Policy", "no-referrer")
+	w.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=()")
 	w.Header().Set("Cross-Origin-Opener-Policy", "same-origin")
 }
