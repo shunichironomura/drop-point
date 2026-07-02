@@ -413,6 +413,10 @@ DropPoint configuration contains:
   "default_max_bytes": 52428800,
   "max_bytes": 52428800,
   "default_max_active_drop_points": 3,
+  "read_timeout_seconds": 600,
+  "write_timeout_seconds": 600,
+  "cleanup_interval_seconds": 60,
+  "terminal_retention_seconds": 2592000,
   "api_tokens": [
     {
       "id": "desktop-main",
@@ -433,7 +437,7 @@ drop-point token generate
 drop-point cleanup expired --config ./config.json
 ```
 
-`serve` starts the HTTP relay. Running `drop-point` without an explicit subcommand MAY default to `serve`. `token generate` prints a plaintext API token and matching configuration hash exactly once. `cleanup expired` marks expired non-terminal drop points expired and removes expired blob directories idempotently.
+`serve` starts the HTTP relay and runs expiry cleanup periodically. Running `drop-point` without an explicit subcommand MAY default to `serve`. `token generate` prints a plaintext API token and matching configuration hash exactly once. `cleanup expired` marks expired non-terminal drop points expired, removes expired blob directories idempotently, and purges terminal metadata rows older than the configured retention window after their blob pointers have been cleared.
 
 Configuration rules:
 
@@ -442,6 +446,8 @@ Configuration rules:
 - LAN-IP-over-HTTP is not supported for browser encryption because WebCrypto requires a secure context.
 - The canonical system data directory is `/var/lib/drop-point`; local development configurations MAY use a project-local data directory.
 - The shipped default encrypted payload limit is 52428800 bytes, and the shipped maximum encrypted payload limit is 52428800 bytes.
+- `read_timeout_seconds`, `write_timeout_seconds`, and `cleanup_interval_seconds` MUST be positive. Defaults SHOULD allow slow mobile uploads up to the configured payload limit.
+- `terminal_retention_seconds` MUST be positive. The local implementation MUST purge terminal SQLite rows older than this retention window after any ciphertext pointers for those rows have been cleared.
 - Plaintext API tokens MUST NOT be stored in configuration.
 - `api_tokens[].secret_hash` uses `sha256:<lowercase-hex-sha256>` for high-entropy random API tokens.
 - Implementations SHOULD provide an operator command that generates a high-entropy plaintext API token and prints the corresponding `sha256:<lowercase-hex-sha256>` configuration entry exactly once.
