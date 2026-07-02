@@ -17,11 +17,8 @@ import (
 const (
 	InfoMetadata = "DropPoint/protocol/v2 key=metadata"
 	InfoPayload  = "DropPoint/protocol/v2 key=payload"
-)
-
-var (
-	AADMetadata = append([]byte{byte(ProtocolVersion)}, []byte("metadata")...)
-	AADPayload  = append([]byte{byte(ProtocolVersion)}, []byte("payload")...)
+	aadMetadata  = "\x02metadata"
+	aadPayload   = "\x02payload"
 )
 
 type KeyPair struct {
@@ -176,11 +173,11 @@ func EncryptBundle(recipientPublicKey []byte, files []PlainFile, opts EncryptOpt
 	if err != nil {
 		return EncryptResult{}, err
 	}
-	encryptedMetadata, err := encryptAESGCM(metadataKey, metadataNonce, AADMetadata, manifestJSON)
+	encryptedMetadata, err := encryptAESGCM(metadataKey, metadataNonce, []byte(aadMetadata), manifestJSON)
 	if err != nil {
 		return EncryptResult{}, err
 	}
-	encryptedPayload, err := encryptAESGCM(payloadKey, payloadNonce, AADPayload, payloadPlaintext)
+	encryptedPayload, err := encryptAESGCM(payloadKey, payloadNonce, []byte(aadPayload), payloadPlaintext)
 	if err != nil {
 		return EncryptResult{}, err
 	}
@@ -228,11 +225,11 @@ func DecryptBundle(recipientPrivateKey []byte, envelope Envelope, encryptedPaylo
 	if err != nil {
 		return nil, Intermediates{}, err
 	}
-	manifestJSON, err := decryptAESGCM(metadataKey, metadataNonce, AADMetadata, encryptedMetadata)
+	manifestJSON, err := decryptAESGCM(metadataKey, metadataNonce, []byte(aadMetadata), encryptedMetadata)
 	if err != nil {
 		return nil, Intermediates{}, fmt.Errorf("decrypt metadata: %w", err)
 	}
-	payloadPlaintext, err := decryptAESGCM(payloadKey, payloadNonce, AADPayload, encryptedPayload)
+	payloadPlaintext, err := decryptAESGCM(payloadKey, payloadNonce, []byte(aadPayload), encryptedPayload)
 	if err != nil {
 		return nil, Intermediates{}, fmt.Errorf("decrypt payload: %w", err)
 	}

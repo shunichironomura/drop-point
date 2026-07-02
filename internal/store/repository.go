@@ -17,13 +17,6 @@ import (
 // TEXT comparisons on expires_at preserve chronological ordering.
 const sqliteTimeFormat = "2006-01-02T15:04:05.000000000Z07:00"
 
-const insertDropPointSQL = `
-INSERT INTO drop_points (
-  id, api_token_id, client_name, display_name, drop_token_hash, pickup_token_hash, status,
-  payload_path, envelope_path, encrypted_size, created_at, dropped_at,
-  first_picked_up_at, closed_at, expires_at, max_bytes
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-
 const insertDropPointWithinQuotaSQL = `
 INSERT INTO drop_points (
   id, api_token_id, client_name, display_name, drop_token_hash, pickup_token_hash, status,
@@ -45,18 +38,6 @@ type Repository struct {
 // NewRepository wraps db with typed drop point persistence methods.
 func NewRepository(db *sql.DB) *Repository {
 	return &Repository{db: db}
-}
-
-// CreateDropPoint inserts a new drop point row. The supplied entity must contain
-// token hashes only.
-func (r *Repository) CreateDropPoint(ctx context.Context, dp droppoint.DropPoint) error {
-	if err := r.ensureReady(); err != nil {
-		return err
-	}
-	if _, err := r.db.ExecContext(ctx, insertDropPointSQL, dropPointInsertArgs(dp)...); err != nil {
-		return fmt.Errorf("create drop point %q: %w", dp.ID, err)
-	}
-	return nil
 }
 
 // CreateDropPointWithinQuota inserts a new drop point only if doing so keeps the
@@ -349,23 +330,6 @@ WHERE status IN (?, ?, ?)
 	return int(rows), nil
 }
 
-// CountActiveDropPointsByAPITokenID counts open, receiving, and ready drop
-// points that have not expired.
-func (r *Repository) CountActiveDropPointsByAPITokenID(ctx context.Context, apiTokenID string, now time.Time) (int, error) {
-	var count int
-	if err := r.db.QueryRowContext(ctx, `
-SELECT count(*)
-FROM drop_points
-WHERE api_token_id = ? AND status IN (?, ?, ?) AND expires_at > ?`,
-		apiTokenID,
-		string(droppoint.StatusOpen), string(droppoint.StatusReceiving), string(droppoint.StatusReady),
-		formatTime(now),
-	).Scan(&count); err != nil {
-		return 0, fmt.Errorf("count active drop points for api token %q: %w", apiTokenID, err)
-	}
-	return count, nil
-}
-
 // DeleteDropPointFiles clears persisted file pointers after the imperative shell
 // deletes the corresponding blob directory.
 func (r *Repository) DeleteDropPointFiles(ctx context.Context, id string) error {
@@ -561,7 +525,7 @@ func formatTime(value time.Time) string {
 }
 
 func parseTime(value string) (time.Time, error) {
-	return time.Parse(time.RFC3339Nano, value)
+	return time.Parse(sqliteTimeFormat, value)
 }
 
 func parseNullTime(value sql.NullString) (*time.Time, error) {

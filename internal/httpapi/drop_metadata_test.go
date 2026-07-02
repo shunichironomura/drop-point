@@ -1,7 +1,6 @@
 package httpapi
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -72,9 +71,7 @@ func TestGetDropMetadataRejectsUnknownExpiredAndUsedDrops(t *testing.T) {
 	ready.PayloadPath = "drop-points/dp_ready_metadata/payload.bin"
 	ready.EncryptedSize = 42
 	for _, dp := range []droppoint.DropPoint{expired, ready} {
-		if err := repo.CreateDropPoint(context.Background(), dp); err != nil {
-			t.Fatalf("CreateDropPoint %s: %v", dp.ID, err)
-		}
+		insertHTTPDropPoint(t, repo, dp)
 	}
 
 	tests := map[string]struct {

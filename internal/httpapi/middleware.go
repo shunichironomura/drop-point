@@ -78,6 +78,10 @@ func (r *statusRecorder) Status() int {
 	return r.status
 }
 
+func (r *statusRecorder) Unwrap() http.ResponseWriter {
+	return r.ResponseWriter
+}
+
 func (r *statusRecorder) WriteHeader(status int) {
 	if r.status != 0 {
 		return

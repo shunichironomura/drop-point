@@ -64,7 +64,7 @@ func TestMigrationCreatesDropPointsSchema(t *testing.T) {
 
 	assertDropPointsColumnExists(t, db.SQLDB(), "display_name")
 
-	now := time.Now().UTC().Format(time.RFC3339Nano)
+	now := formatTime(time.Now().UTC())
 	_, err := db.SQLDB().ExecContext(context.Background(), `
 INSERT INTO drop_points (
   id, api_token_id, client_name, display_name, drop_token_hash, pickup_token_hash, status,
@@ -120,6 +120,21 @@ func TestOpenCreatesRestrictiveDatabaseFile(t *testing.T) {
 	}
 	if got := info.Mode().Perm(); got != 0o600 {
 		t.Fatalf("database mode = %o, want 600", got)
+	}
+}
+
+func TestOpenTreatsQuestionMarkAsPathLiteral(t *testing.T) {
+	dataDir := filepath.Join(t.TempDir(), "data?literal")
+	if err := config.EnsureDataDir(dataDir); err != nil {
+		t.Fatalf("EnsureDataDir: %v", err)
+	}
+	db, err := Open(context.Background(), dataDir)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer db.Close()
+	if _, err := os.Stat(filepath.Join(dataDir, databaseFileName)); err != nil {
+		t.Fatalf("stat database at literal path: %v", err)
 	}
 }
 

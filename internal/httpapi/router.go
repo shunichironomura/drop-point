@@ -37,31 +37,39 @@ func NewRouterWithDependencies(deps Dependencies) http.Handler {
 	mux.HandleFunc("/health", methodNotAllowed("GET, HEAD"))
 	mux.HandleFunc("POST /api/drop-points", HandleCreateDropPoint(deps))
 	mux.HandleFunc("/api/drop-points", methodNotAllowed("POST"))
-	mux.HandleFunc("GET /api/drop-points/{drop_point_id}/status", getOnly(HandleGetDropPointStatus(deps)))
-	mux.HandleFunc("/api/drop-points/{drop_point_id}/status", methodNotAllowed("GET"))
-	mux.HandleFunc("GET /api/drop-points/{drop_point_id}/pickup", getOnly(HandlePickupPayload(deps)))
-	mux.HandleFunc("/api/drop-points/{drop_point_id}/pickup", methodNotAllowed("GET"))
+	mux.HandleFunc("GET /api/drop-points/{drop_point_id}/status", getOrHead(HandleGetDropPointStatus(deps)))
+	mux.HandleFunc("/api/drop-points/{drop_point_id}/status", methodNotAllowed("GET, HEAD"))
+	mux.HandleFunc("GET /api/drop-points/{drop_point_id}/pickup", getOrHead(HandlePickupPayload(deps)))
+	mux.HandleFunc("/api/drop-points/{drop_point_id}/pickup", methodNotAllowed("GET, HEAD"))
 	mux.HandleFunc("DELETE /api/drop-points/{drop_point_id}", HandleCloseDropPoint(deps))
 	mux.HandleFunc("/api/drop-points/{drop_point_id}", methodNotAllowed("DELETE"))
-	mux.HandleFunc("GET /api/drops/{drop_token}", getOnly(HandleGetDropMetadata(deps)))
+	mux.HandleFunc("GET /api/drops/{drop_token}", getOrHead(HandleGetDropMetadata(deps)))
 	mux.HandleFunc("PUT /api/drops/{drop_token}", HandleSubmitDrop(deps))
-	mux.HandleFunc("/api/drops/{drop_token}", methodNotAllowed("GET, PUT"))
-	mux.HandleFunc("GET /drop/{drop_token}", getOnly(HandleServeDropPage))
-	mux.HandleFunc("/drop/{drop_token}", methodNotAllowed("GET"))
-	mux.HandleFunc("GET /drop-assets/{asset}", getOnly(HandleDropPageAsset))
-	mux.HandleFunc("/drop-assets/{asset}", methodNotAllowed("GET"))
+	mux.HandleFunc("/api/drops/{drop_token}", methodNotAllowed("GET, HEAD, PUT"))
+	mux.HandleFunc("GET /drop/{drop_token}", getOrHead(HandleServeDropPage))
+	mux.HandleFunc("/drop/{drop_token}", methodNotAllowed("GET, HEAD"))
+	mux.HandleFunc("GET /drop-assets/{asset}", getOrHead(HandleDropPageAsset))
+	mux.HandleFunc("/drop-assets/{asset}", methodNotAllowed("GET, HEAD"))
 
 	return RecoverPanics(logger, LogRequests(logger, SetNoSniff(ApplyCORS(deps.Config, mux))))
 }
 
-func getOnly(handler http.HandlerFunc) http.HandlerFunc {
+func getOrHead(handler http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodHead {
-			methodNotAllowed("GET")(w, r)
+			handler(headResponseWriter{ResponseWriter: w}, r)
 			return
 		}
 		handler(w, r)
 	}
+}
+
+type headResponseWriter struct {
+	http.ResponseWriter
+}
+
+func (w headResponseWriter) Write(body []byte) (int, error) {
+	return len(body), nil
 }
 
 func methodNotAllowed(allow string) http.HandlerFunc {

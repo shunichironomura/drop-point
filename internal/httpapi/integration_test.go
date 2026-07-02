@@ -324,9 +324,7 @@ func dropTokenFromCreatedLink(t *testing.T, link string) string {
 func createDropPointDirect(t *testing.T, repo *store.Repository, id string, dropPlain string, pickupPlain string, now time.Time) droppoint.DropPoint {
 	t.Helper()
 	dp := testHTTPDropPoint(t, id, dropPlain, pickupPlain, now)
-	if err := repo.CreateDropPoint(context.Background(), dp); err != nil {
-		t.Fatalf("CreateDropPoint direct %s: %v", id, err)
-	}
+	insertHTTPDropPoint(t, repo, dp)
 	return dp
 }
 

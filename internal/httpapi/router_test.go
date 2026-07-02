@@ -42,6 +42,32 @@ func TestHealthRejectsUnsupportedMethod(t *testing.T) {
 	}
 }
 
+func TestHeadIsAllowedOnGetRoutes(t *testing.T) {
+	handler := NewRouter(log.New(&bytes.Buffer{}, "", 0))
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodHead, "/drop/drop_secret", nil)
+
+	handler.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("HEAD /drop status = %d, want %d", recorder.Code, http.StatusOK)
+	}
+	if recorder.Body.Len() != 0 {
+		t.Fatalf("HEAD /drop body length = %d, want 0", recorder.Body.Len())
+	}
+}
+
+func TestStatusRecorderUnwrapsOptionalInterfaces(t *testing.T) {
+	underlying := &flushingResponseWriter{ResponseWriter: httptest.NewRecorder()}
+	recorder := &statusRecorder{ResponseWriter: underlying}
+	if err := http.NewResponseController(recorder).Flush(); err != nil {
+		t.Fatalf("Flush through statusRecorder: %v", err)
+	}
+	if !underlying.flushed {
+		t.Fatal("underlying Flusher was not called")
+	}
+}
+
 func TestRecoverPanics(t *testing.T) {
 	var logs bytes.Buffer
 	handler := RecoverPanics(log.New(&logs, "", 0), http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
@@ -58,6 +84,15 @@ func TestRecoverPanics(t *testing.T) {
 	if !strings.Contains(logs.String(), "panic recovered") {
 		t.Fatalf("logs = %q, want panic recovery line", logs.String())
 	}
+}
+
+type flushingResponseWriter struct {
+	http.ResponseWriter
+	flushed bool
+}
+
+func (w *flushingResponseWriter) Flush() {
+	w.flushed = true
 }
 
 func TestRedactTokenPath(t *testing.T) {

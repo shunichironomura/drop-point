@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 
@@ -28,8 +29,11 @@ func Open(ctx context.Context, dataDir string) (*DB, error) {
 		return nil, fmt.Errorf("data directory path must not be empty")
 	}
 
-	databasePath := filepath.Join(dataDir, databaseFileName)
-	sqlDB, err := sql.Open("sqlite", databasePath)
+	databasePath, err := filepath.Abs(filepath.Join(dataDir, databaseFileName))
+	if err != nil {
+		return nil, fmt.Errorf("resolve sqlite database path: %w", err)
+	}
+	sqlDB, err := sql.Open("sqlite", sqliteFileDSN(databasePath))
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite database %q: %w", databasePath, err)
 	}
@@ -78,6 +82,10 @@ func (d *DB) SQLDB() *sql.DB {
 		return nil
 	}
 	return d.db
+}
+
+func sqliteFileDSN(path string) string {
+	return (&url.URL{Scheme: "file", Path: filepath.ToSlash(path)}).String()
 }
 
 func configureSQLite(ctx context.Context, db *sql.DB) error {

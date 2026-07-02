@@ -20,15 +20,31 @@ func TestPickupRetrievesReadyCiphertextAndRecordsFirstPickup(t *testing.T) {
 	repo, _, handler := newDropTestHandler(t)
 	now := dropTestNow()
 	dp := testHTTPDropPoint(t, "dp_pickup", "drop_pickup", "pick_pickup", now)
-	if err := repo.CreateDropPoint(context.Background(), dp); err != nil {
-		t.Fatalf("CreateDropPoint: %v", err)
-	}
+	insertHTTPDropPoint(t, repo, dp)
 	envelope := []byte(testEnvelopeJSON())
 	payload := []byte("ciphertext")
 	dropRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(dropRecorder, multipartDropRequest(t, "/api/drops/drop_pickup", envelope, payload))
 	if dropRecorder.Code != http.StatusOK {
 		t.Fatalf("drop status = %d body=%s", dropRecorder.Code, dropRecorder.Body.String())
+	}
+
+	headRecorder := httptest.NewRecorder()
+	headRequest := httptest.NewRequest(http.MethodHead, "/api/drop-points/"+dp.ID+"/pickup", nil)
+	headRequest.Header.Set("Authorization", "Bearer pick_pickup")
+	handler.ServeHTTP(headRecorder, headRequest)
+	if headRecorder.Code != http.StatusOK {
+		t.Fatalf("HEAD pickup status = %d body=%s", headRecorder.Code, headRecorder.Body.String())
+	}
+	if headRecorder.Body.Len() != 0 {
+		t.Fatalf("HEAD pickup body length = %d, want 0", headRecorder.Body.Len())
+	}
+	notPicked, err := repo.FindDropPointByID(context.Background(), dp.ID)
+	if err != nil {
+		t.Fatalf("FindDropPointByID after HEAD: %v", err)
+	}
+	if notPicked.FirstPickedUpAt != nil {
+		t.Fatalf("HEAD pickup recorded first pickup: %v", notPicked.FirstPickedUpAt)
 	}
 
 	pickupRecorder := httptest.NewRecorder()
@@ -80,9 +96,7 @@ func TestPickupRejectsNotReadyWrongTokenClosedAndExpired(t *testing.T) {
 	closed := testHTTPDropPoint(t, "dp_pickup_closed", "drop_closed", "pick_closed", now)
 	expired := testHTTPDropPoint(t, "dp_pickup_expired", "drop_expired", "pick_expired", now.Add(-20*time.Minute))
 	for _, dp := range []droppoint.DropPoint{open, closed, expired} {
-		if err := repo.CreateDropPoint(context.Background(), dp); err != nil {
-			t.Fatalf("CreateDropPoint %s: %v", dp.ID, err)
-		}
+		insertHTTPDropPoint(t, repo, dp)
 	}
 	if err := repo.CloseDropPoint(context.Background(), closed.ID, now); err != nil {
 		t.Fatalf("CloseDropPoint: %v", err)

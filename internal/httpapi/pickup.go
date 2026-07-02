@@ -26,6 +26,13 @@ func HandlePickupPayload(deps Dependencies) http.HandlerFunc {
 			writeError(w, http.StatusInternalServerError, "payload_unavailable", "stored payload is unavailable")
 			return
 		}
+		if r.Method == http.MethodHead {
+			writer := multipart.NewWriter(io.Discard)
+			w.Header().Set("Content-Type", "multipart/mixed; boundary="+writer.Boundary())
+			w.Header().Set("Cache-Control", "no-store")
+			w.WriteHeader(http.StatusOK)
+			return
+		}
 		envelope, err := deps.BlobStore.ReadEnvelope(r.Context(), dp.EnvelopePath)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "payload_unavailable", "stored envelope is unavailable")
