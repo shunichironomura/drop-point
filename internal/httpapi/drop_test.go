@@ -28,9 +28,7 @@ func TestSubmitDropStoresEncryptedPayload(t *testing.T) {
 	now := dropTestNow()
 	dp := testHTTPDropPoint(t, "dp_submit", "drop_submit", "pick_submit", now)
 	dp.MaxBytes = 1024
-	if err := repo.CreateDropPoint(context.Background(), dp); err != nil {
-		t.Fatalf("CreateDropPoint: %v", err)
-	}
+	insertHTTPDropPoint(t, repo, dp)
 	payload := []byte{0, 1, 2, 3, 4, 5}
 	envelope := []byte(testEnvelopeJSON())
 
@@ -66,9 +64,7 @@ func TestSubmitDropStoresEncryptedPayload(t *testing.T) {
 func TestSubmitDropRejectsSecondDrop(t *testing.T) {
 	repo, _, handler := newDropTestHandler(t)
 	dp := testHTTPDropPoint(t, "dp_second", "drop_second", "pick_second", dropTestNow())
-	if err := repo.CreateDropPoint(context.Background(), dp); err != nil {
-		t.Fatalf("CreateDropPoint: %v", err)
-	}
+	insertHTTPDropPoint(t, repo, dp)
 	for i, want := range []int{http.StatusOK, http.StatusConflict} {
 		recorder := httptest.NewRecorder()
 		handler.ServeHTTP(recorder, multipartDropRequest(t, "/api/drops/drop_second", []byte(testEnvelopeJSON()), []byte("payload")))
@@ -82,9 +78,7 @@ func TestSubmitDropRejectsOversizeAndResetsOpen(t *testing.T) {
 	repo, blobs, handler := newDropTestHandler(t)
 	dp := testHTTPDropPoint(t, "dp_oversize", "drop_oversize", "pick_oversize", dropTestNow())
 	dp.MaxBytes = 4
-	if err := repo.CreateDropPoint(context.Background(), dp); err != nil {
-		t.Fatalf("CreateDropPoint: %v", err)
-	}
+	insertHTTPDropPoint(t, repo, dp)
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, multipartDropRequest(t, "/api/drops/drop_oversize", []byte(testEnvelopeJSON()), []byte("12345")))
 	if recorder.Code != http.StatusRequestEntityTooLarge {
@@ -105,9 +99,7 @@ func TestSubmitDropRejectsOversizeAndResetsOpen(t *testing.T) {
 func TestSubmitDropRejectsMalformedMultipartWithoutConsumingSlot(t *testing.T) {
 	repo, _, handler := newDropTestHandler(t)
 	dp := testHTTPDropPoint(t, "dp_bad_envelope", "drop_bad_envelope", "pick_bad_envelope", dropTestNow())
-	if err := repo.CreateDropPoint(context.Background(), dp); err != nil {
-		t.Fatalf("CreateDropPoint: %v", err)
-	}
+	insertHTTPDropPoint(t, repo, dp)
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, multipartDropRequest(t, "/api/drops/drop_bad_envelope", []byte(`{"protocol_version":2}`), []byte("payload")))
 	if recorder.Code != http.StatusBadRequest {
@@ -125,9 +117,7 @@ func TestSubmitDropRejectsMalformedMultipartWithoutConsumingSlot(t *testing.T) {
 func TestSubmitDropResetsOpenAfterCanceledPartialUpload(t *testing.T) {
 	repo, blobs, handler := newDropTestHandler(t)
 	dp := testHTTPDropPoint(t, "dp_canceled_partial", "drop_canceled_partial", "pick_canceled_partial", dropTestNow())
-	if err := repo.CreateDropPoint(context.Background(), dp); err != nil {
-		t.Fatalf("CreateDropPoint: %v", err)
-	}
+	insertHTTPDropPoint(t, repo, dp)
 	body, contentType := multipartDropBody(t, []byte(testEnvelopeJSON()), []byte("partial-payload"))
 	payloadOffset := bytes.Index(body, []byte("partial-payload"))
 	if payloadOffset < 0 {
@@ -156,9 +146,7 @@ func TestSubmitDropResetsOpenAfterCanceledPartialUpload(t *testing.T) {
 func TestSubmitDropCommitsAfterRequestContextCanceledPostUpload(t *testing.T) {
 	repo, _, handler := newDropTestHandler(t)
 	dp := testHTTPDropPoint(t, "dp_canceled_commit", "drop_canceled_commit", "pick_canceled_commit", dropTestNow())
-	if err := repo.CreateDropPoint(context.Background(), dp); err != nil {
-		t.Fatalf("CreateDropPoint: %v", err)
-	}
+	insertHTTPDropPoint(t, repo, dp)
 	body, contentType := multipartDropBody(t, []byte(testEnvelopeJSON()), []byte("payload"))
 	ctx, cancel := context.WithCancel(context.Background())
 	request := httptest.NewRequest(http.MethodPut, "/api/drops/drop_canceled_commit", &cancelOnEOFReader{reader: bytes.NewReader(body), cancel: cancel}).WithContext(ctx)
@@ -188,9 +176,7 @@ func TestWriteMultipartDropErrorMapsRequestLimitToPayloadTooLarge(t *testing.T) 
 func TestSubmitDropAuthorizesOnlyDropToken(t *testing.T) {
 	repo, _, handler := newDropTestHandler(t)
 	dp := testHTTPDropPoint(t, "dp_auth_drop", "drop_auth", "pick_auth", dropTestNow())
-	if err := repo.CreateDropPoint(context.Background(), dp); err != nil {
-		t.Fatalf("CreateDropPoint: %v", err)
-	}
+	insertHTTPDropPoint(t, repo, dp)
 	for name, path := range map[string]string{
 		"unknown":      "/api/drops/drop_unknown",
 		"pickup token": "/api/drops/pick_auth",
@@ -208,9 +194,7 @@ func TestSubmitDropAuthorizesOnlyDropToken(t *testing.T) {
 func TestConcurrentDropAttemptsCommitAtMostOne(t *testing.T) {
 	repo, _, handler := newDropTestHandler(t)
 	dp := testHTTPDropPoint(t, "dp_race", "drop_race", "pick_race", dropTestNow())
-	if err := repo.CreateDropPoint(context.Background(), dp); err != nil {
-		t.Fatalf("CreateDropPoint: %v", err)
-	}
+	insertHTTPDropPoint(t, repo, dp)
 	var wg sync.WaitGroup
 	statuses := make(chan int, 2)
 	for range 2 {

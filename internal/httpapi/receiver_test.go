@@ -20,9 +20,7 @@ func TestStatusRequiresOwnPickupToken(t *testing.T) {
 	dp1 := testHTTPDropPoint(t, "dp_status_one", "drop_one", "pick_one", now)
 	dp2 := testHTTPDropPoint(t, "dp_status_two", "drop_two", "pick_two", now)
 	for _, dp := range []droppoint.DropPoint{dp1, dp2} {
-		if err := repo.CreateDropPoint(context.Background(), dp); err != nil {
-			t.Fatalf("CreateDropPoint %s: %v", dp.ID, err)
-		}
+		insertHTTPDropPoint(t, repo, dp)
 	}
 
 	recorder := httptest.NewRecorder()
@@ -56,9 +54,7 @@ func TestStatusReportsExpiredConsistently(t *testing.T) {
 	repo, handler := newCreateTestHandler(t)
 	now := time.Date(2026, 7, 1, 11, 40, 0, 0, time.UTC)
 	dp := testHTTPDropPoint(t, "dp_expired_status", "drop_expired", "pick_expired", now)
-	if err := repo.CreateDropPoint(context.Background(), dp); err != nil {
-		t.Fatalf("CreateDropPoint: %v", err)
-	}
+	insertHTTPDropPoint(t, repo, dp)
 
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodGet, "/api/drop-points/"+dp.ID+"/status", nil)
@@ -76,9 +72,7 @@ func TestCloseIsIdempotentAndPreventsDrops(t *testing.T) {
 	repo, handler := newCreateTestHandler(t)
 	now := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
 	dp := testHTTPDropPoint(t, "dp_close", "drop_close", "pick_close", now)
-	if err := repo.CreateDropPoint(context.Background(), dp); err != nil {
-		t.Fatalf("CreateDropPoint: %v", err)
-	}
+	insertHTTPDropPoint(t, repo, dp)
 
 	for i := range 2 {
 		recorder := httptest.NewRecorder()
@@ -99,9 +93,7 @@ func TestCloseDeletesPayloadFilesWhenPresent(t *testing.T) {
 	repo, handler := newCreateTestHandlerWithBlob(t, fake)
 	now := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
 	dp := testHTTPDropPoint(t, "dp_close_ready", "drop_ready", "pick_ready", now)
-	if err := repo.CreateDropPoint(context.Background(), dp); err != nil {
-		t.Fatalf("CreateDropPoint: %v", err)
-	}
+	insertHTTPDropPoint(t, repo, dp)
 	if err := repo.BeginReceivingDrop(context.Background(), dp.ID, now); err != nil {
 		t.Fatalf("BeginReceivingDrop: %v", err)
 	}
@@ -133,9 +125,7 @@ func TestCloseExpiredDropDeletesPayloadFilesWhenPresent(t *testing.T) {
 	repo, handler := newCreateTestHandlerWithBlob(t, fake)
 	now := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
 	dp := testHTTPDropPoint(t, "dp_close_expired", "drop_expired_ready", "pick_expired_ready", now.Add(-20*time.Minute))
-	if err := repo.CreateDropPoint(context.Background(), dp); err != nil {
-		t.Fatalf("CreateDropPoint: %v", err)
-	}
+	insertHTTPDropPoint(t, repo, dp)
 	if err := repo.BeginReceivingDrop(context.Background(), dp.ID, now.Add(-19*time.Minute)); err != nil {
 		t.Fatalf("BeginReceivingDrop: %v", err)
 	}

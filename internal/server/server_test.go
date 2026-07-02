@@ -91,8 +91,8 @@ func TestCleanupLoopExpiresAndDeletesPayloads(t *testing.T) {
 	if err != nil {
 		t.Fatalf("droppoint.New: %v", err)
 	}
-	if err := srv.Repository.CreateDropPoint(context.Background(), dp); err != nil {
-		t.Fatalf("CreateDropPoint: %v", err)
+	if err := srv.Repository.CreateDropPointWithinQuota(context.Background(), dp, 1_000_000, dp.CreatedAt); err != nil {
+		t.Fatalf("CreateDropPointWithinQuota: %v", err)
 	}
 	if err := srv.Repository.BeginReceivingDrop(context.Background(), dp.ID, createdAt.Add(time.Minute)); err != nil {
 		t.Fatalf("BeginReceivingDrop: %v", err)

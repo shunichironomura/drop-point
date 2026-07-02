@@ -67,9 +67,7 @@ func TestRepositoryLifecycleMutationsMatchDomainTransitions(t *testing.T) {
 			t.Run(event.name+"/"+state.name, func(t *testing.T) {
 				repo := newTestRepository(t)
 				dp := lifecycleDropPoint(t, fmt.Sprintf("dp_%s_%s", event.name, state.name), state.status, state.expiresAt, now)
-				if err := repo.CreateDropPoint(context.Background(), dp); err != nil {
-					t.Fatalf("CreateDropPoint: %v", err)
-				}
+				insertTestDropPoint(t, repo, dp)
 
 				want, wantErr := event.model(dp, now)
 				gotErr := event.repo(context.Background(), repo, dp.ID, now)
@@ -91,9 +89,7 @@ func TestRepositoryExpireDropPointsMatchesDomainTransition(t *testing.T) {
 		t.Run(state.name, func(t *testing.T) {
 			repo := newTestRepository(t)
 			dp := lifecycleDropPoint(t, "dp_expire_"+state.name, state.status, state.expiresAt, now)
-			if err := repo.CreateDropPoint(context.Background(), dp); err != nil {
-				t.Fatalf("CreateDropPoint: %v", err)
-			}
+			insertTestDropPoint(t, repo, dp)
 
 			want, wantChanged := droppoint.Expire(dp, now)
 			affected, err := repo.ExpireDropPoints(context.Background(), now)

@@ -20,9 +20,7 @@ func TestExpireDeletesExpiredPayloadsIdempotently(t *testing.T) {
 	repo, blobs := newCleanupStore(t)
 	now := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
 	dp := cleanupDropPoint(t, "dp_cleanup_ready", "drop_cleanup", "pick_cleanup", now.Add(-20*time.Minute))
-	if err := repo.CreateDropPoint(context.Background(), dp); err != nil {
-		t.Fatalf("CreateDropPoint: %v", err)
-	}
+	insertCleanupDropPoint(t, repo, dp)
 	if err := repo.BeginReceivingDrop(context.Background(), dp.ID, now.Add(-19*time.Minute)); err != nil {
 		t.Fatalf("BeginReceivingDrop: %v", err)
 	}
@@ -66,9 +64,7 @@ func TestExpireOpenDropPointWithoutFiles(t *testing.T) {
 	repo, blobs := newCleanupStore(t)
 	now := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
 	dp := cleanupDropPoint(t, "dp_cleanup_open", "drop_open", "pick_open", now.Add(-20*time.Minute))
-	if err := repo.CreateDropPoint(context.Background(), dp); err != nil {
-		t.Fatalf("CreateDropPoint: %v", err)
-	}
+	insertCleanupDropPoint(t, repo, dp)
 	result, err := (Service{Repository: repo, BlobStore: blobs, Now: func() time.Time { return now }}).Expire(context.Background())
 	if err != nil {
 		t.Fatalf("Expire: %v", err)
@@ -85,9 +81,7 @@ func TestExpirePurgesTerminalRowsAfterRetention(t *testing.T) {
 	oldExpired := cleanupDropPoint(t, "dp_cleanup_old_expired", "drop_old_expired", "pick_old_expired", now.Add(-48*time.Hour))
 	newClosed := cleanupDropPoint(t, "dp_cleanup_new_closed", "drop_new_closed", "pick_new_closed", now.Add(-5*time.Minute))
 	for _, dp := range []droppoint.DropPoint{oldClosed, oldExpired, newClosed} {
-		if err := repo.CreateDropPoint(context.Background(), dp); err != nil {
-			t.Fatalf("CreateDropPoint %s: %v", dp.ID, err)
-		}
+		insertCleanupDropPoint(t, repo, dp)
 	}
 	if err := repo.CloseDropPoint(context.Background(), oldClosed.ID, now.Add(-47*time.Hour-55*time.Minute)); err != nil {
 		t.Fatalf("CloseDropPoint old: %v", err)
@@ -125,6 +119,13 @@ func newCleanupStore(t *testing.T) (*store.Repository, *blobstore.Store) {
 	}
 	t.Cleanup(func() { _ = db.Close() })
 	return store.NewRepository(db.SQLDB()), blobstore.New(dataDir)
+}
+
+func insertCleanupDropPoint(t *testing.T, repo *store.Repository, dp droppoint.DropPoint) {
+	t.Helper()
+	if err := repo.CreateDropPointWithinQuota(context.Background(), dp, 1_000_000, dp.CreatedAt); err != nil {
+		t.Fatalf("CreateDropPointWithinQuota %s: %v", dp.ID, err)
+	}
 }
 
 func cleanupDropPoint(t *testing.T, id string, dropPlain string, pickupPlain string, now time.Time) droppoint.DropPoint {

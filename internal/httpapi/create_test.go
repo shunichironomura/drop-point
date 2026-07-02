@@ -110,7 +110,7 @@ func TestCreateDropPointRejectsInvalidAPITokens(t *testing.T) {
 
 func TestCreateDropPointValidatesLimitsAndQuota(t *testing.T) {
 	apiPlain := "api_limited"
-	repo, handler := newCreateTestHandler(t, config.APIToken{ID: "limited", SecretHash: token.HashSecret(apiPlain), Enabled: true, MaxActiveDropPoints: intPtr(1)})
+	_, handler := newCreateTestHandler(t, config.APIToken{ID: "limited", SecretHash: token.HashSecret(apiPlain), Enabled: true, MaxActiveDropPoints: intPtr(1)})
 
 	badRequests := map[string]string{
 		"ttl too large":       `{"ttl_seconds":901}`,
@@ -135,14 +135,6 @@ func TestCreateDropPointValidatesLimitsAndQuota(t *testing.T) {
 	handler.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusCreated {
 		t.Fatalf("first create status = %d body=%s", recorder.Code, recorder.Body.String())
-	}
-
-	count, err := repo.CountActiveDropPointsByAPITokenID(context.Background(), "limited", time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC))
-	if err != nil {
-		t.Fatalf("CountActiveDropPointsByAPITokenID: %v", err)
-	}
-	if count != 1 {
-		t.Fatalf("active count = %d, want 1", count)
 	}
 
 	recorder = httptest.NewRecorder()
@@ -182,6 +174,13 @@ func newCreateTestHandlerWithBlob(t *testing.T, blob BlobStore, apiTokens ...con
 		Now:        func() time.Time { return time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC) },
 	})
 	return repo, handler
+}
+
+func insertHTTPDropPoint(t *testing.T, repo *store.Repository, dp droppoint.DropPoint) {
+	t.Helper()
+	if err := repo.CreateDropPointWithinQuota(context.Background(), dp, 1_000_000, dp.CreatedAt); err != nil {
+		t.Fatalf("CreateDropPointWithinQuota %s: %v", dp.ID, err)
+	}
 }
 
 func intPtr(value int) *int {

@@ -11,14 +11,12 @@ import (
 	"github.com/shunichironomura/drop-point/internal/token"
 )
 
-func TestRepositoryCreateLookupAndQuota(t *testing.T) {
+func TestRepositoryCreateLookup(t *testing.T) {
 	repo := newTestRepository(t)
 	now := testNow()
 	dp := testDropPoint(t, "dp_one", "drop_one", "pick_one", now)
 
-	if err := repo.CreateDropPoint(context.Background(), dp); err != nil {
-		t.Fatalf("CreateDropPoint: %v", err)
-	}
+	insertTestDropPoint(t, repo, dp)
 
 	got, err := repo.FindDropPointByID(context.Background(), dp.ID)
 	if err != nil {
@@ -26,22 +24,6 @@ func TestRepositoryCreateLookupAndQuota(t *testing.T) {
 	}
 	if got.ID != dp.ID || got.DisplayName != dp.DisplayName || got.DropTokenHash != dp.DropTokenHash || got.PickupTokenHash != dp.PickupTokenHash {
 		t.Fatalf("loaded drop point mismatch: %+v", got)
-	}
-
-	count, err := repo.CountActiveDropPointsByAPITokenID(context.Background(), dp.APITokenID, now)
-	if err != nil {
-		t.Fatalf("CountActiveDropPointsByAPITokenID: %v", err)
-	}
-	if count != 1 {
-		t.Fatalf("active count = %d, want 1", count)
-	}
-
-	count, err = repo.CountActiveDropPointsByAPITokenID(context.Background(), dp.APITokenID, now.Add(11*time.Minute))
-	if err != nil {
-		t.Fatalf("CountActiveDropPointsByAPITokenID after expiry: %v", err)
-	}
-	if count != 0 {
-		t.Fatalf("active count after expiry = %d, want 0", count)
 	}
 }
 
@@ -57,12 +39,8 @@ func TestRepositoryCreateDropPointWithinQuota(t *testing.T) {
 	if err := repo.CreateDropPointWithinQuota(context.Background(), second, 1, now); !errors.Is(err, droppoint.ErrActiveDropPointQuotaExceeded) {
 		t.Fatalf("CreateDropPointWithinQuota second err = %v, want ErrActiveDropPointQuotaExceeded", err)
 	}
-	count, err := repo.CountActiveDropPointsByAPITokenID(context.Background(), first.APITokenID, now)
-	if err != nil {
-		t.Fatalf("CountActiveDropPointsByAPITokenID: %v", err)
-	}
-	if count != 1 {
-		t.Fatalf("active count = %d, want 1", count)
+	if _, err := repo.FindDropPointByID(context.Background(), first.ID); err != nil {
+		t.Fatalf("FindDropPointByID first: %v", err)
 	}
 }
 
@@ -110,17 +88,15 @@ func TestRepositoryDetectsUniqueConstraintStructurally(t *testing.T) {
 	repo := newTestRepository(t)
 	now := testNow()
 	dp := testDropPoint(t, "dp_unique", "drop_unique", "pick_unique", now)
-	if err := repo.CreateDropPoint(context.Background(), dp); err != nil {
-		t.Fatalf("CreateDropPoint: %v", err)
-	}
+	insertTestDropPoint(t, repo, dp)
 
 	duplicateID := testDropPoint(t, "dp_unique", "drop_unique_other", "pick_unique_other", now)
-	if err := repo.CreateDropPoint(context.Background(), duplicateID); !IsUniqueConstraint(err) {
+	if err := repo.CreateDropPointWithinQuota(context.Background(), duplicateID, 1_000_000, now); !IsUniqueConstraint(err) {
 		t.Fatalf("duplicate ID err = %v, want structural unique constraint", err)
 	}
 
 	duplicateDropToken := testDropPoint(t, "dp_unique_other", "drop_unique", "pick_unique_other_two", now)
-	if err := repo.CreateDropPoint(context.Background(), duplicateDropToken); !IsUniqueConstraint(err) {
+	if err := repo.CreateDropPointWithinQuota(context.Background(), duplicateDropToken, 1_000_000, now); !IsUniqueConstraint(err) {
 		t.Fatalf("duplicate drop token err = %v, want structural unique constraint", err)
 	}
 }
@@ -129,9 +105,7 @@ func TestRepositoryDropTokenLookupAndReceivingAbort(t *testing.T) {
 	repo := newTestRepository(t)
 	now := testNow()
 	dp := testDropPoint(t, "dp_drop", "drop_secret", "pick_secret", now)
-	if err := repo.CreateDropPoint(context.Background(), dp); err != nil {
-		t.Fatalf("CreateDropPoint: %v", err)
-	}
+	insertTestDropPoint(t, repo, dp)
 
 	open, err := repo.FindOpenDropPointByDropTokenHash(context.Background(), token.HashSecret("drop_secret"), now)
 	if err != nil {
@@ -168,9 +142,7 @@ func TestRepositoryPickupAuthorizationIsScopedToDropPoint(t *testing.T) {
 	dp1 := testDropPoint(t, "dp_one", "drop_one", "pick_one", now)
 	dp2 := testDropPoint(t, "dp_two", "drop_two", "pick_two", now)
 	for _, dp := range []droppoint.DropPoint{dp1, dp2} {
-		if err := repo.CreateDropPoint(context.Background(), dp); err != nil {
-			t.Fatalf("CreateDropPoint %s: %v", dp.ID, err)
-		}
+		insertTestDropPoint(t, repo, dp)
 	}
 
 	if _, err := repo.AuthorizePickupToken(context.Background(), dp1.ID, token.HashSecret("pick_one"), now); err != nil {
@@ -185,9 +157,7 @@ func TestRepositoryCommitCloseExpireAndPickupTimestamp(t *testing.T) {
 	repo := newTestRepository(t)
 	now := testNow()
 	dp := testDropPoint(t, "dp_ready", "drop_ready", "pick_ready", now)
-	if err := repo.CreateDropPoint(context.Background(), dp); err != nil {
-		t.Fatalf("CreateDropPoint: %v", err)
-	}
+	insertTestDropPoint(t, repo, dp)
 	if err := repo.BeginReceivingDrop(context.Background(), dp.ID, now); err != nil {
 		t.Fatalf("BeginReceivingDrop: %v", err)
 	}
@@ -238,9 +208,7 @@ func TestRepositoryExpireDropPoints(t *testing.T) {
 	expired := testDropPoint(t, "dp_expired", "drop_expired", "pick_expired", now.Add(-20*time.Minute))
 	active := testDropPoint(t, "dp_active", "drop_active", "pick_active", now)
 	for _, dp := range []droppoint.DropPoint{expired, active} {
-		if err := repo.CreateDropPoint(context.Background(), dp); err != nil {
-			t.Fatalf("CreateDropPoint %s: %v", dp.ID, err)
-		}
+		insertTestDropPoint(t, repo, dp)
 	}
 
 	affected, err := repo.ExpireDropPoints(context.Background(), now)
@@ -259,11 +227,27 @@ func TestRepositoryExpireDropPoints(t *testing.T) {
 	}
 }
 
+func TestParseTimeRequiresSQLiteFormat(t *testing.T) {
+	if _, err := parseTime(testNow().Format(time.RFC3339Nano)); err == nil {
+		t.Fatal("parseTime accepted broad RFC3339Nano timestamp, want strict sqlite format")
+	}
+	if _, err := parseTime(formatTime(testNow())); err != nil {
+		t.Fatalf("parseTime rejected formatTime output: %v", err)
+	}
+}
+
 func newTestRepository(t *testing.T) *Repository {
 	t.Helper()
 	db := openTestDB(t)
 	t.Cleanup(func() { _ = db.Close() })
 	return NewRepository(db.SQLDB())
+}
+
+func insertTestDropPoint(t *testing.T, repo *Repository, dp droppoint.DropPoint) {
+	t.Helper()
+	if err := repo.CreateDropPointWithinQuota(context.Background(), dp, 1_000_000, dp.CreatedAt); err != nil {
+		t.Fatalf("CreateDropPointWithinQuota %s: %v", dp.ID, err)
+	}
 }
 
 func testNow() time.Time {
