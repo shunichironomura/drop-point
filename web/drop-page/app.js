@@ -3,6 +3,8 @@ const KEY_AGREEMENT = 'x25519-hkdf-sha256-aesgcm-raw32';
 const COUNTDOWN_INTERVAL_MS = 1000;
 const IMAGE_TYPE_PREFIX = 'image/';
 const IMAGE_NAME_PATTERN = /\.(?:apng|avif|bmp|gif|heic|heif|ico|jpe?g|png|svg|webp)$/i;
+const BASE64URL_PATTERN = /^[A-Za-z0-9_-]+$/;
+const WINDOWS_RESERVED_NAMES = new Set(['CON', 'PRN', 'AUX', 'NUL', 'COM1', 'COM2', 'COM3', 'COM4', 'COM5', 'COM6', 'COM7', 'COM8', 'COM9', 'LPT1', 'LPT2', 'LPT3', 'LPT4', 'LPT5', 'LPT6', 'LPT7', 'LPT8', 'LPT9']);
 const INFO_METADATA = new TextEncoder().encode('DropPoint/protocol/v2 key=metadata');
 const INFO_PAYLOAD = new TextEncoder().encode('DropPoint/protocol/v2 key=payload');
 const AAD_METADATA = aad('metadata');
@@ -19,6 +21,19 @@ const state = {
   dropToken: location.pathname.split('/').pop(),
 };
 
+class DropPointUserError extends Error {}
+
+function userError(message) {
+  return new DropPointUserError(message);
+}
+
+function userErrorMessage(error, fallback) {
+  if (error instanceof DropPointUserError) {
+    return error.message;
+  }
+  return fallback;
+}
+
 const filesInput = document.getElementById('files');
 const submitButton = document.getElementById('submit');
 const statusBox = document.getElementById('status');
@@ -30,7 +45,7 @@ const dropZone = document.getElementById('drop-zone');
 const selectionBox = document.getElementById('selection');
 const selectedFilesList = document.getElementById('selected-files');
 
-init().catch((error) => showError(error.message || 'This drop point cannot be used.'));
+init().catch((error) => showError(userErrorMessage(error, 'This drop point cannot be used.')));
 
 filesInput.addEventListener('change', () => setSelectedFiles([...state.selectedFiles, ...filesInput.files]));
 dropZone.addEventListener('dragenter', handleDragOverFiles);
@@ -42,12 +57,12 @@ window.addEventListener('drop', preventFileNavigation);
 window.addEventListener('pagehide', revokeAllThumbnailURLs);
 
 submitButton.addEventListener('click', () => {
-  dropSelectedFiles().catch((error) => showError(error.message || 'Dropping files failed.'));
+  dropSelectedFiles().catch((error) => showError(userErrorMessage(error, 'Dropping files failed.')));
 });
 
 async function init() {
   if (!window.isSecureContext || !crypto?.subtle) {
-    throw new Error('This page must be opened over HTTPS or localhost to encrypt files.');
+    throw userError('This page must be opened over HTTPS or localhost to encrypt files.');
   }
   const fragment = parseDropLinkFragment(location.hash);
   state.recipientPublicKey = fragment.recipientPublicKey;
@@ -56,7 +71,7 @@ async function init() {
   state.expiresAt = metadata.expiresAt ?? fragment.expiresAt;
   state.maxBytes = metadata.maxBytes;
   if (isExpired(state.expiresAt)) {
-    throw new Error('This drop point has expired.');
+    throw userError('This drop point has expired.');
   }
   await assertX25519Support(state.recipientPublicKey);
   renderDropName();
@@ -103,10 +118,15 @@ function preventFileNavigation(event) {
 
 function updateSelectedFiles() {
   const files = [...state.selectedFiles];
-  submitButton.disabled = files.length === 0;
+  const limitMessage = selectedFilesLimitMessage(files);
+  submitButton.disabled = files.length === 0 || limitMessage !== null;
   renderSelectedFiles(files);
   if (files.length === 0) {
     showStatus(state.displayName ? `Choose files for ${state.displayName}` : 'Choose files');
+    return;
+  }
+  if (limitMessage !== null) {
+    showSelectionError(limitMessage);
     return;
   }
   showStatus(`${files.length} ${files.length === 1 ? 'file' : 'files'} selected for ${state.displayName}. Ready to drop encrypted files.`);
@@ -208,7 +228,12 @@ function removeSelectedFile(index) {
 async function dropSelectedFiles() {
   const files = [...state.selectedFiles];
   if (files.length === 0) {
-    throw new Error('Choose files before dropping.');
+    throw userError('Choose files before dropping.');
+  }
+  const limitMessage = selectedFilesLimitMessage(files);
+  if (limitMessage !== null) {
+    showSelectionError(limitMessage);
+    return;
   }
   filesInput.disabled = true;
   submitButton.disabled = true;
@@ -228,14 +253,34 @@ async function dropSelectedFiles() {
   });
   if (!response.ok) {
     if (response.status === 404 || response.status === 410) {
-      throw new Error('This drop point has expired.');
+      throw userError('This drop point has expired.');
     }
     if (response.status === 409) {
-      throw new Error('This drop point cannot accept more files.');
+      throw userError('This drop point cannot accept more files.');
     }
-    throw new Error('Network failure or drop point rejected the encrypted files.');
+    if (response.status === 413) {
+      throw userError(`Encrypted files exceeded the ${formatBytes(state.maxBytes)} drop point limit.`);
+    }
+    throw userError('Network failure or drop point rejected the encrypted files.');
   }
+  stopExpiryCountdown();
   showSuccess(`Files dropped successfully for ${state.displayName}. Ready for pickup`);
+}
+
+function selectedFilesLimitMessage(files) {
+  if (!Number.isFinite(state.maxBytes) || state.maxBytes <= 0 || files.length === 0) {
+    return null;
+  }
+  const estimatedEncryptedBytes = estimatedEncryptedPayloadBytes(files);
+  if (estimatedEncryptedBytes <= state.maxBytes) {
+    return null;
+  }
+  return `Selected files are too large for this drop point (${formatBytes(estimatedEncryptedBytes)} encrypted, limit ${formatBytes(state.maxBytes)}).`;
+}
+
+function estimatedEncryptedPayloadBytes(files) {
+  const plaintextBytes = files.reduce((sum, file) => sum + Math.max(0, Number(file.size) || 0), 0);
+  return plaintextBytes + 16;
 }
 
 async function fetchDropMetadata(dropToken) {
@@ -247,17 +292,22 @@ async function fetchDropMetadata(dropToken) {
   });
   if (!response.ok) {
     if (response.status === 404 || response.status === 410) {
-      throw new Error('This drop point has expired or cannot be used.');
+      throw userError('This drop point has expired or cannot be used.');
     }
     if (response.status === 409) {
-      throw new Error('This drop point cannot accept more files.');
+      throw userError('This drop point cannot accept more files.');
     }
-    throw new Error('Could not load this drop point.');
+    throw userError('Could not load this drop point.');
   }
-  const metadata = await response.json();
+  let metadata;
+  try {
+    metadata = await response.json();
+  } catch (_error) {
+    throw userError('Could not load this drop point.');
+  }
   const expiresAt = parseExpiry(metadata.expires_at);
   if (expiresAt === null) {
-    throw new Error('This drop point returned an invalid expiry timestamp.');
+    throw userError('This drop point returned an invalid expiry timestamp.');
   }
   return {
     displayName: parseDisplayName(metadata.display_name),
@@ -268,14 +318,14 @@ async function fetchDropMetadata(dropToken) {
 
 function parseDisplayName(value) {
   if (typeof value !== 'string' || !/^[a-z]+-[a-z]+$/.test(value)) {
-    throw new Error('This drop point returned an invalid name.');
+    throw userError('This drop point returned an invalid name.');
   }
   return value;
 }
 
 function parseMaxBytes(value) {
-  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
-    throw new Error('This drop point returned an invalid size limit.');
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0) {
+    throw userError('This drop point returned an invalid size limit.');
   }
   return value;
 }
@@ -288,11 +338,11 @@ function renderDropName() {
 function parseDropLinkFragment(hash) {
   const params = new URLSearchParams(hash.startsWith('#') ? hash.slice(1) : hash);
   if (params.get('v') !== String(PROTOCOL_VERSION)) {
-    throw new Error('This drop link is missing its public key.');
+    throw userError('This drop link is missing its public key.');
   }
   const recipientPublicKey = decodeBase64URL(params.get('pk') || '');
   if (recipientPublicKey.byteLength !== 32) {
-    throw new Error('This drop link is missing its public key.');
+    throw userError('This drop link is missing its public key.');
   }
   return { recipientPublicKey, expiresAt: parseExpiry(params.get('exp')) };
 }
@@ -303,7 +353,7 @@ function parseExpiry(value) {
   }
   const millis = Date.parse(value);
   if (!Number.isFinite(millis)) {
-    throw new Error('This drop point has an invalid expiry timestamp.');
+    throw userError('This drop point has an invalid expiry timestamp.');
   }
   return new Date(millis);
 }
@@ -358,16 +408,17 @@ async function assertX25519Support(recipientPublicKey) {
   try {
     await crypto.subtle.importKey('raw', recipientPublicKey, { name: 'X25519' }, false, []);
   } catch (_error) {
-    throw new Error('This browser does not support DropPoint encryption. Use a current browser with WebCrypto X25519 support.');
+    throw userError('This browser does not support DropPoint encryption. Use a current browser with WebCrypto X25519 support.');
   }
 }
 
 async function buildEncryptedBundle(files, recipientPublicKeyBytes) {
   const manifestFiles = [];
   const chunks = [];
+  const usedManifestNames = new Set();
   for (const file of files) {
     const bytes = new Uint8Array(await file.arrayBuffer());
-    manifestFiles.push({ name: file.name || 'file', type: file.type || 'application/octet-stream', size: bytes.byteLength });
+    manifestFiles.push({ name: uniqueManifestName(file.name || 'file', usedManifestNames), type: file.type || 'application/octet-stream', size: bytes.byteLength });
     chunks.push(bytes);
   }
   const payloadPlaintext = concat(chunks);
@@ -383,7 +434,7 @@ async function buildEncryptedBundle(files, recipientPublicKeyBytes) {
   const senderPublicKey = new Uint8Array(await crypto.subtle.exportKey('raw', senderKeyPair.publicKey));
   const sharedSecret = new Uint8Array(await crypto.subtle.deriveBits({ name: 'X25519', public: recipientPublicKey }, senderKeyPair.privateKey, 256));
   if (sharedSecret.every((byte) => byte === 0)) {
-    throw new Error('This drop link uses an invalid public key.');
+    throw userError('This drop link uses an invalid public key.');
   }
   const salt = concat([senderPublicKey, recipientPublicKeyBytes]);
   const hkdfKey = await crypto.subtle.importKey('raw', sharedSecret, 'HKDF', false, ['deriveKey']);
@@ -404,6 +455,43 @@ async function buildEncryptedBundle(files, recipientPublicKeyBytes) {
     },
     encryptedPayload,
   };
+}
+
+function uniqueManifestName(name, usedNames) {
+  const baseName = sanitizeManifestName(name);
+  let candidate = baseName;
+  let suffix = 2;
+  while (usedNames.has(foldManifestName(candidate))) {
+    candidate = appendNameSuffix(baseName, suffix);
+    suffix += 1;
+  }
+  usedNames.add(foldManifestName(candidate));
+  return candidate;
+}
+
+function sanitizeManifestName(value) {
+  const name = String(value || 'file').replace(/[\/\\\x00-\x1F\x7F]/g, '_').trim();
+  if (name === '' || name === '.' || name === '..' || isReservedWindowsName(name)) {
+    return 'file';
+  }
+  return name;
+}
+
+function isReservedWindowsName(name) {
+  const base = name.replace(/\.[^.]*$/u, '').toUpperCase();
+  return WINDOWS_RESERVED_NAMES.has(base);
+}
+
+function appendNameSuffix(name, suffix) {
+  const dot = name.lastIndexOf('.');
+  if (dot > 0) {
+    return `${name.slice(0, dot)} (${suffix})${name.slice(dot)}`;
+  }
+  return `${name} (${suffix})`;
+}
+
+function foldManifestName(name) {
+  return name.toLocaleLowerCase('en-US');
 }
 
 async function deriveAESKey(hkdfKey, salt, info) {
@@ -436,12 +524,16 @@ function concat(chunks) {
 }
 
 function decodeBase64URL(value) {
-  if (!value || value.includes('=')) {
+  if (!value || value.includes('=') || !BASE64URL_PATTERN.test(value)) {
     return new Uint8Array();
   }
-  const padded = value.replace(/-/g, '+').replace(/_/g, '/').padEnd(Math.ceil(value.length / 4) * 4, '=');
-  const binary = atob(padded);
-  return Uint8Array.from(binary, (char) => char.charCodeAt(0));
+  try {
+    const padded = value.replace(/-/g, '+').replace(/_/g, '/').padEnd(Math.ceil(value.length / 4) * 4, '=');
+    const binary = atob(padded);
+    return Uint8Array.from(binary, (char) => char.charCodeAt(0));
+  } catch (_error) {
+    return new Uint8Array();
+  }
 }
 
 function encodeBase64URL(bytes) {
@@ -477,6 +569,11 @@ function showStatus(message) {
 
 function showSuccess(message) {
   statusBox.className = 'status success';
+  statusBox.textContent = message;
+}
+
+function showSelectionError(message) {
+  statusBox.className = 'status error';
   statusBox.textContent = message;
 }
 

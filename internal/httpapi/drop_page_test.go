@@ -30,6 +30,9 @@ func TestServeDropPageHasSecurityHeadersAndCopy(t *testing.T) {
 	if got := recorder.Header().Get("X-Content-Type-Options"); got != "nosniff" {
 		t.Fatalf("X-Content-Type-Options = %q", got)
 	}
+	if got := recorder.Header().Get("Permissions-Policy"); !strings.Contains(got, "camera=()") || !strings.Contains(got, "microphone=()") || !strings.Contains(got, "geolocation=()") {
+		t.Fatalf("Permissions-Policy = %q", got)
+	}
 }
 
 func TestDropAssetsAreSameOriginOnlyAndNoThirdPartyScripts(t *testing.T) {
@@ -49,7 +52,7 @@ func TestDropAssetsAreSameOriginOnlyAndNoThirdPartyScripts(t *testing.T) {
 		t.Fatalf("app.js status = %d", recorder.Code)
 	}
 	app := recorder.Body.String()
-	for _, want := range []string{"window.isSecureContext", "X25519", "#", "FormData", "display_name", "fetchDropMetadata", "drop-name", "dataTransfer", "handleDroppedFiles", "formatRemainingTime", "updateSelectedFiles", "removeSelectedFile", "Ready for pickup"} {
+	for _, want := range []string{"window.isSecureContext", "X25519", "#", "FormData", "display_name", "fetchDropMetadata", "drop-name", "dataTransfer", "handleDroppedFiles", "formatRemainingTime", "updateSelectedFiles", "removeSelectedFile", "uniqueManifestName", "selectedFilesLimitMessage", "Ready for pickup"} {
 		if !strings.Contains(app, want) {
 			t.Fatalf("app.js missing %q", want)
 		}
