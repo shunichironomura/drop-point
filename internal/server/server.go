@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/shunichironomura/drop-point/internal/blobstore"
+	"github.com/shunichironomura/drop-point/internal/cleanup"
 	"github.com/shunichironomura/drop-point/internal/config"
 	"github.com/shunichironomura/drop-point/internal/httpapi"
 	"github.com/shunichironomura/drop-point/internal/logutil"
@@ -16,11 +17,10 @@ import (
 )
 
 const (
-	readHeaderTimeout = 10 * time.Second
-	readTimeout       = 2 * time.Minute
-	writeTimeout      = 2 * time.Minute
-	idleTimeout       = 2 * time.Minute
-	shutdownTimeout   = 10 * time.Second
+	readHeaderTimeout       = 10 * time.Second
+	idleTimeout             = 2 * time.Minute
+	shutdownTimeout         = 10 * time.Second
+	cleanupOperationTimeout = 30 * time.Second
 )
 
 // Server is the imperative shell that wires configuration, storage, and HTTP.
@@ -61,8 +61,8 @@ func New(ctx context.Context, cfg config.Config, logger *log.Logger) (*Server, e
 			Addr:              cfg.ListenAddr,
 			Handler:           handler,
 			ReadHeaderTimeout: readHeaderTimeout,
-			ReadTimeout:       readTimeout,
-			WriteTimeout:      writeTimeout,
+			ReadTimeout:       secondsDuration(cfg.ReadTimeoutSeconds),
+			WriteTimeout:      secondsDuration(cfg.WriteTimeoutSeconds),
 			IdleTimeout:       idleTimeout,
 		},
 		logger: logger,
@@ -82,6 +82,13 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 	if s == nil || s.HTTPServer == nil {
 		return fmt.Errorf("server is not initialized")
 	}
+
+	cleanupCtx, stopCleanup := context.WithCancel(context.Background())
+	cleanupDone := s.startCleanupLoop(cleanupCtx)
+	defer func() {
+		stopCleanup()
+		<-cleanupDone
+	}()
 
 	errCh := make(chan error, 1)
 	go func() {
@@ -103,6 +110,47 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 		}
 		return <-errCh
 	}
+}
+
+func (s *Server) startCleanupLoop(ctx context.Context) <-chan struct{} {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		service := cleanup.Service{
+			Repository:        s.Repository,
+			BlobStore:         s.BlobStore,
+			TerminalRetention: secondsDuration(s.Config.TerminalRetentionSeconds),
+		}
+		run := func() {
+			runCtx, cancel := context.WithTimeout(ctx, cleanupOperationTimeout)
+			result, err := service.Expire(runCtx)
+			cancel()
+			if err != nil {
+				s.logger.Printf("cleanup error: %v", err)
+				return
+			}
+			if result.ExpiredDropPoints != 0 || result.DeletedPayloads != 0 || result.PurgedRows != 0 {
+				s.logger.Printf("cleanup expired_drop_points=%d deleted_payloads=%d purged_rows=%d", result.ExpiredDropPoints, result.DeletedPayloads, result.PurgedRows)
+			}
+		}
+
+		run()
+		ticker := time.NewTicker(secondsDuration(s.Config.CleanupIntervalSeconds))
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				run()
+			}
+		}
+	}()
+	return done
+}
+
+func secondsDuration(seconds int) time.Duration {
+	return time.Duration(seconds) * time.Second
 }
 
 // Close releases local resources. It does not shut down an active listener; use

@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/shunichironomura/drop-point/internal/blobstore"
 	"github.com/shunichironomura/drop-point/internal/cleanup"
@@ -119,12 +120,12 @@ func runCleanup(args []string, stdout io.Writer, stderr io.Writer) int {
 		return 1
 	}
 	defer db.Close()
-	result, err := (cleanup.Service{Repository: store.NewRepository(db.SQLDB()), BlobStore: blobstore.New(cfg.DataDir)}).Expire(context.Background())
+	result, err := (cleanup.Service{Repository: store.NewRepository(db.SQLDB()), BlobStore: blobstore.New(cfg.DataDir), TerminalRetention: time.Duration(cfg.TerminalRetentionSeconds) * time.Second}).Expire(context.Background())
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "cleanup error: %v\n", err)
 		return 1
 	}
-	_, _ = fmt.Fprintf(stdout, "expired_drop_points=%d deleted_payloads=%d\n", result.ExpiredDropPoints, result.DeletedPayloads)
+	_, _ = fmt.Fprintf(stdout, "expired_drop_points=%d deleted_payloads=%d purged_rows=%d\n", result.ExpiredDropPoints, result.DeletedPayloads, result.PurgedRows)
 	return 0
 }
 

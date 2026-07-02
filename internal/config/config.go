@@ -13,17 +13,21 @@ import (
 )
 
 const (
-	DefaultListenAddr          = "127.0.0.1:8080"
-	DefaultBaseURL             = "http://127.0.0.1:8080"
-	DefaultDataDir             = ".data/drop-point"
-	CanonicalSystemDataDir     = "/var/lib/drop-point"
-	DefaultTTLSeconds          = 600
-	DefaultMaxTTLSeconds       = 900
-	DefaultMaxBytes            = 52_428_800
-	DefaultMaxActiveDropPoints = 3
-	SecretHashSchemeSHA256     = "sha256"
-	secretHashPrefixSHA256     = SecretHashSchemeSHA256 + ":"
-	sha256HexEncodedByteLength = 64
+	DefaultListenAddr               = "127.0.0.1:8080"
+	DefaultBaseURL                  = "http://127.0.0.1:8080"
+	DefaultDataDir                  = ".data/drop-point"
+	CanonicalSystemDataDir          = "/var/lib/drop-point"
+	DefaultTTLSeconds               = 600
+	DefaultMaxTTLSeconds            = 900
+	DefaultMaxBytes                 = 52_428_800
+	DefaultMaxActiveDropPoints      = 3
+	DefaultReadTimeoutSeconds       = 600
+	DefaultWriteTimeoutSeconds      = 600
+	DefaultCleanupIntervalSeconds   = 60
+	DefaultTerminalRetentionSeconds = 30 * 24 * 60 * 60
+	SecretHashSchemeSHA256          = "sha256"
+	secretHashPrefixSHA256          = SecretHashSchemeSHA256 + ":"
+	sha256HexEncodedByteLength      = 64
 )
 
 const (
@@ -35,6 +39,10 @@ const (
 	EnvDefaultMaxBytes            = "DROP_POINT_DEFAULT_MAX_BYTES"
 	EnvMaxBytes                   = "DROP_POINT_MAX_BYTES"
 	EnvDefaultMaxActiveDropPoints = "DROP_POINT_DEFAULT_MAX_ACTIVE_DROP_POINTS"
+	EnvReadTimeoutSeconds         = "DROP_POINT_READ_TIMEOUT_SECONDS"
+	EnvWriteTimeoutSeconds        = "DROP_POINT_WRITE_TIMEOUT_SECONDS"
+	EnvCleanupIntervalSeconds     = "DROP_POINT_CLEANUP_INTERVAL_SECONDS"
+	EnvTerminalRetentionSeconds   = "DROP_POINT_TERMINAL_RETENTION_SECONDS"
 	EnvAPITokensJSON              = "DROP_POINT_API_TOKENS_JSON"
 )
 
@@ -47,6 +55,10 @@ var configEnvironmentVariables = []string{
 	EnvDefaultMaxBytes,
 	EnvMaxBytes,
 	EnvDefaultMaxActiveDropPoints,
+	EnvReadTimeoutSeconds,
+	EnvWriteTimeoutSeconds,
+	EnvCleanupIntervalSeconds,
+	EnvTerminalRetentionSeconds,
 	EnvAPITokensJSON,
 }
 
@@ -62,6 +74,10 @@ type Config struct {
 	DefaultMaxBytes            int64      `json:"default_max_bytes"`
 	MaxBytes                   int64      `json:"max_bytes"`
 	DefaultMaxActiveDropPoints int        `json:"default_max_active_drop_points"`
+	ReadTimeoutSeconds         int        `json:"read_timeout_seconds"`
+	WriteTimeoutSeconds        int        `json:"write_timeout_seconds"`
+	CleanupIntervalSeconds     int        `json:"cleanup_interval_seconds"`
+	TerminalRetentionSeconds   int        `json:"terminal_retention_seconds"`
 	APITokens                  []APIToken `json:"api_tokens"`
 }
 
@@ -86,6 +102,10 @@ func Default() Config {
 		DefaultMaxBytes:            DefaultMaxBytes,
 		MaxBytes:                   DefaultMaxBytes,
 		DefaultMaxActiveDropPoints: DefaultMaxActiveDropPoints,
+		ReadTimeoutSeconds:         DefaultReadTimeoutSeconds,
+		WriteTimeoutSeconds:        DefaultWriteTimeoutSeconds,
+		CleanupIntervalSeconds:     DefaultCleanupIntervalSeconds,
+		TerminalRetentionSeconds:   DefaultTerminalRetentionSeconds,
 		APITokens:                  nil,
 	}
 }
@@ -166,6 +186,26 @@ func ApplyEnvironmentOverrides(cfg Config, lookup func(string) (string, bool)) (
 			cfg.DefaultMaxActiveDropPoints = parsed
 			return err
 		}},
+		{name: EnvReadTimeoutSeconds, apply: func(value string) error {
+			parsed, err := parseEnvInt(EnvReadTimeoutSeconds, value)
+			cfg.ReadTimeoutSeconds = parsed
+			return err
+		}},
+		{name: EnvWriteTimeoutSeconds, apply: func(value string) error {
+			parsed, err := parseEnvInt(EnvWriteTimeoutSeconds, value)
+			cfg.WriteTimeoutSeconds = parsed
+			return err
+		}},
+		{name: EnvCleanupIntervalSeconds, apply: func(value string) error {
+			parsed, err := parseEnvInt(EnvCleanupIntervalSeconds, value)
+			cfg.CleanupIntervalSeconds = parsed
+			return err
+		}},
+		{name: EnvTerminalRetentionSeconds, apply: func(value string) error {
+			parsed, err := parseEnvInt(EnvTerminalRetentionSeconds, value)
+			cfg.TerminalRetentionSeconds = parsed
+			return err
+		}},
 		{name: EnvAPITokensJSON, apply: func(value string) error {
 			parsed, err := parseAPITokensJSON(value)
 			cfg.APITokens = parsed
@@ -220,6 +260,18 @@ func (c Config) Validate() error {
 	}
 	if c.DefaultMaxActiveDropPoints <= 0 {
 		errs = append(errs, errors.New("default_max_active_drop_points must be positive"))
+	}
+	if c.ReadTimeoutSeconds <= 0 {
+		errs = append(errs, errors.New("read_timeout_seconds must be positive"))
+	}
+	if c.WriteTimeoutSeconds <= 0 {
+		errs = append(errs, errors.New("write_timeout_seconds must be positive"))
+	}
+	if c.CleanupIntervalSeconds <= 0 {
+		errs = append(errs, errors.New("cleanup_interval_seconds must be positive"))
+	}
+	if c.TerminalRetentionSeconds <= 0 {
+		errs = append(errs, errors.New("terminal_retention_seconds must be positive"))
 	}
 
 	seenTokenIDs := make(map[string]struct{}, len(c.APITokens))

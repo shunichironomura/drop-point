@@ -14,14 +14,16 @@ type BlobStore interface {
 
 // Service expires old drop points and removes their ciphertext directories.
 type Service struct {
-	Repository *store.Repository
-	BlobStore  BlobStore
-	Now        func() time.Time
+	Repository        *store.Repository
+	BlobStore         BlobStore
+	Now               func() time.Time
+	TerminalRetention time.Duration
 }
 
 type Result struct {
 	ExpiredDropPoints int
 	DeletedPayloads   int
+	PurgedRows        int
 }
 
 // Expire marks expired non-terminal drop points and deletes their blob
@@ -52,6 +54,13 @@ func (s Service) Expire(ctx context.Context) (Result, error) {
 		if dp.PayloadPath != "" || dp.EnvelopePath != "" {
 			result.DeletedPayloads++
 		}
+	}
+	if s.TerminalRetention > 0 {
+		purged, err := s.Repository.PurgeTerminalDropPoints(ctx, now.Add(-s.TerminalRetention))
+		if err != nil {
+			return result, err
+		}
+		result.PurgedRows = purged
 	}
 	return result, nil
 }

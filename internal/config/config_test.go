@@ -74,6 +74,10 @@ func TestLoadAppliesEnvironmentOverrides(t *testing.T) {
 	t.Setenv(EnvDefaultMaxBytes, "4096")
 	t.Setenv(EnvMaxBytes, "8192")
 	t.Setenv(EnvDefaultMaxActiveDropPoints, "7")
+	t.Setenv(EnvReadTimeoutSeconds, "30")
+	t.Setenv(EnvWriteTimeoutSeconds, "40")
+	t.Setenv(EnvCleanupIntervalSeconds, "50")
+	t.Setenv(EnvTerminalRetentionSeconds, "60")
 	t.Setenv(EnvAPITokensJSON, `[{"id":"env-token","secret_hash":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","enabled":true,"max_active_drop_points":2}]`)
 
 	cfg, err := Load("")
@@ -83,7 +87,7 @@ func TestLoadAppliesEnvironmentOverrides(t *testing.T) {
 	if cfg.ListenAddr != "0.0.0.0:9090" || cfg.BaseURL != "https://env.drop.example.com" || cfg.DataDir != "/tmp/drop-point-env" {
 		t.Fatalf("string overrides not applied: %+v", cfg)
 	}
-	if cfg.DefaultTTLSeconds != 120 || cfg.MaxTTLSeconds != 300 || cfg.DefaultMaxBytes != 4096 || cfg.MaxBytes != 8192 || cfg.DefaultMaxActiveDropPoints != 7 {
+	if cfg.DefaultTTLSeconds != 120 || cfg.MaxTTLSeconds != 300 || cfg.DefaultMaxBytes != 4096 || cfg.MaxBytes != 8192 || cfg.DefaultMaxActiveDropPoints != 7 || cfg.ReadTimeoutSeconds != 30 || cfg.WriteTimeoutSeconds != 40 || cfg.CleanupIntervalSeconds != 50 || cfg.TerminalRetentionSeconds != 60 {
 		t.Fatalf("numeric overrides not applied: %+v", cfg)
 	}
 	if len(cfg.APITokens) != 1 || cfg.APITokens[0].ID != "env-token" || cfg.APITokens[0].MaxActiveDropPoints == nil || *cfg.APITokens[0].MaxActiveDropPoints != 2 {

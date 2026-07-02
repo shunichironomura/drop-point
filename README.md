@@ -46,6 +46,6 @@ See `docs/local-testing.md` for a Python receiver/sender simulation, `docs/api.m
 - Canonical system data directory: `/var/lib/drop-point`.
 - SQLite database: `relay.db`.
 - Ciphertext blobs: `drop-points/<drop-point-id>/envelope.json` and `payload.bin`.
-- Cleanup command: `drop-point cleanup expired --config ./config.json`.
+- The running relay periodically expires old drop points and deletes expired ciphertext; `drop-point cleanup expired --config ./config.json` is available as an operational backstop.
 
-Sender-facing pages must be served over HTTPS or localhost. Request body limits at proxies/tunnels must allow configured `max_bytes` plus multipart overhead. Redact token-bearing paths such as `/drop/:drop_token` and `/api/drops/:drop_token` at every logging layer.
+Sender-facing pages must be served over HTTPS or localhost. Request body limits and upload timeouts at proxies/tunnels must allow configured `max_bytes` plus multipart overhead. Redact token-bearing paths such as `/drop/:drop_token` and `/api/drops/:drop_token` at every logging layer.

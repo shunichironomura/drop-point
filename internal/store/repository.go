@@ -320,6 +320,35 @@ WHERE status IN (?, ?, ?) AND expires_at <= ?`,
 	return expired, nil
 }
 
+// PurgeTerminalDropPoints deletes terminal metadata rows whose ciphertext file
+// pointers have already been cleared and whose terminal timestamp is older than
+// cutoff. Closed rows use closed_at; expired and failed rows use expires_at.
+func (r *Repository) PurgeTerminalDropPoints(ctx context.Context, cutoff time.Time) (int, error) {
+	if err := r.ensureReady(); err != nil {
+		return 0, err
+	}
+	result, err := r.db.ExecContext(ctx, `
+DELETE FROM drop_points
+WHERE status IN (?, ?, ?)
+  AND payload_path IS NULL
+  AND envelope_path IS NULL
+  AND (
+    (closed_at IS NOT NULL AND closed_at <= ?)
+    OR (closed_at IS NULL AND expires_at <= ?)
+  )`,
+		string(droppoint.StatusClosed), string(droppoint.StatusExpired), string(droppoint.StatusFailed),
+		formatTime(cutoff), formatTime(cutoff),
+	)
+	if err != nil {
+		return 0, fmt.Errorf("purge terminal drop points: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("purge terminal drop points: rows affected: %w", err)
+	}
+	return int(rows), nil
+}
+
 // CountActiveDropPointsByAPITokenID counts open, receiving, and ready drop
 // points that have not expired.
 func (r *Repository) CountActiveDropPointsByAPITokenID(ctx context.Context, apiTokenID string, now time.Time) (int, error) {

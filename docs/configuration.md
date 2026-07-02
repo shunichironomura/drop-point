@@ -12,6 +12,10 @@ Example:
   "default_max_bytes": 52428800,
   "max_bytes": 52428800,
   "default_max_active_drop_points": 3,
+  "read_timeout_seconds": 600,
+  "write_timeout_seconds": 600,
+  "cleanup_interval_seconds": 60,
+  "terminal_retention_seconds": 2592000,
   "api_tokens": [
     {
       "id": "desktop-main",
@@ -31,6 +35,9 @@ Fields:
 - `default_ttl_seconds` / `max_ttl_seconds`: receiver-requested TTL default and upper bound.
 - `default_max_bytes` / `max_bytes`: encrypted payload size default and upper bound. The shipped maximum is `52428800` bytes.
 - `default_max_active_drop_points`: quota used when an API token has no override.
+- `read_timeout_seconds` / `write_timeout_seconds`: HTTP body/response timeouts. Defaults are long enough for slow mobile uploads up to the shipped payload limit.
+- `cleanup_interval_seconds`: how often the running relay expires old drop points, deletes expired ciphertext directories, and purges old terminal metadata rows.
+- `terminal_retention_seconds`: retention window for closed/expired/failed SQLite rows after ciphertext pointers have been cleared. The default is 30 days.
 - `api_tokens[].id`: operator label for quota and logs.
 - `api_tokens[].secret_hash`: `sha256:<lowercase-hex-sha256>` of the plaintext API token. Plaintext tokens must not be stored.
 - `api_tokens[].enabled`: disabled tokens cannot create drop points.
@@ -50,6 +57,10 @@ Fields:
 | `DROP_POINT_DEFAULT_MAX_BYTES` | `default_max_bytes` |
 | `DROP_POINT_MAX_BYTES` | `max_bytes` |
 | `DROP_POINT_DEFAULT_MAX_ACTIVE_DROP_POINTS` | `default_max_active_drop_points` |
+| `DROP_POINT_READ_TIMEOUT_SECONDS` | `read_timeout_seconds` |
+| `DROP_POINT_WRITE_TIMEOUT_SECONDS` | `write_timeout_seconds` |
+| `DROP_POINT_CLEANUP_INTERVAL_SECONDS` | `cleanup_interval_seconds` |
+| `DROP_POINT_TERMINAL_RETENTION_SECONDS` | `terminal_retention_seconds` |
 | `DROP_POINT_API_TOKENS_JSON` | the full `api_tokens` array as JSON |
 
 Example:
