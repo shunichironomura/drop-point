@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/shunichironomura/drop-point/internal/token"
+	"github.com/shunichironomura/droppoint/internal/token"
 )
 
 func TestTokenGenerateCommand(t *testing.T) {

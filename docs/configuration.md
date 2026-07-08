@@ -6,7 +6,7 @@ Example:
 {
   "listen_addr": "127.0.0.1:8080",
   "base_url": "https://drop.example.com",
-  "data_dir": "/var/lib/drop-point",
+  "data_dir": "/var/lib/droppoint",
   "default_ttl_seconds": 600,
   "max_ttl_seconds": 900,
   "default_max_bytes": 52428800,
@@ -31,7 +31,7 @@ Fields:
 
 - `listen_addr`: local address for the HTTP server.
 - `base_url`: externally visible origin, with scheme and host, no query or fragment.
-- `data_dir`: directory for `relay.db` and ciphertext directories. Use `/var/lib/drop-point` for system installs.
+- `data_dir`: directory for `relay.db` and ciphertext directories. Use `/var/lib/droppoint` for system installs.
 - `default_ttl_seconds` / `max_ttl_seconds`: receiver-requested TTL default and upper bound.
 - `default_max_bytes` / `max_bytes`: encrypted payload size default and upper bound. The shipped maximum is `52428800` bytes.
 - `default_max_active_drop_points`: quota used when an API token has no override.
@@ -45,37 +45,37 @@ Fields:
 
 ## Environment overrides
 
-`DROP_POINT_*` environment variables override the JSON file and defaults. They use the same validation rules as the JSON fields.
+`DROPPOINT_*` environment variables override the JSON file and defaults. They use the same validation rules as the JSON fields.
 
 | Environment variable | Overrides |
 | --- | --- |
-| `DROP_POINT_LISTEN_ADDR` | `listen_addr` |
-| `DROP_POINT_BASE_URL` | `base_url` |
-| `DROP_POINT_DATA_DIR` | `data_dir` |
-| `DROP_POINT_DEFAULT_TTL_SECONDS` | `default_ttl_seconds` |
-| `DROP_POINT_MAX_TTL_SECONDS` | `max_ttl_seconds` |
-| `DROP_POINT_DEFAULT_MAX_BYTES` | `default_max_bytes` |
-| `DROP_POINT_MAX_BYTES` | `max_bytes` |
-| `DROP_POINT_DEFAULT_MAX_ACTIVE_DROP_POINTS` | `default_max_active_drop_points` |
-| `DROP_POINT_READ_TIMEOUT_SECONDS` | `read_timeout_seconds` |
-| `DROP_POINT_WRITE_TIMEOUT_SECONDS` | `write_timeout_seconds` |
-| `DROP_POINT_CLEANUP_INTERVAL_SECONDS` | `cleanup_interval_seconds` |
-| `DROP_POINT_TERMINAL_RETENTION_SECONDS` | `terminal_retention_seconds` |
-| `DROP_POINT_API_TOKENS_JSON` | the full `api_tokens` array as JSON |
+| `DROPPOINT_LISTEN_ADDR` | `listen_addr` |
+| `DROPPOINT_BASE_URL` | `base_url` |
+| `DROPPOINT_DATA_DIR` | `data_dir` |
+| `DROPPOINT_DEFAULT_TTL_SECONDS` | `default_ttl_seconds` |
+| `DROPPOINT_MAX_TTL_SECONDS` | `max_ttl_seconds` |
+| `DROPPOINT_DEFAULT_MAX_BYTES` | `default_max_bytes` |
+| `DROPPOINT_MAX_BYTES` | `max_bytes` |
+| `DROPPOINT_DEFAULT_MAX_ACTIVE_DROP_POINTS` | `default_max_active_drop_points` |
+| `DROPPOINT_READ_TIMEOUT_SECONDS` | `read_timeout_seconds` |
+| `DROPPOINT_WRITE_TIMEOUT_SECONDS` | `write_timeout_seconds` |
+| `DROPPOINT_CLEANUP_INTERVAL_SECONDS` | `cleanup_interval_seconds` |
+| `DROPPOINT_TERMINAL_RETENTION_SECONDS` | `terminal_retention_seconds` |
+| `DROPPOINT_API_TOKENS_JSON` | the full `api_tokens` array as JSON |
 
 Example:
 
 ```sh
-DROP_POINT_BASE_URL=https://drop.example.com \
-DROP_POINT_DATA_DIR=/var/lib/drop-point \
-DROP_POINT_API_TOKENS_JSON='[{"id":"desktop-main","secret_hash":"sha256:<lowercase-hex-sha256>","enabled":true}]' \
-drop-point serve --config /etc/drop-point/config.json
+DROPPOINT_BASE_URL=https://drop.example.com \
+DROPPOINT_DATA_DIR=/var/lib/droppoint \
+DROPPOINT_API_TOKENS_JSON='[{"id":"desktop-main","secret_hash":"sha256:<lowercase-hex-sha256>","enabled":true}]' \
+droppoint serve --config /etc/droppoint/config.json
 ```
 
 Generate token material with:
 
 ```sh
-drop-point token generate
+droppoint token generate
 ```
 
 The command prints the plaintext API token once and the matching config hash. Store the hash; deliver the plaintext token only to the receiver client.

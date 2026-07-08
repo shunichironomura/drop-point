@@ -2,8 +2,8 @@
 
 The `scripts/` directory contains two small Python clients that exercise the real HTTP API and protocol:
 
-- `scripts/drop-point-receiver.py`: creates a drop point, saves receiver state, polls/picks up/decrypts, and closes.
-- `scripts/drop-point-sender.py`: reads a full drop link, encrypts local files with the URL-fragment public key, and submits one encrypted drop.
+- `scripts/droppoint-receiver.py`: creates a drop point, saves receiver state, polls/picks up/decrypts, and closes.
+- `scripts/droppoint-sender.py`: reads a full drop link, encrypts local files with the URL-fragment public key, and submits one encrypted drop.
 
 They are `uv` scripts, so dependencies are installed automatically from their inline metadata.
 
@@ -11,7 +11,7 @@ They are `uv` scripts, so dependencies are installed automatically from their in
 
 ```sh
 mkdir -p .local/local-test
-TOKEN_OUT=$(go run ./cmd/drop-point token generate)
+TOKEN_OUT=$(go run ./cmd/droppoint token generate)
 API_TOKEN=$(printf '%s\n' "$TOKEN_OUT" | awk '/^api_token:/ {print $2}')
 SECRET_HASH=$(printf '%s\n' "$TOKEN_OUT" | awk '/^secret_hash:/ {print $2}')
 
@@ -35,7 +35,7 @@ EOF
 ## 2. Start the relay
 
 ```sh
-go run ./cmd/drop-point serve --config .local/local-test/config.json
+go run ./cmd/droppoint serve --config .local/local-test/config.json
 ```
 
 In another terminal:
@@ -54,7 +54,7 @@ Create a browser test config and save the plaintext API token separately:
 
 ```sh
 mkdir -p .local/browser-test
-TOKEN_OUT=$(go run ./cmd/drop-point token generate)
+TOKEN_OUT=$(go run ./cmd/droppoint token generate)
 API_TOKEN=$(printf '%s\n' "$TOKEN_OUT" | awk '/^api_token:/ {print $2}')
 SECRET_HASH=$(printf '%s\n' "$TOKEN_OUT" | awk '/^secret_hash:/ {print $2}')
 
@@ -81,13 +81,13 @@ chmod 600 .local/browser-test/config.json .local/browser-test/api-token.txt
 Start the relay:
 
 ```sh
-go run ./cmd/drop-point serve --config .local/browser-test/config.json
+go run ./cmd/droppoint serve --config .local/browser-test/config.json
 ```
 
 In another terminal, create a drop point and print its drop name plus a full sender link:
 
 ```sh
-./scripts/drop-point-receiver.py create \
+./scripts/droppoint-receiver.py create \
   --base-url http://localhost:18080 \
   --api-token "$(tr -d '\n' < .local/browser-test/api-token.txt)" \
   --state .local/browser-test/state.json
@@ -97,7 +97,7 @@ Open the printed `http://localhost:18080/drop/...#v=2&pk=...&exp=...` link in yo
 verify that the page shows the printed drop name, choose files, and submit the drop. Then pick up and decrypt the uploaded files:
 
 ```sh
-./scripts/drop-point-receiver.py pickup \
+./scripts/droppoint-receiver.py pickup \
   --state .local/browser-test/state.json \
   --out-dir .local/browser-test/output \
   --wait
@@ -108,7 +108,7 @@ The decrypted files are written under `.local/browser-test/output`.
 ## 3. Receiver: create a drop point
 
 ```sh
-./scripts/drop-point-receiver.py create \
+./scripts/droppoint-receiver.py create \
   --base-url http://127.0.0.1:18080 \
   --api-token "$API_TOKEN" \
   --state .local/local-test/state.json
@@ -122,7 +122,7 @@ The script prints the drop name and a full sender link containing `#v=2&pk=...&e
 mkdir -p .local/local-test/input
 printf 'hello from sender\n' > .local/local-test/input/hello.txt
 
-./scripts/drop-point-sender.py '<paste-full-drop-link-here>' \
+./scripts/droppoint-sender.py '<paste-full-drop-link-here>' \
   .local/local-test/input/hello.txt
 ```
 
@@ -131,10 +131,10 @@ The sender script encrypts the manifest and payload locally and uploads only cip
 ## 5. Receiver: status, pickup, decrypt, close
 
 ```sh
-./scripts/drop-point-receiver.py status \
+./scripts/droppoint-receiver.py status \
   --state .local/local-test/state.json
 
-./scripts/drop-point-receiver.py pickup \
+./scripts/droppoint-receiver.py pickup \
   --state .local/local-test/state.json \
   --out-dir .local/local-test/output \
   --wait

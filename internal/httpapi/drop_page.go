@@ -3,7 +3,7 @@ package httpapi
 import (
 	"net/http"
 
-	droppage "github.com/shunichironomura/drop-point/web/drop-page"
+	droppage "github.com/shunichironomura/droppoint/web/drop-page"
 )
 
 const dropPageCSP = "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src blob:; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"

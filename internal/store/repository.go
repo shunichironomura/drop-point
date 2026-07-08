@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/shunichironomura/drop-point/internal/droppoint"
-	"github.com/shunichironomura/drop-point/internal/token"
+	"github.com/shunichironomura/droppoint/internal/droppoint"
+	"github.com/shunichironomura/droppoint/internal/token"
 	"modernc.org/sqlite"
 	sqlite3 "modernc.org/sqlite/lib"
 )

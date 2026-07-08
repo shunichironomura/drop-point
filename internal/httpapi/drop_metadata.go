@@ -5,8 +5,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/shunichironomura/drop-point/internal/droppoint"
-	"github.com/shunichironomura/drop-point/internal/token"
+	"github.com/shunichironomura/droppoint/internal/droppoint"
+	"github.com/shunichironomura/droppoint/internal/token"
 )
 
 type dropMetadataResponse struct {

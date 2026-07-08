@@ -11,12 +11,12 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/shunichironomura/drop-point/internal/blobstore"
-	"github.com/shunichironomura/drop-point/internal/cleanup"
-	"github.com/shunichironomura/drop-point/internal/config"
-	"github.com/shunichironomura/drop-point/internal/server"
-	"github.com/shunichironomura/drop-point/internal/store"
-	"github.com/shunichironomura/drop-point/internal/token"
+	"github.com/shunichironomura/droppoint/internal/blobstore"
+	"github.com/shunichironomura/droppoint/internal/cleanup"
+	"github.com/shunichironomura/droppoint/internal/config"
+	"github.com/shunichironomura/droppoint/internal/server"
+	"github.com/shunichironomura/droppoint/internal/store"
+	"github.com/shunichironomura/droppoint/internal/token"
 )
 
 func main() {
@@ -38,7 +38,7 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		}
 	}
 
-	flags := flag.NewFlagSet("drop-point serve", flag.ContinueOnError)
+	flags := flag.NewFlagSet("droppoint serve", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	configPath := flags.String("config", "", "path to JSON configuration file")
 	if err := flags.Parse(args); err != nil {
@@ -67,7 +67,7 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	}
 	defer srv.Close()
 
-	logger.Printf("starting drop-point listen_addr=%s data_dir=%s", cfg.ListenAddr, cfg.DataDir)
+	logger.Printf("starting droppoint listen_addr=%s data_dir=%s", cfg.ListenAddr, cfg.DataDir)
 	if err := srv.ListenAndServe(ctx); err != nil {
 		_, _ = fmt.Fprintf(stderr, "server error: %v\n", err)
 		return 1
@@ -77,7 +77,7 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 
 func runToken(args []string, stdout io.Writer, stderr io.Writer) int {
 	if len(args) != 1 || args[0] != "generate" {
-		_, _ = fmt.Fprintln(stderr, "usage: drop-point token generate")
+		_, _ = fmt.Fprintln(stderr, "usage: droppoint token generate")
 		return 2
 	}
 	plaintext, err := token.GenerateAPIToken()
@@ -92,10 +92,10 @@ func runToken(args []string, stdout io.Writer, stderr io.Writer) int {
 
 func runCleanup(args []string, stdout io.Writer, stderr io.Writer) int {
 	if len(args) == 0 || args[0] != "expired" {
-		_, _ = fmt.Fprintln(stderr, "usage: drop-point cleanup expired [--config path]")
+		_, _ = fmt.Fprintln(stderr, "usage: droppoint cleanup expired [--config path]")
 		return 2
 	}
-	flags := flag.NewFlagSet("drop-point cleanup expired", flag.ContinueOnError)
+	flags := flag.NewFlagSet("droppoint cleanup expired", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	configPath := flags.String("config", "", "path to JSON configuration file")
 	if err := flags.Parse(args[1:]); err != nil {
@@ -131,14 +131,14 @@ func runCleanup(args []string, stdout io.Writer, stderr io.Writer) int {
 
 func printUsage(w io.Writer) {
 	_, _ = fmt.Fprint(w, `Usage:
-  drop-point serve [--config path]
-  drop-point [--config path]
-  drop-point token generate
-  drop-point cleanup expired [--config path]
+  droppoint serve [--config path]
+  droppoint [--config path]
+  droppoint token generate
+  droppoint cleanup expired [--config path]
 
 Defaults:
   listen_addr: 127.0.0.1:8080
-  data_dir: .data/drop-point
+  data_dir: .data/droppoint
 
 `)
 }

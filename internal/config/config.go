@@ -15,8 +15,8 @@ import (
 const (
 	DefaultListenAddr               = "127.0.0.1:8080"
 	DefaultBaseURL                  = "http://127.0.0.1:8080"
-	DefaultDataDir                  = ".data/drop-point"
-	CanonicalSystemDataDir          = "/var/lib/drop-point"
+	DefaultDataDir                  = ".data/droppoint"
+	CanonicalSystemDataDir          = "/var/lib/droppoint"
 	DefaultTTLSeconds               = 600
 	DefaultMaxTTLSeconds            = 900
 	DefaultMaxBytes                 = 52_428_800
@@ -31,19 +31,19 @@ const (
 )
 
 const (
-	EnvListenAddr                 = "DROP_POINT_LISTEN_ADDR"
-	EnvBaseURL                    = "DROP_POINT_BASE_URL"
-	EnvDataDir                    = "DROP_POINT_DATA_DIR"
-	EnvDefaultTTLSeconds          = "DROP_POINT_DEFAULT_TTL_SECONDS"
-	EnvMaxTTLSeconds              = "DROP_POINT_MAX_TTL_SECONDS"
-	EnvDefaultMaxBytes            = "DROP_POINT_DEFAULT_MAX_BYTES"
-	EnvMaxBytes                   = "DROP_POINT_MAX_BYTES"
-	EnvDefaultMaxActiveDropPoints = "DROP_POINT_DEFAULT_MAX_ACTIVE_DROP_POINTS"
-	EnvReadTimeoutSeconds         = "DROP_POINT_READ_TIMEOUT_SECONDS"
-	EnvWriteTimeoutSeconds        = "DROP_POINT_WRITE_TIMEOUT_SECONDS"
-	EnvCleanupIntervalSeconds     = "DROP_POINT_CLEANUP_INTERVAL_SECONDS"
-	EnvTerminalRetentionSeconds   = "DROP_POINT_TERMINAL_RETENTION_SECONDS"
-	EnvAPITokensJSON              = "DROP_POINT_API_TOKENS_JSON"
+	EnvListenAddr                 = "DROPPOINT_LISTEN_ADDR"
+	EnvBaseURL                    = "DROPPOINT_BASE_URL"
+	EnvDataDir                    = "DROPPOINT_DATA_DIR"
+	EnvDefaultTTLSeconds          = "DROPPOINT_DEFAULT_TTL_SECONDS"
+	EnvMaxTTLSeconds              = "DROPPOINT_MAX_TTL_SECONDS"
+	EnvDefaultMaxBytes            = "DROPPOINT_DEFAULT_MAX_BYTES"
+	EnvMaxBytes                   = "DROPPOINT_MAX_BYTES"
+	EnvDefaultMaxActiveDropPoints = "DROPPOINT_DEFAULT_MAX_ACTIVE_DROP_POINTS"
+	EnvReadTimeoutSeconds         = "DROPPOINT_READ_TIMEOUT_SECONDS"
+	EnvWriteTimeoutSeconds        = "DROPPOINT_WRITE_TIMEOUT_SECONDS"
+	EnvCleanupIntervalSeconds     = "DROPPOINT_CLEANUP_INTERVAL_SECONDS"
+	EnvTerminalRetentionSeconds   = "DROPPOINT_TERMINAL_RETENTION_SECONDS"
+	EnvAPITokensJSON              = "DROPPOINT_API_TOKENS_JSON"
 )
 
 var configEnvironmentVariables = []string{
@@ -148,7 +148,7 @@ func Load(path string) (Config, error) {
 	return envConfig, nil
 }
 
-// ApplyEnvironmentOverrides returns cfg with DROP_POINT_* environment values
+// ApplyEnvironmentOverrides returns cfg with DROPPOINT_* environment values
 // applied. The lookup function matches os.LookupEnv and keeps parsing testable.
 func ApplyEnvironmentOverrides(cfg Config, lookup func(string) (string, bool)) (Config, error) {
 	if lookup == nil {

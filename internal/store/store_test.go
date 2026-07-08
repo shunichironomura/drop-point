@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/shunichironomura/drop-point/internal/config"
+	"github.com/shunichironomura/droppoint/internal/config"
 )
 
 func TestOpenConfiguresSQLite(t *testing.T) {

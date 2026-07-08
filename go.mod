@@ -1,4 +1,4 @@
-module github.com/shunichironomura/drop-point
+module github.com/shunichironomura/droppoint
 
 go 1.26.4
 
