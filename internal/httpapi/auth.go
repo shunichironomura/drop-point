@@ -1,9 +1,11 @@
 package httpapi
 
 import (
+	"context"
+	"errors"
 	"strings"
 
-	"github.com/shunichironomura/droppoint/internal/config"
+	"github.com/shunichironomura/droppoint/internal/store"
 	"github.com/shunichironomura/droppoint/internal/token"
 )
 
@@ -12,24 +14,23 @@ type authenticatedAPIToken struct {
 	MaxActiveDropPoints int
 }
 
-func authenticateAPIToken(cfg config.Config, authorization string) (authenticatedAPIToken, bool) {
+func authenticateAPIToken(ctx context.Context, repository *store.Repository, defaultMaxActiveDropPoints int, authorization string) (authenticatedAPIToken, bool, error) {
 	plaintext, ok := bearerToken(authorization)
 	if !ok {
-		return authenticatedAPIToken{}, false
+		return authenticatedAPIToken{}, false, nil
 	}
-	for _, candidate := range cfg.APITokens {
-		if !candidate.Enabled {
-			continue
-		}
-		if token.VerifySecretHash(plaintext, candidate.SecretHash) {
-			limit := cfg.DefaultMaxActiveDropPoints
-			if candidate.MaxActiveDropPoints != nil {
-				limit = *candidate.MaxActiveDropPoints
-			}
-			return authenticatedAPIToken{ID: candidate.ID, MaxActiveDropPoints: limit}, true
-		}
+	apiToken, err := repository.FindEnabledAPITokenBySecretHash(ctx, token.HashSecret(plaintext))
+	if errors.Is(err, store.ErrAPITokenNotFound) {
+		return authenticatedAPIToken{}, false, nil
 	}
-	return authenticatedAPIToken{}, false
+	if err != nil {
+		return authenticatedAPIToken{}, false, err
+	}
+	limit := defaultMaxActiveDropPoints
+	if apiToken.MaxActiveDropPoints != nil {
+		limit = *apiToken.MaxActiveDropPoints
+	}
+	return authenticatedAPIToken{ID: apiToken.ID, MaxActiveDropPoints: limit}, true, nil
 }
 
 func bearerToken(authorization string) (string, bool) {

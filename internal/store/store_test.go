@@ -48,6 +48,7 @@ func TestMigrationCreatesDropPointsSchema(t *testing.T) {
 		"drop_points",
 		"idx_drop_points_status_expires_at",
 		"idx_drop_points_api_token_status",
+		"api_tokens",
 	} {
 		var count int
 		if err := db.SQLDB().QueryRowContext(

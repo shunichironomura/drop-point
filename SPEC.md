@@ -1,6 +1,6 @@
 # DropPoint Specification
 
-Date: 2026-07-02
+Date: 2026-07-08
 Status: Draft
 
 DropPoint is a temporary encrypted file handoff service. A receiver creates a short-lived drop point and shares a drop link. A sender opens the link, encrypts one or more files locally, and drops a single encrypted bundle. The relay stores ciphertext only. The receiver later picks up the payload and decrypts it locally.
@@ -103,13 +103,13 @@ Required transition rules:
 
 ### 6.1 API token
 
-Creating a drop point requires a configured API bearer token:
+Creating a drop point requires an enabled API bearer token stored in the relay database:
 
 ```http
 Authorization: Bearer <api-token>
 ```
 
-API tokens are long random secrets. Stored API token material MUST be hashed at rest. The token ID is a label for quota checks, logs, and attribution; it is not a user identity by itself.
+API tokens are long random secrets. Stored API token material MUST be hashed at rest. The token ID is a label for quota checks, logs, and attribution; it is not a user identity by itself. The default local implementation hashes the presented token with SHA-256 and performs a direct SQLite lookup by `secret_hash` in `api_tokens`.
 
 ### 6.2 Drop token
 
@@ -351,7 +351,7 @@ A drop point record contains at least:
 | `expires_at` | TTL expiry timestamp. |
 | `max_bytes` | Max encrypted payload size for this drop point. |
 
-The default local implementation uses SQLite for relay metadata. It MUST enable WAL journal mode, foreign-key enforcement, and a busy timeout, and it SHOULD apply built-in schema migrations automatically before serving requests or running cleanup.
+The default local implementation uses SQLite for relay metadata and API token hashes. It MUST enable WAL journal mode, foreign-key enforcement, and a busy timeout, and it SHOULD apply built-in schema migrations automatically before serving requests, running cleanup, or running token-management CLI commands.
 
 The default SQLite schema for the local implementation is:
 
@@ -380,13 +380,23 @@ CREATE INDEX idx_drop_points_status_expires_at
 
 CREATE INDEX idx_drop_points_api_token_status
   ON drop_points (api_token_id, status);
+
+CREATE TABLE api_tokens (
+  id TEXT PRIMARY KEY,
+  secret_hash TEXT NOT NULL UNIQUE,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  max_active_drop_points INTEGER,
+  created_at TEXT NOT NULL,
+  disabled_at TEXT
+);
+
 ```
 
 The default local storage layout is:
 
 ```text
 /var/lib/droppoint/
-├── relay.db
+├── relay.db  # drop point metadata and API token hashes
 └── drop-points/
     └── <drop-point-id>/
         ├── payload.bin
@@ -416,15 +426,7 @@ DropPoint configuration contains:
   "read_timeout_seconds": 600,
   "write_timeout_seconds": 600,
   "cleanup_interval_seconds": 60,
-  "terminal_retention_seconds": 2592000,
-  "api_tokens": [
-    {
-      "id": "desktop-main",
-      "secret_hash": "sha256:...",
-      "enabled": true,
-      "max_active_drop_points": 3
-    }
-  ]
+  "terminal_retention_seconds": 2592000
 }
 ```
 
@@ -433,14 +435,19 @@ The reference `droppoint` single-binary implementation provides this operator co
 ```text
 droppoint serve --config ./config.json
 droppoint --config ./config.json
+droppoint token add --id desktop-main [--max-active 3] [--config ./config.json]
+droppoint token list [--config ./config.json]
+droppoint token disable --id desktop-main [--config ./config.json]
+droppoint token remove --id desktop-main [--config ./config.json]
 droppoint token generate
 droppoint cleanup expired --config ./config.json
 ```
 
-`serve` starts the HTTP relay and runs expiry cleanup periodically. Running `droppoint` without an explicit subcommand MAY default to `serve`. `token generate` prints a plaintext API token and matching configuration hash exactly once. `cleanup expired` marks expired non-terminal drop points expired, removes expired blob directories idempotently, and purges terminal metadata rows older than the configured retention window after their blob pointers have been cleared.
+`serve` starts the HTTP relay and runs expiry cleanup periodically. Running `droppoint` without an explicit subcommand MAY default to `serve`. `token add` manages SQLite token rows and prints the newly generated plaintext token exactly once. `token generate` MAY remain available as a standalone token/hash utility but MUST NOT be required for normal token management. `cleanup expired` marks expired non-terminal drop points expired, removes expired blob directories idempotently, and purges terminal metadata rows older than the configured retention window after their blob pointers have been cleared.
 
 Configuration rules:
 
+- API tokens MUST be managed in SQLite via the token CLI.
 - `base_url` MUST include scheme and host and MUST NOT include query or fragment components.
 - Sender-facing drop pages MUST be served to browsers over HTTPS, except for browser-recognized local secure contexts such as `localhost`.
 - LAN-IP-over-HTTP is not supported for browser encryption because WebCrypto requires a secure context.
@@ -448,9 +455,11 @@ Configuration rules:
 - The shipped default encrypted payload limit is 52428800 bytes, and the shipped maximum encrypted payload limit is 52428800 bytes.
 - `read_timeout_seconds`, `write_timeout_seconds`, and `cleanup_interval_seconds` MUST be positive. Defaults SHOULD allow slow mobile uploads up to the configured payload limit.
 - `terminal_retention_seconds` MUST be positive. The local implementation MUST purge terminal SQLite rows older than this retention window after any ciphertext pointers for those rows have been cleared.
-- Plaintext API tokens MUST NOT be stored in configuration.
-- `api_tokens[].secret_hash` uses `sha256:<lowercase-hex-sha256>` for high-entropy random API tokens.
-- Implementations SHOULD provide an operator command that generates a high-entropy plaintext API token and prints the corresponding `sha256:<lowercase-hex-sha256>` configuration entry exactly once.
+- Plaintext API tokens MUST NOT be stored.
+- `api_tokens.secret_hash` rows use `sha256:<lowercase-hex-sha256>` for high-entropy random API tokens.
+- `token add` MUST generate a high-entropy plaintext API token, store only the hash, and print the plaintext token exactly once.
+- `token disable` MUST make an API token immediately invalid for new drop point creation without restarting the relay.
+- `token add`, `token disable`, and `token remove` SHOULD write structured audit log events without plaintext token material.
 
 ## 10. Encryption protocol
 

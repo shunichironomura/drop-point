@@ -18,15 +18,7 @@ func TestLoadMergesFileWithDefaults(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
 	if err := os.WriteFile(path, []byte(`{
   "base_url": "https://drop.example.com",
-  "data_dir": "/var/lib/droppoint",
-  "api_tokens": [
-    {
-      "id": "desktop-main",
-      "secret_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-      "enabled": true,
-      "max_active_drop_points": 5
-    }
-  ]
+  "data_dir": "/var/lib/droppoint"
 }`), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
@@ -45,11 +37,24 @@ func TestLoadMergesFileWithDefaults(t *testing.T) {
 	if cfg.DataDir != CanonicalSystemDataDir {
 		t.Fatalf("DataDir = %q, want %q", cfg.DataDir, CanonicalSystemDataDir)
 	}
-	if len(cfg.APITokens) != 1 {
-		t.Fatalf("len(APITokens) = %d, want 1", len(cfg.APITokens))
+}
+
+func TestLoadRejectsUnknownFields(t *testing.T) {
+	withCleanConfigEnvironment(t)
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, []byte(`{
+  "base_url": "https://drop.example.com",
+  "unexpected_field": true
+}`), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
 	}
-	if cfg.APITokens[0].MaxActiveDropPoints == nil || *cfg.APITokens[0].MaxActiveDropPoints != 5 {
-		t.Fatalf("MaxActiveDropPoints = %v, want 5", cfg.APITokens[0].MaxActiveDropPoints)
+
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("Load succeeded, want unknown-field error")
+	}
+	if !strings.Contains(err.Error(), "unexpected_field") {
+		t.Fatalf("Load error = %v, want unexpected_field error", err)
 	}
 }
 
@@ -78,7 +83,6 @@ func TestLoadAppliesEnvironmentOverrides(t *testing.T) {
 	t.Setenv(EnvWriteTimeoutSeconds, "40")
 	t.Setenv(EnvCleanupIntervalSeconds, "50")
 	t.Setenv(EnvTerminalRetentionSeconds, "60")
-	t.Setenv(EnvAPITokensJSON, `[{"id":"env-token","secret_hash":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","enabled":true,"max_active_drop_points":2}]`)
 
 	cfg, err := Load("")
 	if err != nil {
@@ -89,9 +93,6 @@ func TestLoadAppliesEnvironmentOverrides(t *testing.T) {
 	}
 	if cfg.DefaultTTLSeconds != 120 || cfg.MaxTTLSeconds != 300 || cfg.DefaultMaxBytes != 4096 || cfg.MaxBytes != 8192 || cfg.DefaultMaxActiveDropPoints != 7 || cfg.ReadTimeoutSeconds != 30 || cfg.WriteTimeoutSeconds != 40 || cfg.CleanupIntervalSeconds != 50 || cfg.TerminalRetentionSeconds != 60 {
 		t.Fatalf("numeric overrides not applied: %+v", cfg)
-	}
-	if len(cfg.APITokens) != 1 || cfg.APITokens[0].ID != "env-token" || cfg.APITokens[0].MaxActiveDropPoints == nil || *cfg.APITokens[0].MaxActiveDropPoints != 2 {
-		t.Fatalf("api token override not applied: %+v", cfg.APITokens)
 	}
 }
 
@@ -118,23 +119,6 @@ func TestValidateRejectsInvalidBaseURL(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "base_url") {
 		t.Fatalf("Validate() error = %v, want base_url error", err)
-	}
-}
-
-func TestValidateRejectsInvalidAPITokenHash(t *testing.T) {
-	cfg := Default()
-	cfg.APITokens = []APIToken{{
-		ID:         "desktop-main",
-		SecretHash: "sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-		Enabled:    true,
-	}}
-
-	err := cfg.Validate()
-	if err == nil {
-		t.Fatal("Validate() succeeded, want error")
-	}
-	if !strings.Contains(err.Error(), "secret_hash") {
-		t.Fatalf("Validate() error = %v, want secret_hash error", err)
 	}
 }
 

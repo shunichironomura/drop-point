@@ -7,7 +7,7 @@ DropPoint is a generic temporary ciphertext relay. Client applications own local
 A receiver client should run this sequence for each drop point:
 
 1. Generate a fresh local X25519 recipient key pair for this drop point.
-2. Call `POST /api/drop-points` with the configured API bearer token.
+2. Call `POST /api/drop-points` with an enabled API bearer token.
 3. Keep the returned `pickup_token`, `display_name`, and local recipient private key in receiver-controlled state.
 4. Show the returned `display_name` to the receiver and tell the sender to compare it with the name shown on the drop page.
 5. Append the public-key and expiry fragment to the returned fragment-free drop link:

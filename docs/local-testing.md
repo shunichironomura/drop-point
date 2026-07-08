@@ -7,14 +7,10 @@ The `scripts/` directory contains two small Python clients that exercise the rea
 
 They are `uv` scripts, so dependencies are installed automatically from their inline metadata.
 
-## 1. Create a local config with one API token
+## 1. Create a local config and API token
 
 ```sh
 mkdir -p .local/local-test
-TOKEN_OUT=$(go run ./cmd/droppoint token generate)
-API_TOKEN=$(printf '%s\n' "$TOKEN_OUT" | awk '/^api_token:/ {print $2}')
-SECRET_HASH=$(printf '%s\n' "$TOKEN_OUT" | awk '/^secret_hash:/ {print $2}')
-
 cat > .local/local-test/config.json <<EOF
 {
   "listen_addr": "127.0.0.1:18080",
@@ -24,12 +20,12 @@ cat > .local/local-test/config.json <<EOF
   "max_ttl_seconds": 900,
   "default_max_bytes": 52428800,
   "max_bytes": 52428800,
-  "default_max_active_drop_points": 3,
-  "api_tokens": [
-    {"id":"local-test","secret_hash":"$SECRET_HASH","enabled":true}
-  ]
+  "default_max_active_drop_points": 3
 }
 EOF
+
+TOKEN_OUT=$(go run ./cmd/droppoint token add --id local-test --config .local/local-test/config.json)
+API_TOKEN=$(printf '%s\n' "$TOKEN_OUT" | awk '/^api_token:/ {print $2}')
 ```
 
 ## 2. Start the relay
@@ -54,10 +50,6 @@ Create a browser test config and save the plaintext API token separately:
 
 ```sh
 mkdir -p .local/browser-test
-TOKEN_OUT=$(go run ./cmd/droppoint token generate)
-API_TOKEN=$(printf '%s\n' "$TOKEN_OUT" | awk '/^api_token:/ {print $2}')
-SECRET_HASH=$(printf '%s\n' "$TOKEN_OUT" | awk '/^secret_hash:/ {print $2}')
-
 cat > .local/browser-test/config.json <<EOF
 {
   "listen_addr": "127.0.0.1:18080",
@@ -67,13 +59,12 @@ cat > .local/browser-test/config.json <<EOF
   "max_ttl_seconds": 900,
   "default_max_bytes": 52428800,
   "max_bytes": 52428800,
-  "default_max_active_drop_points": 3,
-  "api_tokens": [
-    {"id":"browser-test","secret_hash":"$SECRET_HASH","enabled":true}
-  ]
+  "default_max_active_drop_points": 3
 }
 EOF
 
+TOKEN_OUT=$(go run ./cmd/droppoint token add --id browser-test --config .local/browser-test/config.json)
+API_TOKEN=$(printf '%s\n' "$TOKEN_OUT" | awk '/^api_token:/ {print $2}')
 printf '%s\n' "$API_TOKEN" > .local/browser-test/api-token.txt
 chmod 600 .local/browser-test/config.json .local/browser-test/api-token.txt
 ```
@@ -139,5 +130,7 @@ The sender script encrypts the manifest and payload locally and uploads only cip
   --out-dir .local/local-test/output \
   --wait
 ```
+
+The decrypted file is written under `.local/local-test/output`.
 
 By default pickup closes the remote drop point after decrypted files are written locally and removes `recipient_private_key` from the state file. Use `--no-close` to keep it open for repeated pickup testing.

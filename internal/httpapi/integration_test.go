@@ -272,9 +272,11 @@ func newIntegrationHarnessAt(t *testing.T, dataDir string, blob BlobStore) (*sto
 	repo := store.NewRepository(db.SQLDB())
 	realBlobs, _ := blob.(*blobstore.Store)
 	apiPlain := "api_integration_secret"
+	if err := repo.AddAPIToken(context.Background(), store.AddAPITokenParams{ID: "integration", SecretHash: token.HashSecret(apiPlain), MaxActiveDropPoints: intPtr(10), CreatedAt: dropTestNow()}); err != nil {
+		t.Fatalf("AddAPIToken: %v", err)
+	}
 	cfg := config.Default()
 	cfg.BaseURL = "https://drop.example.com"
-	cfg.APITokens = []config.APIToken{{ID: "integration", SecretHash: token.HashSecret(apiPlain), Enabled: true, MaxActiveDropPoints: intPtr(10)}}
 	var logs bytes.Buffer
 	handler := NewRouterWithDependencies(Dependencies{
 		Config:     cfg,

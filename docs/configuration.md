@@ -15,15 +15,7 @@ Example:
   "read_timeout_seconds": 600,
   "write_timeout_seconds": 600,
   "cleanup_interval_seconds": 60,
-  "terminal_retention_seconds": 2592000,
-  "api_tokens": [
-    {
-      "id": "desktop-main",
-      "secret_hash": "sha256:<lowercase-hex-sha256>",
-      "enabled": true,
-      "max_active_drop_points": 3
-    }
-  ]
+  "terminal_retention_seconds": 2592000
 }
 ```
 
@@ -34,14 +26,27 @@ Fields:
 - `data_dir`: directory for `relay.db` and ciphertext directories. Use `/var/lib/droppoint` for system installs.
 - `default_ttl_seconds` / `max_ttl_seconds`: receiver-requested TTL default and upper bound.
 - `default_max_bytes` / `max_bytes`: encrypted payload size default and upper bound. The shipped maximum is `52428800` bytes.
-- `default_max_active_drop_points`: quota used when an API token has no override.
+- `default_max_active_drop_points`: quota used when an API token has no per-token override in SQLite.
 - `read_timeout_seconds` / `write_timeout_seconds`: HTTP body/response timeouts. Defaults are long enough for slow mobile uploads up to the shipped payload limit.
 - `cleanup_interval_seconds`: how often the running relay expires old drop points, deletes expired ciphertext directories, and purges old terminal metadata rows.
 - `terminal_retention_seconds`: retention window for closed/expired/failed SQLite rows after ciphertext pointers have been cleared. The default is 30 days.
-- `api_tokens[].id`: operator label for quota and logs.
-- `api_tokens[].secret_hash`: `sha256:<lowercase-hex-sha256>` of the plaintext API token. Plaintext tokens must not be stored.
-- `api_tokens[].enabled`: disabled tokens cannot create drop points.
-- `api_tokens[].max_active_drop_points`: optional per-token active drop point quota.
+
+## API token management
+
+Receiver API token hashes are stored in the SQLite `api_tokens` table. Manage them with:
+
+```sh
+droppoint token add --id desktop-main --config /etc/droppoint/config.json
+# prints the plaintext API token once
+
+droppoint token list --config /etc/droppoint/config.json
+droppoint token disable --id desktop-main --config /etc/droppoint/config.json
+droppoint token remove --id desktop-main --config /etc/droppoint/config.json
+```
+
+Use `--max-active n` with `token add` to override `default_max_active_drop_points` for one token.
+
+DropPoint stores only token hashes; the plaintext token is shown only when `token add` creates it.
 
 ## Environment overrides
 
@@ -61,21 +66,11 @@ Fields:
 | `DROPPOINT_WRITE_TIMEOUT_SECONDS` | `write_timeout_seconds` |
 | `DROPPOINT_CLEANUP_INTERVAL_SECONDS` | `cleanup_interval_seconds` |
 | `DROPPOINT_TERMINAL_RETENTION_SECONDS` | `terminal_retention_seconds` |
-| `DROPPOINT_API_TOKENS_JSON` | the full `api_tokens` array as JSON |
 
 Example:
 
 ```sh
 DROPPOINT_BASE_URL=https://drop.example.com \
 DROPPOINT_DATA_DIR=/var/lib/droppoint \
-DROPPOINT_API_TOKENS_JSON='[{"id":"desktop-main","secret_hash":"sha256:<lowercase-hex-sha256>","enabled":true}]' \
 droppoint serve --config /etc/droppoint/config.json
 ```
-
-Generate token material with:
-
-```sh
-droppoint token generate
-```
-
-The command prints the plaintext API token once and the matching config hash. Store the hash; deliver the plaintext token only to the receiver client.
