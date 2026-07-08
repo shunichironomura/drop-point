@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/shunichironomura/drop-point/internal/droppoint"
+	"github.com/shunichironomura/droppoint/internal/droppoint"
 )
 
 var lifecycleCommitResult = droppoint.CommitDropResult{

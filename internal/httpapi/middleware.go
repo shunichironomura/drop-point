@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/shunichironomura/drop-point/internal/logutil"
+	"github.com/shunichironomura/droppoint/internal/logutil"
 )
 
 // SetNoSniff applies a global MIME-sniffing opt-out to all routes.

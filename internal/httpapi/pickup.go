@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"net/textproto"
 
-	"github.com/shunichironomura/drop-point/internal/droppoint"
+	"github.com/shunichironomura/droppoint/internal/droppoint"
 )
 
 // HandlePickupPayload handles GET /api/drop-points/:drop_point_id/pickup.

@@ -9,11 +9,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/shunichironomura/drop-point/internal/blobstore"
-	"github.com/shunichironomura/drop-point/internal/config"
-	"github.com/shunichironomura/drop-point/internal/droppoint"
-	"github.com/shunichironomura/drop-point/internal/store"
-	"github.com/shunichironomura/drop-point/internal/token"
+	"github.com/shunichironomura/droppoint/internal/blobstore"
+	"github.com/shunichironomura/droppoint/internal/config"
+	"github.com/shunichironomura/droppoint/internal/droppoint"
+	"github.com/shunichironomura/droppoint/internal/store"
+	"github.com/shunichironomura/droppoint/internal/token"
 )
 
 func TestExpireDeletesExpiredPayloadsIdempotently(t *testing.T) {

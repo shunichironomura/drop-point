@@ -16,13 +16,13 @@ The legacy RSA-OAEP design from early notes is not implemented. The only support
 
 ```sh
 go test ./...
-go run ./cmd/drop-point serve --config config.example.json
+go run ./cmd/droppoint serve --config config.example.json
 ```
 
 Generate an API token and put only the printed `secret_hash` in configuration:
 
 ```sh
-go run ./cmd/drop-point token generate
+go run ./cmd/droppoint token generate
 ```
 
 For local browser encryption, use `http://localhost` or HTTPS. LAN-IP-over-HTTP is not a secure browser context and WebCrypto may be unavailable.
@@ -44,10 +44,10 @@ See `docs/local-testing.md` for a Python receiver/sender simulation, `docs/api.m
 
 ## Operations
 
-- Default local data directory: `.data/drop-point`.
-- Canonical system data directory: `/var/lib/drop-point`.
+- Default local data directory: `.data/droppoint`.
+- Canonical system data directory: `/var/lib/droppoint`.
 - SQLite database: `relay.db`.
 - Ciphertext blobs: `drop-points/<drop-point-id>/envelope.json` and `payload.bin`.
-- The running relay periodically expires old drop points and deletes expired ciphertext; `drop-point cleanup expired --config ./config.json` is available as an operational backstop.
+- The running relay periodically expires old drop points and deletes expired ciphertext; `droppoint cleanup expired --config ./config.json` is available as an operational backstop.
 
 Sender-facing pages must be served over HTTPS or localhost. Request body limits and upload timeouts at proxies/tunnels must allow configured `max_bytes` plus multipart overhead. Redact token-bearing paths such as `/drop/:drop_token` and `/api/drops/:drop_token` at every logging layer.

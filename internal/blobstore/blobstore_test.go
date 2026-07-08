@@ -9,8 +9,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/shunichironomura/drop-point/internal/config"
-	"github.com/shunichironomura/drop-point/internal/droppoint"
+	"github.com/shunichironomura/droppoint/internal/config"
+	"github.com/shunichironomura/droppoint/internal/droppoint"
 )
 
 func TestWriteDropStoresExactBytes(t *testing.T) {

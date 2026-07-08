@@ -18,7 +18,7 @@ func TestLoadMergesFileWithDefaults(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
 	if err := os.WriteFile(path, []byte(`{
   "base_url": "https://drop.example.com",
-  "data_dir": "/var/lib/drop-point",
+  "data_dir": "/var/lib/droppoint",
   "api_tokens": [
     {
       "id": "desktop-main",
@@ -68,7 +68,7 @@ func TestLoadAppliesEnvironmentOverrides(t *testing.T) {
 	withCleanConfigEnvironment(t)
 	t.Setenv(EnvListenAddr, "0.0.0.0:9090")
 	t.Setenv(EnvBaseURL, "https://env.drop.example.com")
-	t.Setenv(EnvDataDir, "/tmp/drop-point-env")
+	t.Setenv(EnvDataDir, "/tmp/droppoint-env")
 	t.Setenv(EnvDefaultTTLSeconds, "120")
 	t.Setenv(EnvMaxTTLSeconds, "300")
 	t.Setenv(EnvDefaultMaxBytes, "4096")
@@ -84,7 +84,7 @@ func TestLoadAppliesEnvironmentOverrides(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load with env: %v", err)
 	}
-	if cfg.ListenAddr != "0.0.0.0:9090" || cfg.BaseURL != "https://env.drop.example.com" || cfg.DataDir != "/tmp/drop-point-env" {
+	if cfg.ListenAddr != "0.0.0.0:9090" || cfg.BaseURL != "https://env.drop.example.com" || cfg.DataDir != "/tmp/droppoint-env" {
 		t.Fatalf("string overrides not applied: %+v", cfg)
 	}
 	if cfg.DefaultTTLSeconds != 120 || cfg.MaxTTLSeconds != 300 || cfg.DefaultMaxBytes != 4096 || cfg.MaxBytes != 8192 || cfg.DefaultMaxActiveDropPoints != 7 || cfg.ReadTimeoutSeconds != 30 || cfg.WriteTimeoutSeconds != 40 || cfg.CleanupIntervalSeconds != 50 || cfg.TerminalRetentionSeconds != 60 {
@@ -139,7 +139,7 @@ func TestValidateRejectsInvalidAPITokenHash(t *testing.T) {
 }
 
 func TestEnsureDataDirUsesRestrictivePermissions(t *testing.T) {
-	dataDir := filepath.Join(t.TempDir(), "drop-point")
+	dataDir := filepath.Join(t.TempDir(), "droppoint")
 
 	if err := EnsureDataDir(dataDir); err != nil {
 		t.Fatalf("EnsureDataDir() error = %v", err)

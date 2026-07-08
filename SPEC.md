@@ -43,7 +43,7 @@ DropPoint does not provide:
 | Term | Meaning |
 | --- | --- |
 | DropPoint | Product/service name. |
-| `drop-point` | Operator CLI/binary name for running the relay. |
+| `droppoint` | Operator CLI/binary name for running the relay. |
 | drop point | One temporary handoff session created by a receiver. |
 | display name | Human-readable random label for a drop point, such as `calm-otter`, used only as a UX check. |
 | receiver | Client that creates the drop point, owns the private key, and picks up the payload. |
@@ -385,7 +385,7 @@ CREATE INDEX idx_drop_points_api_token_status
 The default local storage layout is:
 
 ```text
-/var/lib/drop-point/
+/var/lib/droppoint/
 ├── relay.db
 └── drop-points/
     └── <drop-point-id>/
@@ -407,7 +407,7 @@ DropPoint configuration contains:
 {
   "listen_addr": "127.0.0.1:8080",
   "base_url": "https://drop.example.com",
-  "data_dir": "/var/lib/drop-point",
+  "data_dir": "/var/lib/droppoint",
   "default_ttl_seconds": 600,
   "max_ttl_seconds": 900,
   "default_max_bytes": 52428800,
@@ -428,23 +428,23 @@ DropPoint configuration contains:
 }
 ```
 
-The reference `drop-point` single-binary implementation provides this operator command surface:
+The reference `droppoint` single-binary implementation provides this operator command surface:
 
 ```text
-drop-point serve --config ./config.json
-drop-point --config ./config.json
-drop-point token generate
-drop-point cleanup expired --config ./config.json
+droppoint serve --config ./config.json
+droppoint --config ./config.json
+droppoint token generate
+droppoint cleanup expired --config ./config.json
 ```
 
-`serve` starts the HTTP relay and runs expiry cleanup periodically. Running `drop-point` without an explicit subcommand MAY default to `serve`. `token generate` prints a plaintext API token and matching configuration hash exactly once. `cleanup expired` marks expired non-terminal drop points expired, removes expired blob directories idempotently, and purges terminal metadata rows older than the configured retention window after their blob pointers have been cleared.
+`serve` starts the HTTP relay and runs expiry cleanup periodically. Running `droppoint` without an explicit subcommand MAY default to `serve`. `token generate` prints a plaintext API token and matching configuration hash exactly once. `cleanup expired` marks expired non-terminal drop points expired, removes expired blob directories idempotently, and purges terminal metadata rows older than the configured retention window after their blob pointers have been cleared.
 
 Configuration rules:
 
 - `base_url` MUST include scheme and host and MUST NOT include query or fragment components.
 - Sender-facing drop pages MUST be served to browsers over HTTPS, except for browser-recognized local secure contexts such as `localhost`.
 - LAN-IP-over-HTTP is not supported for browser encryption because WebCrypto requires a secure context.
-- The canonical system data directory is `/var/lib/drop-point`; local development configurations MAY use a project-local data directory.
+- The canonical system data directory is `/var/lib/droppoint`; local development configurations MAY use a project-local data directory.
 - The shipped default encrypted payload limit is 52428800 bytes, and the shipped maximum encrypted payload limit is 52428800 bytes.
 - `read_timeout_seconds`, `write_timeout_seconds`, and `cleanup_interval_seconds` MUST be positive. Defaults SHOULD allow slow mobile uploads up to the configured payload limit.
 - `terminal_retention_seconds` MUST be positive. The local implementation MUST purge terminal SQLite rows older than this retention window after any ciphertext pointers for those rows have been cleared.

@@ -19,8 +19,8 @@ import qrcode
 
 from drop_point_protocol import b64u_encode, generate_x25519_keypair
 
-DEFAULT_TOKEN_ENV = "DROP_POINT_API_TOKEN"
-DEFAULT_STATE_PATH = Path(".local/drop-point-mobile-test-state.json")
+DEFAULT_TOKEN_ENV = "DROPPOINT_API_TOKEN"
+DEFAULT_STATE_PATH = Path(".local/droppoint-mobile-test-state.json")
 # Cloudflare Browser Integrity Check rejects Python urllib's default user
 # agent before API requests reach DropPoint, so use a stable tool-specific
 # value instead of the stdlib default.
@@ -41,8 +41,8 @@ def main() -> int:
     )
     parser.add_argument(
         "--base-url",
-        default=os.environ.get("DROP_POINT_BASE_URL"),
-        help="DropPoint public base URL (or set DROP_POINT_BASE_URL)",
+        default=os.environ.get("DROPPOINT_BASE_URL"),
+        help="DropPoint public base URL (or set DROPPOINT_BASE_URL)",
     )
     parser.add_argument(
         "--api-token-env",
@@ -88,7 +88,7 @@ def main() -> int:
             print_terminal_qr(drop_link_with_fragment)
 
         print("After uploading from the phone, receive with:")
-        print(f"  ./scripts/drop-point-receiver.py pickup --state {args.state} --wait")
+        print(f"  ./scripts/droppoint-receiver.py pickup --state {args.state} --wait")
         print("The receiver helper removes recipient_private_key from the state file after pickup and close.")
         return 0
     except Exception as exc:  # noqa: BLE001 - CLI should report any failure clearly.
@@ -99,7 +99,7 @@ def main() -> int:
 def read_base_url(value: str | None) -> str:
     base_url = (value or "").strip().rstrip("/")
     if not base_url:
-        raise ValueError("set DROP_POINT_BASE_URL or pass --base-url explicitly")
+        raise ValueError("set DROPPOINT_BASE_URL or pass --base-url explicitly")
     return base_url
 
 

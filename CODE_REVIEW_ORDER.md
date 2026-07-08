@@ -37,7 +37,7 @@ This document lists repository files in dependency-first review order. Local scr
     - GitHub Actions CI workflow for formatting, build, vet, race tests, Staticcheck, and govulncheck.
 
 11. `config.example.json`
-    - Example operator configuration using the canonical `/var/lib/drop-point` data directory.
+    - Example operator configuration using the canonical `/var/lib/droppoint` data directory.
 
 12. `internal/config/config.go`
     - JSON configuration types, defaults, loading, and validation.
@@ -198,10 +198,10 @@ This document lists repository files in dependency-first review order. Local scr
 64. `internal/server/server_test.go`
     - Server initialization and health routing tests.
 
-65. `cmd/drop-point/main.go`
-    - `drop-point` CLI entrypoint, default `serve` command, API token generation command, and cleanup command.
+65. `cmd/droppoint/main.go`
+    - `droppoint` CLI entrypoint, default `serve` command, API token generation command, and cleanup command.
 
-66. `cmd/drop-point/main_test.go`
+66. `cmd/droppoint/main_test.go`
     - CLI token generation command tests.
 
 67. `Dockerfile`
@@ -213,13 +213,13 @@ This document lists repository files in dependency-first review order. Local scr
 69. `scripts/drop_point_protocol.py`
     - Shared Python DropPoint protocol helpers for local receiver/sender simulations.
 
-70. `scripts/drop-point-receiver.py`
+70. `scripts/droppoint-receiver.py`
     - Python receiver simulation for create, status, pickup, decrypt, and close.
 
-71. `scripts/drop-point-qr.py`
+71. `scripts/droppoint-qr.py`
     - Python public-endpoint mobile test helper for creating a drop point, saving receiver state, and rendering the sender link as a QR code.
 
-72. `scripts/drop-point-sender.py`
+72. `scripts/droppoint-sender.py`
     - Python sender simulation for fragment parsing, browser-equivalent encryption, and encrypted drop upload.
 
 73. `docs/configuration.md`

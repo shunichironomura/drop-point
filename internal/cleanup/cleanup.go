@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/shunichironomura/drop-point/internal/store"
+	"github.com/shunichironomura/droppoint/internal/store"
 )
 
 type BlobStore interface {

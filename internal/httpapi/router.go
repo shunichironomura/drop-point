@@ -5,9 +5,9 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/shunichironomura/drop-point/internal/config"
-	"github.com/shunichironomura/drop-point/internal/logutil"
-	"github.com/shunichironomura/drop-point/internal/store"
+	"github.com/shunichironomura/droppoint/internal/config"
+	"github.com/shunichironomura/droppoint/internal/logutil"
+	"github.com/shunichironomura/droppoint/internal/store"
 )
 
 // Dependencies are the imperative-shell resources used by HTTP handlers.

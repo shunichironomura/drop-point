@@ -5,7 +5,7 @@ DropPoint is deployment-neutral. It can run behind Cloudflare Tunnel, Caddy, ano
 ## Build
 
 ```sh
-go build -o drop-point ./cmd/drop-point
+go build -o droppoint ./cmd/droppoint
 ```
 
 ## Container image
@@ -13,7 +13,7 @@ go build -o drop-point ./cmd/drop-point
 Build the included image:
 
 ```sh
-docker build -t drop-point:local .
+docker build -t droppoint:local .
 ```
 
 Run it with persistent storage and environment configuration:
@@ -21,13 +21,13 @@ Run it with persistent storage and environment configuration:
 ```sh
 docker run --rm \
   -p 8080:8080 \
-  -v drop-point-data:/var/lib/drop-point \
-  -e DROP_POINT_BASE_URL=https://drop.example.com \
-  -e 'DROP_POINT_API_TOKENS_JSON=[{"id":"desktop-main","secret_hash":"sha256:<lowercase-hex-sha256>","enabled":true}]' \
-  drop-point:local
+  -v droppoint-data:/var/lib/droppoint \
+  -e DROPPOINT_BASE_URL=https://drop.example.com \
+  -e 'DROPPOINT_API_TOKENS_JSON=[{"id":"desktop-main","secret_hash":"sha256:<lowercase-hex-sha256>","enabled":true}]' \
+  droppoint:local
 ```
 
-The image listens on `:8080`, stores data under `/var/lib/drop-point`, and runs as a non-root user.
+The image listens on `:8080`, stores data under `/var/lib/droppoint`, and runs as a non-root user.
 
 For the included Compose file, copy the template first so deployment-specific values and token hashes stay out of version control:
 
@@ -45,12 +45,12 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
-User=drop-point
-Group=drop-point
-ExecStart=/usr/local/bin/drop-point serve --config /etc/drop-point/config.json
+User=droppoint
+Group=droppoint
+ExecStart=/usr/local/bin/droppoint serve --config /etc/droppoint/config.json
 Restart=on-failure
-StateDirectory=drop-point
-ReadWritePaths=/var/lib/drop-point
+StateDirectory=droppoint
+ReadWritePaths=/var/lib/droppoint
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
@@ -60,10 +60,10 @@ ProtectHome=true
 WantedBy=multi-user.target
 ```
 
-Use `/var/lib/drop-point` as `data_dir`. The running relay performs expiry cleanup on its configured interval. You may also run:
+Use `/var/lib/droppoint` as `data_dir`. The running relay performs expiry cleanup on its configured interval. You may also run:
 
 ```sh
-drop-point cleanup expired --config /etc/drop-point/config.json
+droppoint cleanup expired --config /etc/droppoint/config.json
 ```
 
 from a timer or cron as an operational backstop.

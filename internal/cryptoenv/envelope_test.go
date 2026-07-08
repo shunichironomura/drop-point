@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/shunichironomura/drop-point/internal/droppoint"
+	"github.com/shunichironomura/droppoint/internal/droppoint"
 )
 
 func TestValidateEnvelopeJSONAcceptsValidShape(t *testing.T) {

@@ -3,8 +3,8 @@ package httpapi
 import (
 	"strings"
 
-	"github.com/shunichironomura/drop-point/internal/config"
-	"github.com/shunichironomura/drop-point/internal/token"
+	"github.com/shunichironomura/droppoint/internal/config"
+	"github.com/shunichironomura/droppoint/internal/token"
 )
 
 type authenticatedAPIToken struct {

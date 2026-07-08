@@ -16,13 +16,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/shunichironomura/drop-point/internal/blobstore"
-	"github.com/shunichironomura/drop-point/internal/cleanup"
-	"github.com/shunichironomura/drop-point/internal/config"
-	"github.com/shunichironomura/drop-point/internal/cryptoenv"
-	"github.com/shunichironomura/drop-point/internal/droppoint"
-	"github.com/shunichironomura/drop-point/internal/store"
-	"github.com/shunichironomura/drop-point/internal/token"
+	"github.com/shunichironomura/droppoint/internal/blobstore"
+	"github.com/shunichironomura/droppoint/internal/cleanup"
+	"github.com/shunichironomura/droppoint/internal/config"
+	"github.com/shunichironomura/droppoint/internal/cryptoenv"
+	"github.com/shunichironomura/droppoint/internal/droppoint"
+	"github.com/shunichironomura/droppoint/internal/store"
+	"github.com/shunichironomura/droppoint/internal/token"
 )
 
 func TestIntegrationCreateDropStatusPickupClose(t *testing.T) {

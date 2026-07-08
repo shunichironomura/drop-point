@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"net/url"
 
-	"github.com/shunichironomura/drop-point/internal/config"
+	"github.com/shunichironomura/droppoint/internal/config"
 )
 
 // ApplyCORS permits same-origin browser use based on base_url while leaving
