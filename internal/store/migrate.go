@@ -31,6 +31,15 @@ CREATE INDEX IF NOT EXISTS idx_drop_points_status_expires_at
 
 CREATE INDEX IF NOT EXISTS idx_drop_points_api_token_status
   ON drop_points (api_token_id, status);
+
+CREATE TABLE IF NOT EXISTS api_tokens (
+  id TEXT PRIMARY KEY,
+  secret_hash TEXT NOT NULL UNIQUE,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  max_active_drop_points INTEGER,
+  created_at TEXT NOT NULL,
+  disabled_at TEXT
+);
 `
 
 // Migrate applies the current SQLite schema and idempotent additive migrations.

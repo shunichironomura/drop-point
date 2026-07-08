@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/shunichironomura/droppoint/internal/config"
 	"github.com/shunichironomura/droppoint/internal/dropname"
 	"github.com/shunichironomura/droppoint/internal/droppoint"
 	"github.com/shunichironomura/droppoint/internal/token"
@@ -17,7 +16,7 @@ import (
 
 func TestGetDropMetadataReturnsServerBoundDisplayName(t *testing.T) {
 	apiPlain := "api_valid"
-	_, handler := newCreateTestHandler(t, config.APIToken{ID: "desktop-main", SecretHash: token.HashSecret(apiPlain), Enabled: true, MaxActiveDropPoints: intPtr(3)})
+	_, handler := newCreateTestHandler(t, apiTokenSeed{ID: "desktop-main", SecretHash: token.HashSecret(apiPlain), Enabled: true, MaxActiveDropPoints: intPtr(3)})
 
 	createRecorder := httptest.NewRecorder()
 	createRequest := httptest.NewRequest(http.MethodPost, "/api/drop-points", strings.NewReader(`{"client_name":"test-client","ttl_seconds":120,"max_bytes":2048,"single_use":true}`))
@@ -60,7 +59,7 @@ func TestGetDropMetadataReturnsServerBoundDisplayName(t *testing.T) {
 }
 
 func TestGetDropMetadataRejectsUnknownExpiredAndUsedDrops(t *testing.T) {
-	repo, handler := newCreateTestHandler(t, config.APIToken{ID: "desktop-main", SecretHash: token.HashSecret("api_valid"), Enabled: true})
+	repo, handler := newCreateTestHandler(t, apiTokenSeed{ID: "desktop-main", SecretHash: token.HashSecret("api_valid"), Enabled: true})
 	now := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
 	expired := metadataTestDropPoint(t, "dp_expired_metadata", "drop_expired_metadata", now.Add(-20*time.Minute))
 	ready := metadataTestDropPoint(t, "dp_ready_metadata", "drop_ready_metadata", now)

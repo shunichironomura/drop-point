@@ -42,7 +42,11 @@ func HandleCreateDropPoint(deps Dependencies) http.HandlerFunc {
 			writeError(w, http.StatusServiceUnavailable, "repository_unavailable", "drop point storage is unavailable")
 			return
 		}
-		authenticated, ok := authenticateAPIToken(deps.Config, r.Header.Get("Authorization"))
+		authenticated, ok, err := authenticateAPIToken(r.Context(), deps.Repository, deps.Config.DefaultMaxActiveDropPoints, r.Header.Get("Authorization"))
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "api_token_auth_failed", "could not authenticate API token")
+			return
+		}
 		if !ok {
 			writeError(w, http.StatusUnauthorized, "api_token_invalid", "valid bearer API token required")
 			return

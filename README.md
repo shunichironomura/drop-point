@@ -16,14 +16,11 @@ The legacy RSA-OAEP design from early notes is not implemented. The only support
 
 ```sh
 go test ./...
-go run ./cmd/droppoint serve --config config.example.json
+go run ./cmd/droppoint token add --id local-dev
+go run ./cmd/droppoint serve
 ```
 
-Generate an API token and put only the printed `secret_hash` in configuration:
-
-```sh
-go run ./cmd/droppoint token generate
-```
+`token add` creates a receiver API token in the local SQLite database. The plaintext token is printed once; store it outside DropPoint and pass it to the receiver client.
 
 For local browser encryption, use `http://localhost` or HTTPS. LAN-IP-over-HTTP is not a secure browser context and WebCrypto may be unavailable.
 
@@ -31,7 +28,7 @@ For Docker Compose, copy `.env.example` to ignored `.env` before adding deployme
 
 ## Basic receiver flow
 
-1. Create a drop point with a configured API token.
+1. Create a drop point with an enabled API token.
 2. Generate a recipient X25519 key pair locally.
 3. Show the returned human-readable drop name to the receiver.
 4. Append `#v=2&pk=<base64url(raw-32-byte-public-key)>` to the returned drop link.
@@ -48,6 +45,7 @@ See `docs/local-testing.md` for a Python receiver/sender simulation, `docs/api.m
 - Canonical system data directory: `/var/lib/droppoint`.
 - SQLite database: `relay.db`.
 - Ciphertext blobs: `drop-points/<drop-point-id>/envelope.json` and `payload.bin`.
+- Receiver API tokens live in SQLite and are managed with `droppoint token add/list/disable/remove` without restarting the relay.
 - The running relay periodically expires old drop points and deletes expired ciphertext; `droppoint cleanup expired --config ./config.json` is available as an operational backstop.
 
 Sender-facing pages must be served over HTTPS or localhost. Request body limits and upload timeouts at proxies/tunnels must allow configured `max_bytes` plus multipart overhead. Redact token-bearing paths such as `/drop/:drop_token` and `/api/drops/:drop_token` at every logging layer.

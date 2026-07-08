@@ -23,17 +23,28 @@ docker run --rm \
   -p 8080:8080 \
   -v droppoint-data:/var/lib/droppoint \
   -e DROPPOINT_BASE_URL=https://drop.example.com \
-  -e 'DROPPOINT_API_TOKENS_JSON=[{"id":"desktop-main","secret_hash":"sha256:<lowercase-hex-sha256>","enabled":true}]' \
   droppoint:local
+```
+
+Create receiver API tokens in the same volume with a one-off container:
+
+```sh
+docker run --rm \
+  -v droppoint-data:/var/lib/droppoint \
+  -e DROPPOINT_BASE_URL=https://drop.example.com \
+  droppoint:local token add --id desktop-main
 ```
 
 The image listens on `:8080`, stores data under `/var/lib/droppoint`, and runs as a non-root user.
 
-For the included Compose file, copy the template first so deployment-specific values and token hashes stay out of version control:
+For the included Compose file, copy the template first so deployment-specific values stay out of version control:
 
 ```sh
 cp .env.example .env
 docker compose up --build
+
+# In another terminal, add a receiver token to the Compose volume.
+docker compose run --rm droppoint token add --id desktop-main
 ```
 
 ## systemd example
@@ -60,7 +71,14 @@ ProtectHome=true
 WantedBy=multi-user.target
 ```
 
-Use `/var/lib/droppoint` as `data_dir`. The running relay performs expiry cleanup on its configured interval. You may also run:
+Use `/var/lib/droppoint` as `data_dir`. Manage tokens without restarting the service:
+
+```sh
+sudo -u droppoint droppoint token add --id desktop-main --config /etc/droppoint/config.json
+sudo -u droppoint droppoint token list --config /etc/droppoint/config.json
+```
+
+The running relay performs expiry cleanup on its configured interval. You may also run:
 
 ```sh
 droppoint cleanup expired --config /etc/droppoint/config.json

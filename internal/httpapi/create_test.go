@@ -23,7 +23,7 @@ import (
 func TestCreateDropPointWithValidAPIToken(t *testing.T) {
 	ctx := context.Background()
 	apiPlain := "api_valid"
-	repo, handler := newCreateTestHandler(t, config.APIToken{ID: "desktop-main", SecretHash: token.HashSecret(apiPlain), Enabled: true, MaxActiveDropPoints: intPtr(3)})
+	repo, handler := newCreateTestHandler(t, apiTokenSeed{ID: "desktop-main", SecretHash: token.HashSecret(apiPlain), Enabled: true, MaxActiveDropPoints: intPtr(3)})
 
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/api/drop-points", strings.NewReader(`{"client_name":"test-client","ttl_seconds":120,"max_bytes":2048,"single_use":true}`))
@@ -83,8 +83,8 @@ func TestCreateDropPointRejectsInvalidAPITokens(t *testing.T) {
 	validPlain := "api_valid"
 	disabledPlain := "api_disabled"
 	_, handler := newCreateTestHandler(t,
-		config.APIToken{ID: "valid", SecretHash: token.HashSecret(validPlain), Enabled: true},
-		config.APIToken{ID: "disabled", SecretHash: token.HashSecret(disabledPlain), Enabled: false},
+		apiTokenSeed{ID: "valid", SecretHash: token.HashSecret(validPlain), Enabled: true},
+		apiTokenSeed{ID: "disabled", SecretHash: token.HashSecret(disabledPlain), Enabled: false},
 	)
 
 	tests := map[string]string{
@@ -110,7 +110,7 @@ func TestCreateDropPointRejectsInvalidAPITokens(t *testing.T) {
 
 func TestCreateDropPointValidatesLimitsAndQuota(t *testing.T) {
 	apiPlain := "api_limited"
-	_, handler := newCreateTestHandler(t, config.APIToken{ID: "limited", SecretHash: token.HashSecret(apiPlain), Enabled: true, MaxActiveDropPoints: intPtr(1)})
+	_, handler := newCreateTestHandler(t, apiTokenSeed{ID: "limited", SecretHash: token.HashSecret(apiPlain), Enabled: true, MaxActiveDropPoints: intPtr(1)})
 
 	badRequests := map[string]string{
 		"ttl too large":       `{"ttl_seconds":901}`,
@@ -146,12 +146,19 @@ func TestCreateDropPointValidatesLimitsAndQuota(t *testing.T) {
 	}
 }
 
-func newCreateTestHandler(t *testing.T, apiTokens ...config.APIToken) (*store.Repository, http.Handler) {
+type apiTokenSeed struct {
+	ID                  string
+	SecretHash          string
+	Enabled             bool
+	MaxActiveDropPoints *int
+}
+
+func newCreateTestHandler(t *testing.T, apiTokens ...apiTokenSeed) (*store.Repository, http.Handler) {
 	t.Helper()
 	return newCreateTestHandlerWithBlob(t, nil, apiTokens...)
 }
 
-func newCreateTestHandlerWithBlob(t *testing.T, blob BlobStore, apiTokens ...config.APIToken) (*store.Repository, http.Handler) {
+func newCreateTestHandlerWithBlob(t *testing.T, blob BlobStore, apiTokens ...apiTokenSeed) (*store.Repository, http.Handler) {
 	t.Helper()
 	dataDir := filepath.Join(t.TempDir(), "data")
 	if err := config.EnsureDataDir(dataDir); err != nil {
@@ -163,9 +170,9 @@ func newCreateTestHandlerWithBlob(t *testing.T, blob BlobStore, apiTokens ...con
 	}
 	t.Cleanup(func() { _ = db.Close() })
 	repo := store.NewRepository(db.SQLDB())
+	insertAPITokenSeeds(t, repo, apiTokens, time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC))
 	cfg := config.Default()
 	cfg.BaseURL = "https://drop.example.com"
-	cfg.APITokens = apiTokens
 	handler := NewRouterWithDependencies(Dependencies{
 		Config:     cfg,
 		Repository: repo,
@@ -174,6 +181,20 @@ func newCreateTestHandlerWithBlob(t *testing.T, blob BlobStore, apiTokens ...con
 		Now:        func() time.Time { return time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC) },
 	})
 	return repo, handler
+}
+
+func insertAPITokenSeeds(t *testing.T, repo *store.Repository, apiTokens []apiTokenSeed, now time.Time) {
+	t.Helper()
+	for _, seed := range apiTokens {
+		if err := repo.AddAPIToken(context.Background(), store.AddAPITokenParams{ID: seed.ID, SecretHash: seed.SecretHash, MaxActiveDropPoints: seed.MaxActiveDropPoints, CreatedAt: now}); err != nil {
+			t.Fatalf("AddAPIToken %s: %v", seed.ID, err)
+		}
+		if !seed.Enabled {
+			if err := repo.DisableAPIToken(context.Background(), seed.ID, now.Add(time.Second)); err != nil {
+				t.Fatalf("DisableAPIToken %s: %v", seed.ID, err)
+			}
+		}
+	}
 }
 
 func insertHTTPDropPoint(t *testing.T, repo *store.Repository, dp droppoint.DropPoint) {
