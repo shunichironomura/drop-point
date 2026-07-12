@@ -12,6 +12,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Protocol
 
+from drop_point_protocol import filename_collision_key
+
 _RECEIPT_NAME = ".droppoint-receipt.json"
 _DROP_POINT_ID_RE = re.compile(r"^dp_[A-Za-z0-9_-]+$")
 
@@ -143,9 +145,10 @@ def _build_receipt(drop_point_id: str, identity: str, files: tuple[RecoveredFile
             raise ValueError(f"receiver refused unsafe recovered filename: {name!r}")
         if name == _RECEIPT_NAME:
             raise ValueError(f"filename {_RECEIPT_NAME!r} is reserved by the receiver")
-        if name in seen:
+        collision_key = filename_collision_key(name)
+        if collision_key in seen:
             raise ValueError(f"receiver refused duplicate recovered filename: {name!r}")
-        seen.add(name)
+        seen.add(collision_key)
         if not isinstance(recovered.mime_type, str):
             raise ValueError(f"receiver refused invalid recovered MIME type for {name!r}")
         entries.append(
@@ -216,7 +219,7 @@ def _validate_receipt(receipt: dict, path: Path) -> None:
             or not name
             or Path(name).name != name
             or name == _RECEIPT_NAME
-            or name in seen
+            or filename_collision_key(name) in seen
             or not isinstance(mime_type, str)
             or isinstance(size, bool)
             or not isinstance(size, int)
@@ -225,7 +228,7 @@ def _validate_receipt(receipt: dict, path: Path) -> None:
             or not re.fullmatch(r"[0-9a-f]{64}", expected_hash)
         ):
             raise RuntimeError(f"existing bundle receipt has an invalid file entry: {path}")
-        seen.add(name)
+        seen.add(filename_collision_key(name))
 
 
 def _verify_receipt_and_files(path: Path, expected_receipt: dict) -> None:

@@ -5,6 +5,7 @@ import json
 import mimetypes
 import os
 import re
+import unicodedata
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -21,6 +22,25 @@ INFO_METADATA = b"DropPoint/protocol/v2 key=metadata"
 INFO_PAYLOAD = b"DropPoint/protocol/v2 key=payload"
 AAD_METADATA = bytes([PROTOCOL_VERSION]) + b"metadata"
 AAD_PAYLOAD = bytes([PROTOCOL_VERSION]) + b"payload"
+MAX_MANIFEST_FILES = 1000
+MAX_FILENAME_UTF8_BYTES = 240
+MAX_FILENAME_EXTENSION_BYTES = 32
+MAX_MIME_TYPE_UTF8_BYTES = 255
+RESERVED_RECEIPT_NAME = ".droppoint-receipt.json"
+WINDOWS_RESERVED_NAMES = {
+    "CON",
+    "PRN",
+    "AUX",
+    "NUL",
+    *(f"COM{i}" for i in range(1, 10)),
+    "COM¹",
+    "COM²",
+    "COM³",
+    *(f"LPT{i}" for i in range(1, 10)),
+    "LPT¹",
+    "LPT²",
+    "LPT³",
+}
 
 
 @dataclass(frozen=True)
@@ -70,15 +90,17 @@ def encrypt_files(file_paths: Iterable[Path], recipient_public_key_raw: bytes) -
     if len(recipient_public_key_raw) != 32:
         raise ValueError("recipient public key must be 32 raw bytes")
 
+    paths = list(file_paths)
+    if not paths or len(paths) > MAX_MANIFEST_FILES:
+        raise ValueError(f"bundle must contain between 1 and {MAX_MANIFEST_FILES} files")
+    canonical_names = canonicalize_filenames([path.name for path in paths])
     files = []
     payload_parts = []
-    for path in file_paths:
+    for path, canonical_name in zip(paths, canonical_names, strict=True):
         data = path.read_bytes()
-        mime_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
-        files.append({"name": path.name, "type": mime_type, "size": len(data)})
+        mime_type = sanitize_mime_type(mimetypes.guess_type(path.name)[0] or "application/octet-stream")
+        files.append({"name": canonical_name, "type": mime_type, "size": len(data)})
         payload_parts.append(data)
-    if not files:
-        raise ValueError("at least one file is required")
 
     manifest = {
         "protocol_version": PROTOCOL_VERSION,
@@ -165,29 +187,35 @@ def _split_payload(manifest: dict, payload_plaintext: bytes) -> list[DecryptedFi
     if manifest.get("protocol_version") != PROTOCOL_VERSION:
         raise ValueError("unsupported manifest protocol_version")
     files = manifest.get("files")
-    if not isinstance(files, list) or not files:
-        raise ValueError("manifest must contain at least one file")
+    if not isinstance(files, list) or not files or len(files) > MAX_MANIFEST_FILES:
+        raise ValueError(f"manifest must contain between 1 and {MAX_MANIFEST_FILES} files")
 
-    total = 0
+    remaining = len(payload_plaintext)
     seen_names: set[str] = set()
     out: list[DecryptedFile] = []
     for entry in files:
         if not isinstance(entry, dict):
             raise ValueError("manifest file entry must be an object")
-        name = sanitize_filename(str(entry.get("name", "")))
-        folded = name.casefold()
+        raw_name = entry.get("name")
+        raw_type = entry.get("type")
+        if not isinstance(raw_name, str) or not isinstance(raw_type, str):
+            raise ValueError("manifest file name and type must be strings")
+        name = sanitize_filename(raw_name)
+        folded = filename_collision_key(name)
         if folded in seen_names:
             raise ValueError(f"duplicate filename in bundle: {name}")
         seen_names.add(folded)
-        mime_type = sanitize_mime_type(str(entry.get("type", "")))
+        mime_type = sanitize_mime_type(raw_type)
         size = entry.get("size")
         if isinstance(size, bool) or not isinstance(size, int) or size < 0:
             raise ValueError(f"invalid size for {name}")
-        total += size
+        if size > remaining:
+            raise ValueError(f"size for {name} exceeds the remaining payload")
+        remaining -= size
         out.append(DecryptedFile(name=name, mime_type=mime_type, data=b""))
 
-    if total != len(payload_plaintext):
-        raise ValueError(f"manifest size sum {total} does not match payload length {len(payload_plaintext)}")
+    if remaining != 0:
+        raise ValueError(f"manifest sizes leave {remaining} unclaimed payload bytes")
 
     offset = 0
     recovered: list[DecryptedFile] = []
@@ -198,20 +226,108 @@ def _split_payload(manifest: dict, payload_plaintext: bytes) -> list[DecryptedFi
     return recovered
 
 
+def canonicalize_filenames(names: Iterable[str]) -> list[str]:
+    values = list(names)
+    if len(values) > MAX_MANIFEST_FILES:
+        raise ValueError(f"bundle contains more than {MAX_MANIFEST_FILES} files")
+    used: set[str] = set()
+    out: list[str] = []
+    for name in values:
+        base = _canonicalize_filename(name)
+        candidate = base
+        suffix = 2
+        while filename_collision_key(candidate) in used:
+            candidate = _fit_filename(base, f" ({suffix})")
+            suffix += 1
+        used.add(filename_collision_key(candidate))
+        out.append(candidate)
+    return out
+
+
 def sanitize_filename(name: str) -> str:
+    try:
+        encoded = name.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise ValueError("filename must be valid UTF-8") from exc
     if not name:
         raise ValueError("filename must not be empty")
-    if "/" in name or "\\" in name or "\x00" in name:
-        raise ValueError(f"unsafe filename: {name!r}")
-    if any(ord(ch) < 32 or ord(ch) == 127 for ch in name):
-        raise ValueError(f"unsafe filename: {name!r}")
-    trimmed = name.strip()
-    if trimmed in {"", ".", ".."}:
+    if len(encoded) > MAX_FILENAME_UTF8_BYTES:
+        raise ValueError(f"filename exceeds {MAX_FILENAME_UTF8_BYTES} UTF-8 bytes")
+    if unicodedata.normalize("NFC", name) != name:
+        raise ValueError("filename must use Unicode NFC")
+    if name.rstrip(" .") != name:
+        raise ValueError("filename must not end in a space or dot")
+    if _filename_blank(name) or name in {".", ".."}:
         raise ValueError(f"reserved filename: {name!r}")
-    reserved = {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))}
-    if trimmed.rsplit(".", 1)[0].upper() in reserved:
+    if any(_forbidden_filename_character(ch) for ch in name):
+        raise ValueError(f"unsafe filename: {name!r}")
+    if _reserved_windows_name(name) or name.lower() == RESERVED_RECEIPT_NAME:
         raise ValueError(f"platform-reserved filename: {name!r}")
-    return trimmed
+    return name
+
+
+def _canonicalize_filename(name: str) -> str:
+    if not isinstance(name, str):
+        raise ValueError("filename must be a string")
+    try:
+        normalized = unicodedata.normalize("NFC", name)
+        normalized.encode("utf-8")
+    except UnicodeError as exc:
+        raise ValueError("filename must be valid UTF-8") from exc
+    candidate = "".join("_" if _forbidden_filename_character(ch) else ch for ch in normalized).rstrip(" .")
+    if _filename_blank(candidate) or candidate in {".", ".."}:
+        candidate = "file"
+    if _reserved_windows_name(candidate) or candidate.lower() == RESERVED_RECEIPT_NAME:
+        candidate = "_" + candidate
+    candidate = _fit_filename(candidate, "")
+    return sanitize_filename(candidate)
+
+
+def _fit_filename(name: str, suffix: str) -> str:
+    stem = name
+    extension = ""
+    dot = name.rfind(".")
+    if dot > 0:
+        possible_extension = name[dot:]
+        if len(possible_extension.encode("utf-8")) <= MAX_FILENAME_EXTENSION_BYTES:
+            stem = name[:dot]
+            extension = possible_extension
+    budget = MAX_FILENAME_UTF8_BYTES - len(suffix.encode("utf-8")) - len(extension.encode("utf-8"))
+    if budget < 1:
+        extension = ""
+        budget = MAX_FILENAME_UTF8_BYTES - len(suffix.encode("utf-8"))
+    stem = _truncate_utf8(stem, budget).rstrip(" .")
+    if _filename_blank(stem) or stem in {".", ".."}:
+        stem = "file"
+    return stem + suffix + extension
+
+
+def _truncate_utf8(value: str, max_bytes: int) -> str:
+    out: list[str] = []
+    length = 0
+    for character in value:
+        encoded_length = len(character.encode("utf-8"))
+        if length + encoded_length > max_bytes:
+            break
+        out.append(character)
+        length += encoded_length
+    return "".join(out)
+
+
+def _forbidden_filename_character(character: str) -> bool:
+    return character in '/\\\x00<>:"|?*' or unicodedata.category(character) in {"Cc", "Cf"}
+
+
+def _filename_blank(name: str) -> bool:
+    return not name or all(character.isspace() for character in name)
+
+
+def filename_collision_key(name: str) -> str:
+    return unicodedata.normalize("NFC", name).lower()
+
+
+def _reserved_windows_name(name: str) -> bool:
+    return name.split(".", 1)[0].upper() in WINDOWS_RESERVED_NAMES
 
 
 _MIME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]*/[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]*$")
@@ -220,6 +336,12 @@ _MIME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]*/[A-Za-z0-9][A-Za-z0-9!
 def sanitize_mime_type(value: str) -> str:
     if not value:
         return "application/octet-stream"
+    try:
+        encoded = value.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise ValueError("MIME type must be valid UTF-8") from exc
+    if len(encoded) > MAX_MIME_TYPE_UTF8_BYTES:
+        raise ValueError(f"MIME type exceeds {MAX_MIME_TYPE_UTF8_BYTES} UTF-8 bytes")
     lowered = value.lower()
     if not _MIME_RE.match(lowered):
         raise ValueError(f"unsafe MIME type: {value!r}")
