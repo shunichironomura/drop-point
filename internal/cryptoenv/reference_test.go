@@ -2,6 +2,7 @@ package cryptoenv
 
 import (
 	"bytes"
+	"encoding/hex"
 	"encoding/json"
 	"math"
 	"os"
@@ -205,6 +206,56 @@ func TestFilenamePolicyFixtures(t *testing.T) {
 	}
 }
 
+func TestProtocolParsingPolicyFixtures(t *testing.T) {
+	data, err := os.ReadFile("../../testdata/protocol-parsing-policy.json")
+	if err != nil {
+		t.Fatalf("ReadFile parsing policy: %v", err)
+	}
+	var fixture struct {
+		Base64URL []struct {
+			Value      string `json:"value"`
+			Valid      bool   `json:"valid"`
+			DecodedHex string `json:"decoded_hex"`
+		} `json:"base64url"`
+		Timestamps []struct {
+			Value string `json:"value"`
+			Valid bool   `json:"valid"`
+		} `json:"timestamps"`
+		MIMETypes []struct {
+			Value     string `json:"value"`
+			Valid     bool   `json:"valid"`
+			Canonical string `json:"canonical"`
+		} `json:"mime_types"`
+	}
+	if err := json.Unmarshal(data, &fixture); err != nil {
+		t.Fatalf("Unmarshal parsing policy: %v", err)
+	}
+	for _, entry := range fixture.Base64URL {
+		decoded, err := DecodeBase64URL(entry.Value)
+		if gotValid := err == nil; gotValid != entry.Valid {
+			t.Fatalf("DecodeBase64URL(%q) valid = %t, want %t (err=%v)", entry.Value, gotValid, entry.Valid, err)
+		}
+		if entry.Valid && hex.EncodeToString(decoded) != entry.DecodedHex {
+			t.Fatalf("DecodeBase64URL(%q) = %x, want %s", entry.Value, decoded, entry.DecodedHex)
+		}
+	}
+	for _, entry := range fixture.Timestamps {
+		_, err := time.Parse(time.RFC3339Nano, entry.Value)
+		if gotValid := err == nil; gotValid != entry.Valid {
+			t.Fatalf("timestamp %q valid = %t, want %t", entry.Value, gotValid, entry.Valid)
+		}
+	}
+	for _, entry := range fixture.MIMETypes {
+		canonical, err := SanitizeMIMEType(entry.Value)
+		if gotValid := err == nil; gotValid != entry.Valid {
+			t.Fatalf("SanitizeMIMEType(%q) valid = %t, want %t (err=%v)", entry.Value, gotValid, entry.Valid, err)
+		}
+		if entry.Valid && canonical != entry.Canonical {
+			t.Fatalf("SanitizeMIMEType(%q) = %q, want %q", entry.Value, canonical, entry.Canonical)
+		}
+	}
+}
+
 func TestManifestEnforcesEntryAndFilenameBounds(t *testing.T) {
 	tooMany := make([]PlainFile, MaxManifestFiles+1)
 	if _, _, err := BuildManifest(tooMany, time.Now()); err == nil {
@@ -250,6 +301,13 @@ func FuzzSplitPayloadNeverPanics(f *testing.F) {
 		}
 		_, _ = SplitPayload(manifest, payload)
 	})
+}
+
+func TestParseManifestRejectsDuplicateFields(t *testing.T) {
+	manifestJSON := []byte(`{"protocol_version":2,"files":[{"name":"safe.txt","name":"other.txt","type":"text/plain","size":0}],"created_at":"2026-06-30T12:00:00Z"}`)
+	if _, err := ParseManifest(manifestJSON); err == nil || !strings.Contains(err.Error(), "duplicate JSON field") {
+		t.Fatalf("ParseManifest err = %v, want duplicate-field rejection", err)
+	}
 }
 
 func TestManifestValidationAndSanitization(t *testing.T) {

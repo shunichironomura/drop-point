@@ -592,7 +592,8 @@ function decodeBase64URL(value) {
   try {
     const padded = value.replace(/-/g, '+').replace(/_/g, '/').padEnd(Math.ceil(value.length / 4) * 4, '=');
     const binary = atob(padded);
-    return Uint8Array.from(binary, (char) => char.charCodeAt(0));
+    const decoded = Uint8Array.from(binary, (char) => char.charCodeAt(0));
+    return encodeBase64URL(decoded) === value ? decoded : new Uint8Array();
   } catch (_error) {
     return new Uint8Array();
   }

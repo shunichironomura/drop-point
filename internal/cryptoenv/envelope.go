@@ -34,6 +34,9 @@ type Envelope struct {
 // ValidateEnvelopeJSON validates the relay-visible envelope shape without
 // decrypting metadata or payload bytes.
 func ValidateEnvelopeJSON(data []byte) (*Envelope, error) {
+	if err := rejectDuplicateJSONFields(data); err != nil {
+		return nil, invalidEnvelope("decode envelope JSON: %v", err)
+	}
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
 	var envelope Envelope
@@ -74,9 +77,12 @@ func DecodeBase64URL(value string) ([]byte, error) {
 	if value == "" || strings.Contains(value, "=") {
 		return nil, fmt.Errorf("base64url value must be non-empty and unpadded")
 	}
-	decoded, err := base64.RawURLEncoding.DecodeString(value)
+	decoded, err := base64.RawURLEncoding.Strict().DecodeString(value)
 	if err != nil {
 		return nil, err
+	}
+	if EncodeBase64URL(decoded) != value {
+		return nil, fmt.Errorf("base64url value is not canonical")
 	}
 	return decoded, nil
 }
@@ -98,6 +104,65 @@ func decodeBase64URLField(name string, value string, minLen int, exactLen int) (
 		return nil, invalidEnvelope("%s decoded length = %d, want at least %d", name, len(decoded), minLen)
 	}
 	return decoded, nil
+}
+
+func rejectDuplicateJSONFields(data []byte) error {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	if err := scanUniqueJSONValue(decoder); err != nil {
+		return err
+	}
+	if _, err := decoder.Token(); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return fmt.Errorf("JSON must contain one value")
+		}
+		return err
+	}
+	return nil
+}
+
+func scanUniqueJSONValue(decoder *json.Decoder) error {
+	token, err := decoder.Token()
+	if err != nil {
+		return err
+	}
+	delimiter, ok := token.(json.Delim)
+	if !ok {
+		return nil
+	}
+	switch delimiter {
+	case '{':
+		seen := make(map[string]struct{})
+		for decoder.More() {
+			keyToken, err := decoder.Token()
+			if err != nil {
+				return err
+			}
+			key, ok := keyToken.(string)
+			if !ok {
+				return fmt.Errorf("JSON object key must be a string")
+			}
+			if _, duplicate := seen[key]; duplicate {
+				return fmt.Errorf("duplicate JSON field %q", key)
+			}
+			seen[key] = struct{}{}
+			if err := scanUniqueJSONValue(decoder); err != nil {
+				return err
+			}
+		}
+		_, err = decoder.Token()
+		return err
+	case '[':
+		for decoder.More() {
+			if err := scanUniqueJSONValue(decoder); err != nil {
+				return err
+			}
+		}
+		_, err = decoder.Token()
+		return err
+	default:
+		return fmt.Errorf("unexpected JSON delimiter %q", delimiter)
+	}
 }
 
 func invalidEnvelope(format string, args ...any) error {
