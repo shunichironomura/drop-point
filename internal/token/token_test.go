@@ -25,12 +25,12 @@ func TestGenerateTokensUsePrefixesAndEntropy(t *testing.T) {
 		if strings.Contains(value, "=") {
 			t.Fatalf("token %q contains base64 padding", value)
 		}
-		secret, err := DecodeSecret(value, prefix)
+		secret, err := decodeSecret(value, prefix)
 		if err != nil {
 			t.Fatalf("decode %q: %v", value, err)
 		}
-		if len(secret) != EntropyBytes {
-			t.Fatalf("secret length = %d, want %d", len(secret), EntropyBytes)
+		if len(secret) != entropyBytes {
+			t.Fatalf("secret length = %d, want %d", len(secret), entropyBytes)
 		}
 		if _, err := base64.RawURLEncoding.DecodeString(strings.TrimPrefix(value, prefix)); err != nil {
 			t.Fatalf("token secret is not raw base64url: %v", err)
@@ -62,14 +62,14 @@ func TestHashSecretFormatAndVerification(t *testing.T) {
 	if !strings.HasPrefix(hash, "sha256:") {
 		t.Fatalf("hash %q missing sha256 prefix", hash)
 	}
-	if !VerifySecretHash(plaintext, hash) {
-		t.Fatal("VerifySecretHash rejected matching plaintext")
+	if !verifySecretHash(plaintext, hash) {
+		t.Fatal("verifySecretHash rejected matching plaintext")
 	}
-	if VerifySecretHash("api_other", hash) {
-		t.Fatal("VerifySecretHash accepted wrong plaintext")
+	if verifySecretHash("api_other", hash) {
+		t.Fatal("verifySecretHash accepted wrong plaintext")
 	}
-	if VerifySecretHash(plaintext, "sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA") {
-		t.Fatal("VerifySecretHash accepted malformed uppercase hash")
+	if verifySecretHash(plaintext, "sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA") {
+		t.Fatal("verifySecretHash accepted malformed uppercase hash")
 	}
 }
 

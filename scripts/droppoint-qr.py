@@ -13,10 +13,11 @@ import json
 import os
 import sys
 from pathlib import Path
-from urllib import error, parse, request
+from urllib import parse
 
 import qrcode
 
+from drop_point_http import request_bytes
 from drop_point_protocol import b64u_encode, generate_x25519_keypair
 from drop_point_storage import atomic_write_private_json
 
@@ -182,21 +183,17 @@ def json_request(
     body: bytes | None = None,
     headers: dict[str, str] | None = None,
 ) -> dict:
-    all_headers = {"User-Agent": USER_AGENT, "Accept": "application/json"}
+    all_headers = {"Accept": "application/json"}
     all_headers.update(headers or {})
-    all_headers["Authorization"] = "Bearer " + token
-    req = request.Request(url, data=body, headers=all_headers, method=method)
-    try:
-        with request.urlopen(req, timeout=30) as response:  # noqa: S310 - deployment URL is supplied by the operator.
-            return json.loads(response.read().decode("utf-8"))
-    except error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="replace")
-        try:
-            parsed = json.loads(detail)
-            detail = json.dumps(parsed, indent=2)
-        except json.JSONDecodeError:
-            pass
-        raise RuntimeError(f"HTTP {exc.code} from {url}: {detail}") from exc
+    response = request_bytes(
+        method,
+        url,
+        user_agent=USER_AGENT,
+        bearer_token=token,
+        body=body,
+        headers=all_headers,
+    )
+    return json.loads(response.body.decode("utf-8"))
 
 
 if __name__ == "__main__":

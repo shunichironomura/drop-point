@@ -225,35 +225,38 @@ This document lists repository files in dependency-first review order. Local scr
 73. `scripts/drop_point_protocol.py`
     - Shared Python protocol, canonical filename, bounded manifest, encryption, and decryption helpers for client simulations.
 
-74. `scripts/drop_point_storage.py`
+74. `scripts/drop_point_http.py`
+    - Shared typed Python HTTP boundary with bearer headers, response metadata, and capability-safe error reporting.
+
+75. `scripts/drop_point_storage.py`
     - Shared owner-only atomic state writer and all-or-nothing durable receiver bundle installer with identity receipts.
 
-75. `scripts/droppoint-receiver.py`
+76. `scripts/droppoint-receiver.py`
     - Python receiver simulation for create, status, durable bundle pickup/decrypt/install, retry-safe close, and private-key removal.
 
-76. `scripts/droppoint-qr.py`
+77. `scripts/droppoint-qr.py`
     - Python public-endpoint mobile test helper for creating a drop point, durably saving receiver state, and rendering the sender link as a QR code.
 
-77. `scripts/droppoint-sender.py`
+78. `scripts/droppoint-sender.py`
     - Python sender simulation for fragment parsing, browser-equivalent encryption, and encrypted drop upload.
 
-78. `docs/configuration.md`
+79. `docs/configuration.md`
     - Operator configuration reference and SQLite token CLI guidance.
 
-79. `docs/api.md`
+80. `docs/api.md`
     - Receiver API, sender metadata, and encrypted drop framing reference with curl examples.
 
-80. `docs/deployment.md`
+81. `docs/deployment.md`
     - Build, systemd, token-management, reverse-proxy/tunnel, secure-context, request-size, and log-redaction guidance.
 
-81. `docs/client-integration.md`
+82. `docs/client-integration.md`
     - Generic receiver/client integration boundary and durable local storage ordering guidance.
 
-82. `docs/local-testing.md`
+83. `docs/local-testing.md`
     - Local testing workflow using the token CLI plus Python receiver and sender simulation scripts.
 
-83. `README.md`
+84. `README.md`
     - Product overview, local development flow, security model, and operator entry points.
 
-84. `CODE_REVIEW_ORDER.md`
+85. `CODE_REVIEW_ORDER.md`
     - This review-order index. Update it whenever repository files change.
