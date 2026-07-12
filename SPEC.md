@@ -368,7 +368,7 @@ A drop point record contains at least:
 | `expires_at` | TTL expiry timestamp. |
 | `max_bytes` | Max encrypted payload size for this drop point. |
 
-The default local implementation uses SQLite for relay metadata and API token hashes. It MUST enable WAL journal mode, foreign-key enforcement, and a busy timeout, and it SHOULD apply built-in schema migrations automatically before serving requests, running cleanup, or running token-management CLI commands.
+The default local implementation uses SQLite for relay metadata and API token hashes. It MUST enable WAL journal mode, foreign-key enforcement, and a busy timeout, and it SHOULD apply the current versioned schema automatically before serving requests, running cleanup, or running token-management CLI commands. DropPoint is unreleased and has no supported legacy databases; an unversioned database containing legacy relay tables MUST be rejected rather than add a `display_name` column with invalid empty values.
 
 The default SQLite schema for the local implementation is:
 
@@ -377,7 +377,7 @@ CREATE TABLE drop_points (
   id TEXT PRIMARY KEY,
   api_token_id TEXT NOT NULL,
   client_name TEXT,
-  display_name TEXT NOT NULL DEFAULT '',
+  display_name TEXT NOT NULL CHECK (length(display_name) > 0),
   drop_token_hash TEXT NOT NULL UNIQUE,
   pickup_token_hash TEXT NOT NULL,
   status TEXT NOT NULL,

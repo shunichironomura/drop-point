@@ -78,6 +78,8 @@ sudo -u droppoint droppoint token add --id desktop-main --config /etc/droppoint/
 sudo -u droppoint droppoint token list --config /etc/droppoint/config.json
 ```
 
+The unreleased relay accepts only its current versioned SQLite schema. It intentionally rejects unversioned legacy relay tables rather than creating active rows with invalid empty display names; recreate pre-release development data when the schema changes.
+
 The running relay performs expiry cleanup on its configured interval. You may also run:
 
 ```sh
