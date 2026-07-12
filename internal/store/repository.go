@@ -224,22 +224,30 @@ WHERE id = ? AND status = ?`, string(droppoint.StatusOpen), id, string(droppoint
 	return nil
 }
 
-// MarkFirstPickedUp records first_picked_up_at after a successful pickup. It is
-// safe to repeat and leaves the original timestamp unchanged.
+// MarkFirstPickedUp records first_picked_up_at after a successful response
+// write. Ready, closed, and expired are accepted so a concurrent close/expiry
+// cannot erase an event that completed first. It is safe to repeat.
 func (r *Repository) MarkFirstPickedUp(ctx context.Context, id string, now time.Time) error {
 	res, err := r.db.ExecContext(ctx, `
 UPDATE drop_points
 SET first_picked_up_at = COALESCE(first_picked_up_at, ?)
-WHERE id = ? AND status = ? AND expires_at > ?`,
-		formatTime(now), id, string(droppoint.StatusReady), formatTime(now),
+WHERE id = ? AND status IN (?, ?, ?)`,
+		formatTime(now), id, string(droppoint.StatusReady), string(droppoint.StatusClosed), string(droppoint.StatusExpired),
 	)
 	if err != nil {
 		return fmt.Errorf("mark first pickup %q: %w", id, err)
 	}
-	if changed, err := res.RowsAffected(); err == nil && changed == 1 {
+	changed, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("mark first pickup %q: rows affected: %w", id, err)
+	}
+	if changed == 1 {
 		return nil
 	}
-	return r.classifyMutationMiss(ctx, id, now)
+	if _, err := r.FindDropPointByID(ctx, id); err != nil {
+		return err
+	}
+	return droppoint.ErrDropPointNotOpen
 }
 
 // CloseDropPoint marks a drop point closed. Closing an already closed drop point

@@ -211,22 +211,17 @@ func AbortReceiving(d DropPoint, now time.Time) (DropPoint, error) {
 	return d, nil
 }
 
-// MarkPickedUp records first pickup without making pickup terminal.
+// MarkPickedUp records completion of a response that began while ready. Closed
+// and expired are accepted because either transition may race after the final
+// response write; the pickup event does not change lifecycle status.
 func MarkPickedUp(d DropPoint, now time.Time) (DropPoint, error) {
-	if expired, ok := expireIfElapsed(d, now); ok {
-		return expired, ErrDropPointExpired
-	}
 	switch d.Status {
-	case StatusReady:
+	case StatusReady, StatusClosed, StatusExpired:
 		if d.FirstPickedUpAt == nil {
 			pickedUpAt := now.UTC()
 			d.FirstPickedUpAt = &pickedUpAt
 		}
 		return d, nil
-	case StatusClosed:
-		return d, ErrDropPointClosed
-	case StatusExpired:
-		return d, ErrDropPointExpired
 	default:
 		return d, ErrDropPointNotOpen
 	}

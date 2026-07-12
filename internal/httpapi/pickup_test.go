@@ -3,6 +3,7 @@ package httpapi
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"mime"
 	"mime/multipart"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/shunichironomura/droppoint/internal/droppoint"
+	"github.com/shunichironomura/droppoint/internal/store"
 	"github.com/shunichironomura/droppoint/internal/token"
 )
 
@@ -89,6 +91,79 @@ func TestPickupRetrievesReadyCiphertextAndRecordsFirstPickup(t *testing.T) {
 	}
 }
 
+func TestPickupRecordsAfterFinalWriteDespiteCancellationAndClose(t *testing.T) {
+	repo, _, handler := newDropTestHandler(t)
+	dp := readyPickupDropPoint(t, repo, handler, "dp_pickup_finalize", "drop_pickup_finalize", "pick_pickup_finalize")
+	envelope := []byte(testEnvelopeJSON())
+	payload := []byte("ciphertext")
+	expected := httptest.NewRecorder()
+	if err := writePickupMultipart(expected, envelope, bytes.NewReader(payload)); err != nil {
+		t.Fatalf("write expected multipart: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	writer := newCallbackResponseWriter(expected.Body.Len(), func() {
+		cancel()
+		if err := repo.CloseDropPoint(context.Background(), dp.ID, dropTestNow().Add(time.Second)); err != nil {
+			t.Errorf("CloseDropPoint: %v", err)
+		}
+	})
+	request := httptest.NewRequest(http.MethodGet, "/api/drop-points/"+dp.ID+"/pickup", nil).WithContext(ctx)
+	request.Header.Set("Authorization", "Bearer pick_pickup_finalize")
+	handler.ServeHTTP(writer, request)
+
+	row, err := repo.FindDropPointByID(context.Background(), dp.ID)
+	if err != nil {
+		t.Fatalf("FindDropPointByID: %v", err)
+	}
+	if row.Status != droppoint.StatusClosed || row.FirstPickedUpAt == nil {
+		t.Fatalf("row after completed canceled pickup = %+v", row)
+	}
+}
+
+func TestPickupRecordsAfterFinalWriteDespiteConcurrentExpiry(t *testing.T) {
+	repo, _, handler := newDropTestHandler(t)
+	dp := readyPickupDropPoint(t, repo, handler, "dp_pickup_expiry_race", "drop_pickup_expiry_race", "pick_pickup_expiry_race")
+	envelope := []byte(testEnvelopeJSON())
+	payload := []byte("ciphertext")
+	expected := httptest.NewRecorder()
+	if err := writePickupMultipart(expected, envelope, bytes.NewReader(payload)); err != nil {
+		t.Fatalf("write expected multipart: %v", err)
+	}
+	writer := newCallbackResponseWriter(expected.Body.Len(), func() {
+		if _, err := repo.ExpireDropPoints(context.Background(), dropTestNow().Add(20*time.Minute)); err != nil {
+			t.Errorf("ExpireDropPoints: %v", err)
+		}
+	})
+	request := httptest.NewRequest(http.MethodGet, "/api/drop-points/"+dp.ID+"/pickup", nil)
+	request.Header.Set("Authorization", "Bearer pick_pickup_expiry_race")
+	handler.ServeHTTP(writer, request)
+
+	row, err := repo.FindDropPointByID(context.Background(), dp.ID)
+	if err != nil {
+		t.Fatalf("FindDropPointByID: %v", err)
+	}
+	if row.Status != droppoint.StatusExpired || row.FirstPickedUpAt == nil {
+		t.Fatalf("row after expiry race = %+v", row)
+	}
+}
+
+func TestPickupDoesNotRecordPartialResponseWrite(t *testing.T) {
+	repo, _, handler := newDropTestHandler(t)
+	dp := readyPickupDropPoint(t, repo, handler, "dp_pickup_partial_write", "drop_pickup_partial_write", "pick_pickup_partial_write")
+	writer := &callbackResponseWriter{header: make(http.Header), failAfter: 1}
+	request := httptest.NewRequest(http.MethodGet, "/api/drop-points/"+dp.ID+"/pickup", nil)
+	request.Header.Set("Authorization", "Bearer pick_pickup_partial_write")
+	handler.ServeHTTP(writer, request)
+
+	row, err := repo.FindDropPointByID(context.Background(), dp.ID)
+	if err != nil {
+		t.Fatalf("FindDropPointByID: %v", err)
+	}
+	if row.FirstPickedUpAt != nil {
+		t.Fatalf("partial response recorded pickup: %v", row.FirstPickedUpAt)
+	}
+}
+
 func TestPickupRejectsNotReadyWrongTokenClosedAndExpired(t *testing.T) {
 	repo, _, handler := newDropTestHandler(t)
 	now := dropTestNow()
@@ -127,6 +202,54 @@ func TestPickupRejectsNotReadyWrongTokenClosedAndExpired(t *testing.T) {
 	if _, err := repo.AuthorizePickupToken(context.Background(), expired.ID, token.HashSecret("pick_expired"), now); err != nil {
 		t.Fatalf("expired token should still authorize status row: %v", err)
 	}
+}
+
+type callbackResponseWriter struct {
+	header     http.Header
+	body       bytes.Buffer
+	status     int
+	callbackAt int
+	failAfter  int
+	callback   func()
+	called     bool
+}
+
+func newCallbackResponseWriter(callbackAt int, callback func()) *callbackResponseWriter {
+	return &callbackResponseWriter{header: make(http.Header), callbackAt: callbackAt, failAfter: -1, callback: callback}
+}
+
+func (w *callbackResponseWriter) Header() http.Header {
+	return w.header
+}
+
+func (w *callbackResponseWriter) WriteHeader(status int) {
+	if w.status == 0 {
+		w.status = status
+	}
+}
+
+func (w *callbackResponseWriter) Write(data []byte) (int, error) {
+	if w.failAfter >= 0 && w.body.Len()+len(data) > w.failAfter {
+		return 0, errors.New("injected response write failure")
+	}
+	n, err := w.body.Write(data)
+	if err == nil && !w.called && w.callback != nil && w.body.Len() >= w.callbackAt {
+		w.called = true
+		w.callback()
+	}
+	return n, err
+}
+
+func readyPickupDropPoint(t *testing.T, repo *store.Repository, handler http.Handler, id string, dropToken string, pickupToken string) droppoint.DropPoint {
+	t.Helper()
+	dp := testHTTPDropPoint(t, id, dropToken, pickupToken, dropTestNow())
+	insertHTTPDropPoint(t, repo, dp)
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, multipartDropRequest(t, "/api/drops/"+dropToken, []byte(testEnvelopeJSON()), []byte("ciphertext")))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("drop status = %d body=%s", recorder.Code, recorder.Body.String())
+	}
+	return dp
 }
 
 func readPickupMultipart(t *testing.T, recorder *httptest.ResponseRecorder) ([]byte, []byte) {

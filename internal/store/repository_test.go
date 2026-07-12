@@ -210,6 +210,44 @@ func TestRepositoryCommitCloseExpireAndPickupTimestamp(t *testing.T) {
 	}
 }
 
+func TestRepositoryPickupTimestampSurvivesCloseAndExpiry(t *testing.T) {
+	now := testNow()
+	for _, terminalStatus := range []droppoint.Status{droppoint.StatusClosed, droppoint.StatusExpired} {
+		t.Run(string(terminalStatus), func(t *testing.T) {
+			repo := newTestRepository(t)
+			dp := testDropPoint(t, "dp_pickup_race_"+string(terminalStatus), "drop_pickup_race_"+string(terminalStatus), "pick_pickup_race_"+string(terminalStatus), now)
+			insertTestDropPoint(t, repo, dp)
+			if err := repo.BeginReceivingDrop(context.Background(), dp.ID, now); err != nil {
+				t.Fatalf("BeginReceivingDrop: %v", err)
+			}
+			if err := repo.CommitReceivedDrop(context.Background(), dp.ID, droppoint.CommitDropResult{EnvelopePath: "envelope", PayloadPath: "payload", EncryptedSize: 1}, now); err != nil {
+				t.Fatalf("CommitReceivedDrop: %v", err)
+			}
+			switch terminalStatus {
+			case droppoint.StatusClosed:
+				if err := repo.CloseDropPoint(context.Background(), dp.ID, now.Add(time.Second)); err != nil {
+					t.Fatalf("CloseDropPoint: %v", err)
+				}
+			case droppoint.StatusExpired:
+				if _, err := repo.ExpireDropPoints(context.Background(), now.Add(20*time.Minute)); err != nil {
+					t.Fatalf("ExpireDropPoints: %v", err)
+				}
+			}
+			pickedAt := now.Add(2 * time.Second)
+			if err := repo.MarkFirstPickedUp(context.Background(), dp.ID, pickedAt); err != nil {
+				t.Fatalf("MarkFirstPickedUp: %v", err)
+			}
+			row, err := repo.FindDropPointByID(context.Background(), dp.ID)
+			if err != nil {
+				t.Fatalf("FindDropPointByID: %v", err)
+			}
+			if row.Status != terminalStatus || row.FirstPickedUpAt == nil || !row.FirstPickedUpAt.Equal(pickedAt) {
+				t.Fatalf("row after pickup finalization race = %+v", row)
+			}
+		})
+	}
+}
+
 func TestRepositoryExpireDropPoints(t *testing.T) {
 	repo := newTestRepository(t)
 	now := testNow()
