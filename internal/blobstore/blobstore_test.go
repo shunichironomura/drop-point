@@ -13,6 +13,59 @@ import (
 	"github.com/shunichironomura/droppoint/internal/droppoint"
 )
 
+func TestWriteAndDeleteSyncParentDirectoryInDurableOrder(t *testing.T) {
+	store := newTestBlobStore(t)
+	recording := &recordingMutationFileSystem{mutationFileSystem: store.fs}
+	store.fs = recording
+	id := "dp_sync_order"
+	if _, err := store.WriteDrop(context.Background(), id, []byte(`{}`), bytes.NewReader([]byte("payload")), 10); err != nil {
+		t.Fatalf("WriteDrop: %v", err)
+	}
+	parent := filepath.Join(store.dataDir, DropPointsDirName)
+	child := store.DropDir(id)
+	assertEventBefore(t, recording.events, "mkdir "+child, "sync "+parent)
+	assertEventBefore(t, recording.events, "sync "+parent, "rename "+filepath.Join(child, PayloadFileName))
+	assertEventBefore(t, recording.events, "rename "+filepath.Join(child, EnvelopeFileName), "sync "+child)
+
+	recording.events = nil
+	if err := store.DeleteDropPoint(context.Background(), id); err != nil {
+		t.Fatalf("DeleteDropPoint: %v", err)
+	}
+	assertEventBefore(t, recording.events, "remove-all "+child, "sync "+parent)
+}
+
+func TestParentDirectorySyncFailuresAreRetryable(t *testing.T) {
+	t.Run("creation", func(t *testing.T) {
+		store := newTestBlobStore(t)
+		parent := filepath.Join(store.dataDir, DropPointsDirName)
+		recording := &recordingMutationFileSystem{mutationFileSystem: store.fs, failSyncPath: parent, failSyncCount: 1}
+		store.fs = recording
+		if _, err := store.WriteDrop(context.Background(), "dp_sync_create_failure", []byte(`{}`), bytes.NewReader([]byte("payload")), 10); err == nil {
+			t.Fatal("WriteDrop succeeded despite parent sync failure")
+		}
+		if _, err := store.WriteDrop(context.Background(), "dp_sync_create_failure", []byte(`{}`), bytes.NewReader([]byte("payload")), 10); err != nil {
+			t.Fatalf("WriteDrop retry: %v", err)
+		}
+	})
+
+	t.Run("deletion", func(t *testing.T) {
+		store := newTestBlobStore(t)
+		id := "dp_sync_delete_failure"
+		if _, err := store.WriteDrop(context.Background(), id, []byte(`{}`), bytes.NewReader([]byte("payload")), 10); err != nil {
+			t.Fatalf("WriteDrop: %v", err)
+		}
+		parent := filepath.Join(store.dataDir, DropPointsDirName)
+		recording := &recordingMutationFileSystem{mutationFileSystem: store.fs, failSyncPath: parent, failSyncCount: 1}
+		store.fs = recording
+		if err := store.DeleteDropPoint(context.Background(), id); err == nil {
+			t.Fatal("DeleteDropPoint succeeded despite parent sync failure")
+		}
+		if err := store.DeleteDropPoint(context.Background(), id); err != nil {
+			t.Fatalf("DeleteDropPoint retry: %v", err)
+		}
+	})
+}
+
 func TestWriteDropStoresExactBytes(t *testing.T) {
 	store := newTestBlobStore(t)
 	envelope := []byte(`{"protocol_version":2}`)
@@ -113,6 +166,53 @@ func TestDeleteDropPointRejectsReservedAndNonDropPointIDs(t *testing.T) {
 				t.Fatal("DeleteDropPoint succeeded, want invalid id error")
 			}
 		})
+	}
+}
+
+type recordingMutationFileSystem struct {
+	mutationFileSystem
+	events        []string
+	failSyncPath  string
+	failSyncCount int
+}
+
+func (f *recordingMutationFileSystem) MkdirAll(path string, mode os.FileMode) error {
+	f.events = append(f.events, "mkdir "+path)
+	return f.mutationFileSystem.MkdirAll(path, mode)
+}
+
+func (f *recordingMutationFileSystem) Rename(oldPath string, newPath string) error {
+	f.events = append(f.events, "rename "+newPath)
+	return f.mutationFileSystem.Rename(oldPath, newPath)
+}
+
+func (f *recordingMutationFileSystem) RemoveAll(path string) error {
+	f.events = append(f.events, "remove-all "+path)
+	return f.mutationFileSystem.RemoveAll(path)
+}
+
+func (f *recordingMutationFileSystem) SyncDir(path string) error {
+	f.events = append(f.events, "sync "+path)
+	if path == f.failSyncPath && f.failSyncCount > 0 {
+		f.failSyncCount--
+		return errors.New("injected directory sync failure")
+	}
+	return f.mutationFileSystem.SyncDir(path)
+}
+
+func assertEventBefore(t *testing.T, events []string, first string, second string) {
+	t.Helper()
+	firstIndex, secondIndex := -1, -1
+	for i, event := range events {
+		if event == first && firstIndex == -1 {
+			firstIndex = i
+		}
+		if event == second && secondIndex == -1 {
+			secondIndex = i
+		}
+	}
+	if firstIndex == -1 || secondIndex == -1 || firstIndex >= secondIndex {
+		t.Fatalf("events = %v, want %q before %q", events, first, second)
 	}
 }
 

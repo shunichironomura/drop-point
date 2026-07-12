@@ -53,14 +53,43 @@ func ClassifyFailure(err error) FailureClass {
 	}
 }
 
+type mutationFileSystem interface {
+	MkdirAll(path string, mode os.FileMode) error
+	Chmod(path string, mode os.FileMode) error
+	OpenFile(path string, flag int, mode os.FileMode) (*os.File, error)
+	Rename(oldPath string, newPath string) error
+	Remove(path string) error
+	RemoveAll(path string) error
+	SyncDir(path string) error
+}
+
+type osMutationFileSystem struct{}
+
+func (osMutationFileSystem) MkdirAll(path string, mode os.FileMode) error {
+	return os.MkdirAll(path, mode)
+}
+func (osMutationFileSystem) Chmod(path string, mode os.FileMode) error {
+	return os.Chmod(path, mode)
+}
+func (osMutationFileSystem) OpenFile(path string, flag int, mode os.FileMode) (*os.File, error) {
+	return os.OpenFile(path, flag, mode)
+}
+func (osMutationFileSystem) Rename(oldPath string, newPath string) error {
+	return os.Rename(oldPath, newPath)
+}
+func (osMutationFileSystem) Remove(path string) error    { return os.Remove(path) }
+func (osMutationFileSystem) RemoveAll(path string) error { return os.RemoveAll(path) }
+func (osMutationFileSystem) SyncDir(path string) error   { return syncDir(path) }
+
 // Store writes encrypted payload and envelope blobs under dataDir/drop-points.
 type Store struct {
 	dataDir string
+	fs      mutationFileSystem
 }
 
 // New returns a filesystem blob store rooted at dataDir.
 func New(dataDir string) *Store {
-	return &Store{dataDir: dataDir}
+	return &Store{dataDir: dataDir, fs: osMutationFileSystem{}}
 }
 
 // WriteDrop atomically stores envelope.json and payload.bin for a drop point.
@@ -78,11 +107,15 @@ func (s *Store) WriteDrop(ctx context.Context, id string, envelope []byte, paylo
 		return droppoint.CommitDropResult{}, droppoint.ErrEnvelopeInvalid
 	}
 	dir := s.dropDir(id)
-	if err := os.MkdirAll(dir, dirMode); err != nil {
+	parentDir := filepath.Join(s.dataDir, DropPointsDirName)
+	if err := s.fs.MkdirAll(dir, dirMode); err != nil {
 		return droppoint.CommitDropResult{}, fmt.Errorf("create drop blob directory %q: %w", dir, err)
 	}
-	if err := os.Chmod(dir, dirMode); err != nil {
+	if err := s.fs.Chmod(dir, dirMode); err != nil {
 		return droppoint.CommitDropResult{}, fmt.Errorf("set drop blob directory permissions %q: %w", dir, err)
+	}
+	if err := s.fs.SyncDir(parentDir); err != nil {
+		return droppoint.CommitDropResult{}, fmt.Errorf("sync drop-points parent after directory creation: %w", err)
 	}
 	if err := contextError(ctx); err != nil {
 		return droppoint.CommitDropResult{}, err
@@ -97,26 +130,26 @@ func (s *Store) WriteDrop(ctx context.Context, id string, envelope []byte, paylo
 	envelopeFinal := filepath.Join(dir, EnvelopeFileName)
 	payloadFinal := filepath.Join(dir, PayloadFileName)
 	cleanup := func() {
-		_ = os.Remove(envelopeTemp)
-		_ = os.Remove(payloadTemp)
+		_ = s.fs.Remove(envelopeTemp)
+		_ = s.fs.Remove(payloadTemp)
 	}
 	defer cleanup()
 
-	if err := writeFileAtomicPart(ctx, envelopeTemp, envelope); err != nil {
+	if err := writeFileAtomicPart(ctx, s.fs, envelopeTemp, envelope); err != nil {
 		return droppoint.CommitDropResult{}, err
 	}
-	size, err := writeStreamAtomicPart(ctx, payloadTemp, payload, maxBytes)
+	size, err := writeStreamAtomicPart(ctx, s.fs, payloadTemp, payload, maxBytes)
 	if err != nil {
 		return droppoint.CommitDropResult{}, err
 	}
-	if err := os.Rename(payloadTemp, payloadFinal); err != nil {
+	if err := s.fs.Rename(payloadTemp, payloadFinal); err != nil {
 		return droppoint.CommitDropResult{}, fmt.Errorf("install payload blob: %w", err)
 	}
-	if err := os.Rename(envelopeTemp, envelopeFinal); err != nil {
-		_ = os.Remove(payloadFinal)
+	if err := s.fs.Rename(envelopeTemp, envelopeFinal); err != nil {
+		_ = s.fs.Remove(payloadFinal)
 		return droppoint.CommitDropResult{}, fmt.Errorf("install envelope blob: %w", err)
 	}
-	if err := syncDir(dir); err != nil {
+	if err := s.fs.SyncDir(dir); err != nil {
 		return droppoint.CommitDropResult{}, err
 	}
 	if err := contextError(ctx); err != nil {
@@ -173,8 +206,11 @@ func (s *Store) DeleteDropPoint(ctx context.Context, id string) error {
 	if err := validateID(id); err != nil {
 		return err
 	}
-	if err := os.RemoveAll(s.dropDir(id)); err != nil {
+	if err := s.fs.RemoveAll(s.dropDir(id)); err != nil {
 		return fmt.Errorf("delete drop point blobs %q: %w", id, err)
+	}
+	if err := s.fs.SyncDir(filepath.Join(s.dataDir, DropPointsDirName)); err != nil {
+		return fmt.Errorf("sync drop-points parent after deleting %q: %w", id, err)
 	}
 	return contextError(ctx)
 }
@@ -224,11 +260,11 @@ func (s *Store) dropDir(id string) string {
 	return filepath.Join(s.dataDir, DropPointsDirName, id)
 }
 
-func writeFileAtomicPart(ctx context.Context, path string, data []byte) error {
+func writeFileAtomicPart(ctx context.Context, fs mutationFileSystem, path string, data []byte) error {
 	if err := contextError(ctx); err != nil {
 		return err
 	}
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, fileMode)
+	file, err := fs.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, fileMode)
 	if err != nil {
 		return fmt.Errorf("create envelope temp file: %w", err)
 	}
@@ -255,11 +291,11 @@ func writeFileAtomicPart(ctx context.Context, path string, data []byte) error {
 	return nil
 }
 
-func writeStreamAtomicPart(ctx context.Context, path string, reader io.Reader, maxBytes int64) (int64, error) {
+func writeStreamAtomicPart(ctx context.Context, fs mutationFileSystem, path string, reader io.Reader, maxBytes int64) (int64, error) {
 	if err := contextError(ctx); err != nil {
 		return 0, err
 	}
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, fileMode)
+	file, err := fs.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, fileMode)
 	if err != nil {
 		return 0, fmt.Errorf("create payload temp file: %w", err)
 	}
