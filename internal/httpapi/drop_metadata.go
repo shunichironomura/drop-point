@@ -35,6 +35,8 @@ func HandleGetDropMetadata(deps Dependencies) http.HandlerFunc {
 				writeError(w, http.StatusNotFound, "drop_point_not_found", "drop point not found")
 			case errors.Is(err, droppoint.ErrDropPointExpired):
 				writeError(w, http.StatusGone, "drop_point_expired", "drop point has expired")
+			case errors.Is(err, droppoint.ErrDropPointFailed):
+				writeError(w, http.StatusGone, "drop_point_failed", "drop point is unavailable")
 			case errors.Is(err, droppoint.ErrDropAlreadyExists), errors.Is(err, droppoint.ErrDropPointClosed), errors.Is(err, droppoint.ErrDropPointNotOpen):
 				writeError(w, http.StatusConflict, "drop_point_unavailable", "drop point cannot accept files")
 			default:

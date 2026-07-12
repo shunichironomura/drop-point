@@ -210,6 +210,30 @@ func TestRepositoryCommitCloseExpireAndPickupTimestamp(t *testing.T) {
 	}
 }
 
+func TestRepositoryFailDropPointRecordsTerminalTimestamp(t *testing.T) {
+	repo := newTestRepository(t)
+	now := testNow()
+	dp := testDropPoint(t, "dp_failed", "drop_failed", "pick_failed", now)
+	insertTestDropPoint(t, repo, dp)
+	failedAt := now.Add(time.Second)
+	if err := repo.FailDropPoint(context.Background(), dp.ID, failedAt); err != nil {
+		t.Fatalf("FailDropPoint: %v", err)
+	}
+	if err := repo.FailDropPoint(context.Background(), dp.ID, now.Add(2*time.Second)); err != nil {
+		t.Fatalf("FailDropPoint retry: %v", err)
+	}
+	row, err := repo.FindDropPointByID(context.Background(), dp.ID)
+	if err != nil {
+		t.Fatalf("FindDropPointByID: %v", err)
+	}
+	if row.Status != droppoint.StatusFailed || row.FailedAt == nil || !row.FailedAt.Equal(failedAt) {
+		t.Fatalf("failed row = %+v", row)
+	}
+	if _, err := repo.FindOpenDropPointByDropTokenHash(context.Background(), dp.DropTokenHash, now); !errors.Is(err, droppoint.ErrDropPointFailed) {
+		t.Fatalf("FindOpen failed err = %v, want ErrDropPointFailed", err)
+	}
+}
+
 func TestRepositoryPickupTimestampSurvivesCloseAndExpiry(t *testing.T) {
 	now := testNow()
 	for _, terminalStatus := range []droppoint.Status{droppoint.StatusClosed, droppoint.StatusExpired} {

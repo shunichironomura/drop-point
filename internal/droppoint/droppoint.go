@@ -22,6 +22,7 @@ var (
 	ErrDropPointNotFound            = errors.New("drop point not found")
 	ErrDropPointExpired             = errors.New("drop point expired")
 	ErrDropPointClosed              = errors.New("drop point closed")
+	ErrDropPointFailed              = errors.New("drop point failed")
 	ErrDropPointNotOpen             = errors.New("drop point is not open")
 	ErrDropAlreadyExists            = errors.New("drop already exists")
 	ErrActiveDropPointQuotaExceeded = errors.New("active drop point quota exceeded")
@@ -49,6 +50,7 @@ type DropPoint struct {
 	ReceivingStartedAt *time.Time
 	FirstPickedUpAt    *time.Time
 	ClosedAt           *time.Time
+	FailedAt           *time.Time
 	ExpiresAt          time.Time
 	MaxBytes           int64
 }
@@ -161,6 +163,8 @@ func BeginReceiving(d DropPoint, now time.Time) (DropPoint, error) {
 		return d, ErrDropAlreadyExists
 	case StatusExpired:
 		return d, ErrDropPointExpired
+	case StatusFailed:
+		return d, ErrDropPointFailed
 	default:
 		return d, ErrDropPointNotOpen
 	}
@@ -179,6 +183,8 @@ func CommitReceived(d DropPoint, result CommitDropResult, now time.Time) (DropPo
 		return d, ErrDropPointClosed
 	case StatusExpired:
 		return d, ErrDropPointExpired
+	case StatusFailed:
+		return d, ErrDropPointFailed
 	default:
 		return d, ErrDropPointNotOpen
 	}
@@ -203,6 +209,9 @@ func AbortReceiving(d DropPoint, now time.Time) (DropPoint, error) {
 	if expired, ok := expireIfElapsed(d, now); ok {
 		return expired, ErrDropPointExpired
 	}
+	if d.Status == StatusFailed {
+		return d, ErrDropPointFailed
+	}
 	if d.Status != StatusReceiving {
 		return d, ErrDropPointNotOpen
 	}
@@ -222,6 +231,8 @@ func MarkPickedUp(d DropPoint, now time.Time) (DropPoint, error) {
 			d.FirstPickedUpAt = &pickedUpAt
 		}
 		return d, nil
+	case StatusFailed:
+		return d, ErrDropPointFailed
 	default:
 		return d, ErrDropPointNotOpen
 	}
@@ -240,12 +251,30 @@ func Close(d DropPoint, now time.Time) (DropPoint, error) {
 		return d, ErrDropPointExpired
 	}
 	if d.Status == StatusFailed {
-		return d, ErrDropPointNotOpen
+		return d, ErrDropPointFailed
 	}
 	d.Status = StatusClosed
 	d.ReceivingStartedAt = nil
 	closedAt := now.UTC()
 	d.ClosedAt = &closedAt
+	return d, nil
+}
+
+// Fail transitions a non-terminal drop point to failed after an unrecoverable
+// internal inconsistency or corruption. Repeating the event is idempotent.
+func Fail(d DropPoint, now time.Time) (DropPoint, error) {
+	switch d.Status {
+	case StatusFailed:
+		return d, nil
+	case StatusClosed:
+		return d, ErrDropPointClosed
+	case StatusExpired:
+		return d, ErrDropPointExpired
+	}
+	d.Status = StatusFailed
+	d.ReceivingStartedAt = nil
+	failedAt := now.UTC()
+	d.FailedAt = &failedAt
 	return d, nil
 }
 

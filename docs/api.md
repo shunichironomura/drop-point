@@ -63,10 +63,12 @@ PUT /api/drops/:drop_token
 Content-Type: multipart/form-data
 ```
 
-Parts:
+The request contains exactly two ordered parts:
 
-- `envelope`, `application/json`
-- `payload`, `application/octet-stream`
+1. `envelope`, `application/json`, at most 1048576 bytes (1 MiB);
+2. `payload`, `application/octet-stream`, at most the drop point's `max_bytes`.
+
+Reordered, missing, duplicated, or additional parts are rejected. The total request allowance is `max_bytes` plus the 1 MiB envelope cap plus 65536 bytes (64 KiB) reserved for multipart framing overhead; `max_bytes` itself applies only to payload bytes.
 
 The relay validates only the envelope shape and stores ciphertext. It does not decrypt metadata or payload. Failed or interrupted attempts are cleaned up and the slot returns to `open`; startup and periodic reconciliation retry interrupted finalization.
 
@@ -85,7 +87,7 @@ curl -sS https://drop.example.com/api/drop-points/$DROP_POINT_ID/status \
   -H "Authorization: Bearer $PICKUP_TOKEN"
 ```
 
-Response includes `status`, `display_name`, `encrypted_size`, `dropped_at`, `first_picked_up_at`, and `expires_at`.
+Response includes `status`, `display_name`, `encrypted_size`, `dropped_at`, `first_picked_up_at`, and `expires_at`. `failed` is a terminal status reserved for an internal inconsistency/corruption; sender metadata/drop, pickup, and close then return a terminal-unavailable response while cleanup retries ciphertext removal.
 
 ## Pickup encrypted payload
 

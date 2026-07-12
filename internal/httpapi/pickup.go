@@ -2,11 +2,13 @@ package httpapi
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"mime/multipart"
 	"net/http"
 	"net/textproto"
+	"os"
 	"time"
 
 	"github.com/shunichironomura/droppoint/internal/droppoint"
@@ -26,7 +28,12 @@ func HandlePickupPayload(deps Dependencies) http.HandlerFunc {
 			writePickupUnavailable(w, dp.Status)
 			return
 		}
-		if deps.BlobStore == nil || dp.EnvelopePath == "" || dp.PayloadPath == "" {
+		if dp.EnvelopePath == "" || dp.PayloadPath == "" {
+			failCorruptDropPoint(r.Context(), deps, id, "missing_blob_pointer")
+			writeError(w, http.StatusInternalServerError, "payload_unavailable", "stored payload is unavailable")
+			return
+		}
+		if deps.BlobStore == nil {
 			writeError(w, http.StatusInternalServerError, "payload_unavailable", "stored payload is unavailable")
 			return
 		}
@@ -39,11 +46,17 @@ func HandlePickupPayload(deps Dependencies) http.HandlerFunc {
 		}
 		envelope, err := deps.BlobStore.ReadEnvelope(r.Context(), dp.EnvelopePath)
 		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				failCorruptDropPoint(r.Context(), deps, id, "missing_envelope_blob")
+			}
 			writeError(w, http.StatusInternalServerError, "payload_unavailable", "stored envelope is unavailable")
 			return
 		}
 		payload, err := deps.BlobStore.OpenPayload(r.Context(), dp.PayloadPath)
 		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				failCorruptDropPoint(r.Context(), deps, id, "missing_payload_blob")
+			}
 			writeError(w, http.StatusInternalServerError, "payload_unavailable", "stored payload is unavailable")
 			return
 		}
@@ -60,6 +73,20 @@ func HandlePickupPayload(deps Dependencies) http.HandlerFunc {
 		if err := deps.Repository.MarkFirstPickedUp(finalizeCtx, id, deps.Now().UTC()); err != nil && deps.Logger != nil {
 			deps.Logger.Printf("event=pickup.timestamp_failed drop_point_id=%s error=%q", id, err)
 		}
+	}
+}
+
+func failCorruptDropPoint(parent context.Context, deps Dependencies, id string, reason string) {
+	ctx, cancel := pickupFinalizationContext(parent)
+	defer cancel()
+	if err := deps.Repository.FailDropPoint(ctx, id, deps.Now().UTC()); err != nil {
+		if deps.Logger != nil {
+			deps.Logger.Printf("event=drop.fail_transition_failed drop_point_id=%s reason=%s error=%q", id, reason, err)
+		}
+		return
+	}
+	if deps.Logger != nil {
+		deps.Logger.Printf("event=drop.failed_terminal drop_point_id=%s reason=%s", id, reason)
 	}
 }
 
@@ -111,6 +138,8 @@ func writePickupUnavailable(w http.ResponseWriter, status droppoint.Status) {
 		writeError(w, http.StatusGone, "drop_point_closed", "drop point is closed")
 	case droppoint.StatusExpired:
 		writeError(w, http.StatusGone, "drop_point_expired", "drop point has expired")
+	case droppoint.StatusFailed:
+		writeError(w, http.StatusGone, "drop_point_failed", "drop point failed internally")
 	default:
 		writeError(w, http.StatusConflict, "drop_not_ready", "drop point is not ready for pickup")
 	}

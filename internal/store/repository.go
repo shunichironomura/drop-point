@@ -21,9 +21,9 @@ const insertDropPointWithinQuotaSQL = `
 INSERT INTO drop_points (
   id, api_token_id, client_name, display_name, drop_token_hash, pickup_token_hash, status,
   payload_path, envelope_path, encrypted_size, created_at, dropped_at, receiving_started_at,
-  first_picked_up_at, closed_at, expires_at, max_bytes
+  first_picked_up_at, closed_at, failed_at, expires_at, max_bytes
 )
-SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
 WHERE (
   SELECT count(*)
   FROM drop_points
@@ -76,7 +76,7 @@ func (r *Repository) FindDropPointByID(ctx context.Context, id string) (*droppoi
 	dp, err := r.queryOne(ctx, `
 SELECT id, api_token_id, client_name, display_name, drop_token_hash, pickup_token_hash, status,
        payload_path, envelope_path, encrypted_size, created_at, dropped_at, receiving_started_at,
-       first_picked_up_at, closed_at, expires_at, max_bytes
+       first_picked_up_at, closed_at, failed_at, expires_at, max_bytes
 FROM drop_points
 WHERE id = ?`, id)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -94,7 +94,7 @@ func (r *Repository) FindDropPointByDropTokenHash(ctx context.Context, dropToken
 	dp, err := r.queryOne(ctx, `
 SELECT id, api_token_id, client_name, display_name, drop_token_hash, pickup_token_hash, status,
        payload_path, envelope_path, encrypted_size, created_at, dropped_at, receiving_started_at,
-       first_picked_up_at, closed_at, expires_at, max_bytes
+       first_picked_up_at, closed_at, failed_at, expires_at, max_bytes
 FROM drop_points
 WHERE drop_token_hash = ?`, dropTokenHash)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -203,6 +203,9 @@ func (r *Repository) ResetReceivingDrop(ctx context.Context, id string, now time
 		}
 		return droppoint.ErrDropPointExpired
 	}
+	if dp.Status == droppoint.StatusFailed {
+		return droppoint.ErrDropPointFailed
+	}
 	if dp.Status != droppoint.StatusReceiving {
 		return droppoint.ErrDropPointNotOpen
 	}
@@ -222,6 +225,36 @@ WHERE id = ? AND status = ?`, string(droppoint.StatusOpen), id, string(droppoint
 		return r.classifyMutationMiss(ctx, id, now)
 	}
 	return nil
+}
+
+// FailDropPoint marks a non-terminal row failed after an unrecoverable internal
+// inconsistency or corruption. Repeating it for an already failed row is safe.
+func (r *Repository) FailDropPoint(ctx context.Context, id string, now time.Time) error {
+	result, err := r.db.ExecContext(ctx, `
+UPDATE drop_points
+SET status = ?, receiving_started_at = NULL, failed_at = COALESCE(failed_at, ?)
+WHERE id = ? AND status IN (?, ?, ?)`,
+		string(droppoint.StatusFailed), formatTime(now), id,
+		string(droppoint.StatusOpen), string(droppoint.StatusReceiving), string(droppoint.StatusReady),
+	)
+	if err != nil {
+		return fmt.Errorf("fail drop point %q: %w", id, err)
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("fail drop point %q: rows affected: %w", id, err)
+	}
+	if changed == 1 {
+		return nil
+	}
+	dp, err := r.FindDropPointByID(ctx, id)
+	if err != nil {
+		return err
+	}
+	if dp.Status == droppoint.StatusFailed {
+		return nil
+	}
+	return errorForUnavailableStatus(dp.Status)
 }
 
 // MarkFirstPickedUp records first_picked_up_at after a successful response
@@ -244,8 +277,12 @@ WHERE id = ? AND status IN (?, ?, ?)`,
 	if changed == 1 {
 		return nil
 	}
-	if _, err := r.FindDropPointByID(ctx, id); err != nil {
+	dp, err := r.FindDropPointByID(ctx, id)
+	if err != nil {
 		return err
+	}
+	if dp.Status == droppoint.StatusFailed {
+		return droppoint.ErrDropPointFailed
 	}
 	return droppoint.ErrDropPointNotOpen
 }
@@ -267,7 +304,7 @@ func (r *Repository) CloseDropPoint(ctx context.Context, id string, now time.Tim
 		return droppoint.ErrDropPointExpired
 	}
 	if dp.Status == droppoint.StatusFailed {
-		return droppoint.ErrDropPointNotOpen
+		return droppoint.ErrDropPointFailed
 	}
 	res, err := r.db.ExecContext(ctx, `
 UPDATE drop_points
@@ -295,7 +332,7 @@ func (r *Repository) ExpireDropPoints(ctx context.Context, now time.Time) ([]dro
 	rows, err := r.db.QueryContext(ctx, `
 SELECT id, api_token_id, client_name, display_name, drop_token_hash, pickup_token_hash, status,
        payload_path, envelope_path, encrypted_size, created_at, dropped_at, receiving_started_at,
-       first_picked_up_at, closed_at, expires_at, max_bytes
+       first_picked_up_at, closed_at, failed_at, expires_at, max_bytes
 FROM drop_points
 WHERE status IN (?, ?, ?) AND expires_at <= ?`,
 		string(droppoint.StatusOpen), string(droppoint.StatusReceiving), string(droppoint.StatusReady), formatTime(now),
@@ -331,7 +368,7 @@ func (r *Repository) ReceivingDropPoints(ctx context.Context) ([]droppoint.DropP
 	return r.queryMany(ctx, `
 SELECT id, api_token_id, client_name, display_name, drop_token_hash, pickup_token_hash, status,
        payload_path, envelope_path, encrypted_size, created_at, dropped_at, receiving_started_at,
-       first_picked_up_at, closed_at, expires_at, max_bytes
+       first_picked_up_at, closed_at, failed_at, expires_at, max_bytes
 FROM drop_points
 WHERE status = ?
 ORDER BY id`, string(droppoint.StatusReceiving))
@@ -344,7 +381,7 @@ func (r *Repository) ReceivingDropPointsStartedBefore(ctx context.Context, cutof
 	return r.queryMany(ctx, `
 SELECT id, api_token_id, client_name, display_name, drop_token_hash, pickup_token_hash, status,
        payload_path, envelope_path, encrypted_size, created_at, dropped_at, receiving_started_at,
-       first_picked_up_at, closed_at, expires_at, max_bytes
+       first_picked_up_at, closed_at, failed_at, expires_at, max_bytes
 FROM drop_points
 WHERE status = ? AND (receiving_started_at IS NULL OR receiving_started_at <= ?)
 ORDER BY id`, string(droppoint.StatusReceiving), formatTime(cutoff))
@@ -357,7 +394,7 @@ func (r *Repository) TerminalDropPoints(ctx context.Context) ([]droppoint.DropPo
 	return r.queryMany(ctx, `
 SELECT id, api_token_id, client_name, display_name, drop_token_hash, pickup_token_hash, status,
        payload_path, envelope_path, encrypted_size, created_at, dropped_at, receiving_started_at,
-       first_picked_up_at, closed_at, expires_at, max_bytes
+       first_picked_up_at, closed_at, failed_at, expires_at, max_bytes
 FROM drop_points
 WHERE status IN (?, ?, ?)
 ORDER BY id`,
@@ -393,7 +430,7 @@ func (r *Repository) DropPointIDs(ctx context.Context) (map[string]struct{}, err
 
 // PurgeTerminalDropPoints deletes terminal metadata rows whose ciphertext file
 // pointers have already been cleared and whose terminal timestamp is older than
-// cutoff. Closed rows use closed_at; expired and failed rows use expires_at.
+// cutoff. Closed, expired, and failed rows use their respective terminal time.
 func (r *Repository) PurgeTerminalDropPoints(ctx context.Context, cutoff time.Time) (int, error) {
 	if err := r.ensureReady(); err != nil {
 		return 0, err
@@ -404,11 +441,14 @@ WHERE status IN (?, ?, ?)
   AND payload_path IS NULL
   AND envelope_path IS NULL
   AND (
-    (closed_at IS NOT NULL AND closed_at <= ?)
-    OR (closed_at IS NULL AND expires_at <= ?)
+    (status = ? AND closed_at IS NOT NULL AND closed_at <= ?)
+    OR (status = ? AND expires_at <= ?)
+    OR (status = ? AND failed_at IS NOT NULL AND failed_at <= ?)
   )`,
 		string(droppoint.StatusClosed), string(droppoint.StatusExpired), string(droppoint.StatusFailed),
-		formatTime(cutoff), formatTime(cutoff),
+		string(droppoint.StatusClosed), formatTime(cutoff),
+		string(droppoint.StatusExpired), formatTime(cutoff),
+		string(droppoint.StatusFailed), formatTime(cutoff),
 	)
 	if err != nil {
 		return 0, fmt.Errorf("purge terminal drop points: %w", err)
@@ -455,6 +495,8 @@ func errorForUnavailableStatus(status droppoint.Status) error {
 		return droppoint.ErrDropPointClosed
 	case droppoint.StatusExpired:
 		return droppoint.ErrDropPointExpired
+	case droppoint.StatusFailed:
+		return droppoint.ErrDropPointFailed
 	default:
 		return droppoint.ErrDropPointNotOpen
 	}
@@ -529,6 +571,7 @@ func dropPointInsertArgs(dp droppoint.DropPoint) []any {
 		nullTime(dp.ReceivingStartedAt),
 		nullTime(dp.FirstPickedUpAt),
 		nullTime(dp.ClosedAt),
+		nullTime(dp.FailedAt),
 		formatTime(dp.ExpiresAt),
 		dp.MaxBytes,
 	}
@@ -566,6 +609,7 @@ func scanDropPoint(row scanner) (*droppoint.DropPoint, error) {
 		receivingStartedAt sql.NullString
 		firstPickedUpAt    sql.NullString
 		closedAt           sql.NullString
+		failedAt           sql.NullString
 		expiresAt          string
 		status             string
 	)
@@ -585,6 +629,7 @@ func scanDropPoint(row scanner) (*droppoint.DropPoint, error) {
 		&receivingStartedAt,
 		&firstPickedUpAt,
 		&closedAt,
+		&failedAt,
 		&expiresAt,
 		&dp.MaxBytes,
 	); err != nil {
@@ -620,6 +665,10 @@ func scanDropPoint(row scanner) (*droppoint.DropPoint, error) {
 	dp.ClosedAt, err = parseNullTime(closedAt)
 	if err != nil {
 		return nil, fmt.Errorf("parse closed_at for %q: %w", dp.ID, err)
+	}
+	dp.FailedAt, err = parseNullTime(failedAt)
+	if err != nil {
+		return nil, fmt.Errorf("parse failed_at for %q: %w", dp.ID, err)
 	}
 	dp.ExpiresAt, err = parseTime(expiresAt)
 	if err != nil {

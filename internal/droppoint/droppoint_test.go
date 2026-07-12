@@ -138,6 +138,25 @@ func TestAbortReceivingReturnsToOpen(t *testing.T) {
 	}
 }
 
+func TestFailRecordsTerminalTimestamp(t *testing.T) {
+	now := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
+	dp := mustDropPoint(t, now)
+	failed, err := Fail(dp, now.Add(time.Second))
+	if err != nil {
+		t.Fatalf("Fail: %v", err)
+	}
+	if failed.Status != StatusFailed || failed.FailedAt == nil || !failed.FailedAt.Equal(now.Add(time.Second)) {
+		t.Fatalf("failed drop point = %+v", failed)
+	}
+	failedAgain, err := Fail(failed, now.Add(2*time.Second))
+	if err != nil {
+		t.Fatalf("Fail retry: %v", err)
+	}
+	if !failedAgain.FailedAt.Equal(*failed.FailedAt) {
+		t.Fatalf("failed_at changed: %v -> %v", failed.FailedAt, failedAgain.FailedAt)
+	}
+}
+
 func TestExpireNonTerminal(t *testing.T) {
 	now := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
 	dp := mustDropPoint(t, now)

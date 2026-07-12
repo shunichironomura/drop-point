@@ -157,6 +157,11 @@ func finalizeDropAttempt(parent context.Context, deps Dependencies, id string) d
 			return dropFinalizationResult{State: dropFinalizationOpen}
 		case droppoint.StatusClosed, droppoint.StatusExpired, droppoint.StatusFailed:
 			return dropFinalizationResult{State: dropFinalizationTerminal}
+		case droppoint.StatusReady:
+			if failErr := deps.Repository.FailDropPoint(ctx, id, deps.Now().UTC()); failErr != nil {
+				return dropFinalizationResult{State: dropFinalizationPending, ResetErr: errors.Join(err, failErr)}
+			}
+			return dropFinalizationResult{State: dropFinalizationTerminal}
 		default:
 			return dropFinalizationResult{State: dropFinalizationPending, ResetErr: err}
 		}
@@ -282,7 +287,7 @@ func writeDropAuthError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, droppoint.ErrDropTokenInvalid), errors.Is(err, droppoint.ErrDropPointNotFound):
 		writeError(w, http.StatusNotFound, "drop_point_not_found", "drop point not found")
-	case errors.Is(err, droppoint.ErrDropPointExpired), errors.Is(err, droppoint.ErrDropPointClosed):
+	case errors.Is(err, droppoint.ErrDropPointExpired), errors.Is(err, droppoint.ErrDropPointClosed), errors.Is(err, droppoint.ErrDropPointFailed):
 		writeError(w, http.StatusGone, "drop_point_unavailable", "drop point is unavailable")
 	case errors.Is(err, droppoint.ErrDropAlreadyExists), errors.Is(err, droppoint.ErrDropPointNotOpen):
 		writeError(w, http.StatusConflict, "drop_already_exists", "drop point cannot accept another drop")

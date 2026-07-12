@@ -6,7 +6,7 @@ import (
 	"fmt"
 )
 
-const schemaVersion = 1
+const schemaVersion = 2
 
 const schemaSQL = `
 CREATE TABLE IF NOT EXISTS drop_points (
@@ -25,6 +25,7 @@ CREATE TABLE IF NOT EXISTS drop_points (
   receiving_started_at TEXT,
   first_picked_up_at TEXT,
   closed_at TEXT,
+  failed_at TEXT,
   expires_at TEXT NOT NULL,
   max_bytes INTEGER NOT NULL
 );
@@ -44,7 +45,7 @@ CREATE TABLE IF NOT EXISTS api_tokens (
   disabled_at TEXT
 );
 
-PRAGMA user_version = 1;
+PRAGMA user_version = 2;
 `
 
 // Migrate creates or verifies the current schema. DropPoint is unreleased, so

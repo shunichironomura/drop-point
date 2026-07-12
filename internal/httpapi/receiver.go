@@ -54,12 +54,16 @@ func HandleCloseDropPoint(deps Dependencies) http.HandlerFunc {
 		if !ok {
 			return
 		}
-		if dp.Status == droppoint.StatusExpired {
+		if dp.Status == droppoint.StatusExpired || dp.Status == droppoint.StatusFailed {
 			if err := deleteStoredDropFiles(r.Context(), deps, dp); err != nil {
 				writeError(w, http.StatusInternalServerError, "drop_point_close_failed", "could not delete stored drop payload")
 				return
 			}
-			writeError(w, http.StatusGone, "drop_point_expired", "drop point has expired")
+			if dp.Status == droppoint.StatusFailed {
+				writeError(w, http.StatusGone, "drop_point_failed", "drop point failed internally")
+			} else {
+				writeError(w, http.StatusGone, "drop_point_expired", "drop point has expired")
+			}
 			return
 		}
 		if dropPointHasFiles(dp) && deps.BlobStore == nil {
@@ -74,6 +78,8 @@ func HandleCloseDropPoint(deps Dependencies) http.HandlerFunc {
 					return
 				}
 				writeError(w, http.StatusGone, "drop_point_expired", "drop point has expired")
+			case errors.Is(err, droppoint.ErrDropPointFailed):
+				writeError(w, http.StatusGone, "drop_point_failed", "drop point failed internally")
 			case errors.Is(err, droppoint.ErrDropPointNotFound), errors.Is(err, droppoint.ErrPickupTokenInvalid):
 				writeError(w, http.StatusNotFound, "drop_point_not_found", "drop point not found")
 			default:

@@ -47,6 +47,13 @@ func TestRepositoryLifecycleMutationsMatchDomainTransitions(t *testing.T) {
 			model: droppoint.AbortReceiving,
 		},
 		{
+			name: "fail",
+			repo: func(ctx context.Context, repo *Repository, id string, now time.Time) error {
+				return repo.FailDropPoint(ctx, id, now)
+			},
+			model: droppoint.Fail,
+		},
+		{
 			name: "mark_picked_up",
 			repo: func(ctx context.Context, repo *Repository, id string, now time.Time) error {
 				return repo.MarkFirstPickedUp(ctx, id, now)
@@ -146,6 +153,9 @@ func lifecycleDropPoint(t *testing.T, id string, status droppoint.Status, expire
 	case droppoint.StatusClosed:
 		closedAt := now.Add(-time.Minute)
 		dp.ClosedAt = &closedAt
+	case droppoint.StatusFailed:
+		failedAt := now.Add(-time.Minute)
+		dp.FailedAt = &failedAt
 	}
 	return dp
 }
@@ -178,6 +188,7 @@ func assertSameLifecycleState(t *testing.T, got droppoint.DropPoint, want droppo
 	assertTimePtrEqual(t, "receiving_started_at", got.ReceivingStartedAt, want.ReceivingStartedAt)
 	assertTimePtrEqual(t, "first_picked_up_at", got.FirstPickedUpAt, want.FirstPickedUpAt)
 	assertTimePtrEqual(t, "closed_at", got.ClosedAt, want.ClosedAt)
+	assertTimePtrEqual(t, "failed_at", got.FailedAt, want.FailedAt)
 }
 
 func assertTimePtrEqual(t *testing.T, name string, got *time.Time, want *time.Time) {

@@ -96,7 +96,8 @@ Required transition rules:
 - A failed or partial drop MUST NOT consume the single-use slot; the relay MUST delete attempt artifacts and return the drop point to `open` unless it has expired or failed terminally.
 - Durable storage failures, including disk-full or write-failure paths, MUST NOT mark a drop point `ready` and MUST NOT consume the single-use slot unless it has expired or failed terminally.
 - The relay MUST durably record when a `receiving` attempt begins. Startup reconciliation MUST recover every interrupted `receiving` attempt before serving requests, and periodic reconciliation MUST recover attempts older than the configured HTTP operation bound plus a conservative grace period.
-- `failed` is reserved for unrecoverable internal inconsistency or corruption. Malformed requests, interrupted uploads, and transient storage failures MUST remain recoverable and MUST NOT ordinarily transition to `failed`.
+- `failed` is reserved for unrecoverable internal inconsistency or corruption. Entering it MUST record `failed_at`; repeating the failure transition is idempotent. Malformed requests, interrupted uploads, and transient storage failures MUST remain recoverable and MUST NOT ordinarily transition to `failed`.
+- A ready row with missing blob pointers/files, or an ambiguous commit/finalization result that leaves metadata `ready` after attempt artifacts were removed, MUST transition to `failed`. Status polling reports `failed`; sender metadata/drop, pickup, and close treat it as terminal/unavailable. Cleanup reconciles its blobs and purges it by `failed_at` retention.
 - `open`, `receiving`, and `ready` MAY transition to `closed` by receiver request.
 - Any non-terminal status whose expiry time has elapsed MUST be treated as expired and MUST NOT accept new drops or pickups.
 - Pickup records `first_picked_up_at` and optionally `last_picked_up_at`; pickup MUST NOT be modeled as a terminal status.
@@ -252,6 +253,8 @@ The request body has exactly these crypto parts:
 Rules:
 
 - The drop token is the only sender-side authorization requirement.
+- Framing is normatively envelope-first and contains exactly two parts: `envelope`, then `payload`; reordered, missing, duplicated, or additional parts are malformed.
+- The envelope part MUST NOT exceed 1048576 bytes (1 MiB). The relay permits at most 65536 bytes (64 KiB) of multipart framing overhead beyond `max_bytes` plus that envelope cap.
 - The relay MUST reject drops for closed, expired, ready, failed, or unknown drop points.
 - Concurrent drop attempts for the same drop point MUST result in at most one committed drop.
 - `max_bytes` applies to the encrypted `payload` part.
@@ -365,6 +368,7 @@ A drop point record contains at least:
 | `receiving_started_at` | Internal start timestamp for recovery of interrupted receiving attempts. |
 | `first_picked_up_at` | First successful pickup timestamp. |
 | `closed_at` | Explicit close timestamp. |
+| `failed_at` | Terminal internal inconsistency/corruption timestamp. |
 | `expires_at` | TTL expiry timestamp. |
 | `max_bytes` | Max encrypted payload size for this drop point. |
 
@@ -389,6 +393,7 @@ CREATE TABLE drop_points (
   receiving_started_at TEXT,
   first_picked_up_at TEXT,
   closed_at TEXT,
+  failed_at TEXT,
   expires_at TEXT NOT NULL,
   max_bytes INTEGER NOT NULL
 );
@@ -689,10 +694,12 @@ Rules:
 
 ### 10.13 Multipart framing
 
-Drop requests use `multipart/form-data` with:
+Drop requests use `multipart/form-data` with exactly two ordered parts:
 
-- `envelope` (`application/json`): envelope JSON.
-- `payload` (`application/octet-stream`): raw encrypted payload bytes.
+1. `envelope` (`application/json`): envelope JSON, at most 1048576 bytes (1 MiB).
+2. `payload` (`application/octet-stream`): raw encrypted payload bytes.
+
+No other order or part is allowed. The request-size limit is the drop point's encrypted payload `max_bytes` plus the 1 MiB envelope cap plus 65536 bytes (64 KiB) reserved for multipart framing overhead; `max_bytes` itself still applies only to the payload part.
 
 Pickup responses use `multipart/mixed` with the same two logical parts.
 
