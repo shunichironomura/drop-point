@@ -99,7 +99,7 @@ from a timer or cron as an operational backstop.
 
 ## Logging guidance
 
-Application logs redact DropPoint token-bearing paths. Configure every proxy, CDN, and tunnel to redact or avoid logging:
+Application logs prefer matched route templates and redact capability-shaped values even when path delimiters are URL-encoded or malformed. Panic logs omit arbitrary recovered values, and the Python sender helper redacts its capability URL and response details on HTTP errors. Configure every proxy, CDN, and tunnel to redact or avoid logging:
 
 - `/drop/:drop_token`
 - `/api/drops/:drop_token`

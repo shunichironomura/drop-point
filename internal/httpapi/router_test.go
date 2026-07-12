@@ -68,10 +68,29 @@ func TestStatusRecorderUnwrapsOptionalInterfaces(t *testing.T) {
 	}
 }
 
+func TestRequestLoggingRedactsEncodedCapabilityPaths(t *testing.T) {
+	for _, path := range []string{
+		"/api%2Fdrops%2Fdrop_secret",
+		"/api%252Fdrops%252Fdrop_secret",
+		"/drop%2Fdrop_secret",
+	} {
+		t.Run(path, func(t *testing.T) {
+			var logs bytes.Buffer
+			handler := NewRouter(log.New(&logs, "", 0))
+			recorder := httptest.NewRecorder()
+			request := httptest.NewRequest(http.MethodGet, path, nil)
+			handler.ServeHTTP(recorder, request)
+			if strings.Contains(logs.String(), "drop_secret") {
+				t.Fatalf("logs leaked encoded capability path: %s", logs.String())
+			}
+		})
+	}
+}
+
 func TestRecoverPanics(t *testing.T) {
 	var logs bytes.Buffer
 	handler := RecoverPanics(log.New(&logs, "", 0), http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
-		panic("boom")
+		panic("drop_secret")
 	}))
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodGet, "/health", nil)
@@ -83,6 +102,9 @@ func TestRecoverPanics(t *testing.T) {
 	}
 	if !strings.Contains(logs.String(), "panic recovered") {
 		t.Fatalf("logs = %q, want panic recovery line", logs.String())
+	}
+	if strings.Contains(logs.String(), "drop_secret") {
+		t.Fatalf("panic log leaked recovered capability value: %s", logs.String())
 	}
 }
 
@@ -97,9 +119,13 @@ func (w *flushingResponseWriter) Flush() {
 
 func TestRedactTokenPath(t *testing.T) {
 	tests := map[string]string{
-		"/drop/drop_secret":      "/drop/:drop_token",
-		"/api/drops/drop_secret": "/api/drops/:drop_token",
-		"/health":                "/health",
+		"/drop/drop_secret":               "/drop/:drop_token",
+		"/api/drops/drop_secret":          "/api/drops/:drop_token",
+		"/api%2Fdrops%2Fdrop_secret":      "/api/drops/:drop_token",
+		"/api%252Fdrops%252Fdrop_secret":  "/api/drops/:drop_token",
+		"/api%2Fdrops%2Fdrop%5Fsecret%ZZ": "/:redacted-capability-path",
+		"/unmatched/drop_secret/more":     "/unmatched/:capability/more",
+		"/health":                         "/health",
 	}
 	for input, want := range tests {
 		if got := RedactTokenPath(input); got != want {
