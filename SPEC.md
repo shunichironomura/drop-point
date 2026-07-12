@@ -167,9 +167,10 @@ Request:
 
 Rules:
 
-- `ttl_seconds` MUST be positive and MUST NOT exceed the configured maximum TTL.
-- `max_bytes` MUST be positive and MUST NOT exceed the configured maximum encrypted payload size.
-- DropPoint is always single-use. If `single_use` is present, it MUST be `true`.
+- The body MUST be one non-null JSON object sent as `application/json`; media-type parameters such as `charset=utf-8` MAY be accepted.
+- Omitted `ttl_seconds` and `max_bytes` use the configured defaults. When present, either field MUST be a non-null positive integer and MUST NOT exceed its configured maximum; explicit zero and `null` are invalid.
+- DropPoint is always single-use. Omitted `single_use` means `true`; when present it MUST be the boolean `true`, and `false` or `null` are invalid.
+- `client_name` is optional. When present it MUST be a non-null, non-blank string of at most 128 UTF-8 bytes and MUST NOT contain Unicode control (`Cc`) or format (`Cf`) characters.
 - The authenticated API token's active-drop-point quota MUST be enforced.
 - The relay MUST generate a human-readable `display_name` for the drop point using an adjective-noun style such as `calm-otter`.
 - The display name is not a secret, is not an authentication factor, and MUST NOT replace capability-token checks.

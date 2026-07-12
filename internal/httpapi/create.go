@@ -1,15 +1,19 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/shunichironomura/droppoint/internal/dropname"
 	"github.com/shunichironomura/droppoint/internal/droppoint"
@@ -17,13 +21,31 @@ import (
 	"github.com/shunichironomura/droppoint/internal/token"
 )
 
-const maxCreateRequestBytes = 1 << 20
+const (
+	maxCreateRequestBytes  = 1 << 20
+	maxClientNameUTF8Bytes = 128
+)
+
+type presentValue[T any] struct {
+	Value   T
+	Present bool
+	Null    bool
+}
+
+func (v *presentValue[T]) UnmarshalJSON(data []byte) error {
+	v.Present = true
+	if bytes.Equal(bytes.TrimSpace(data), []byte("null")) {
+		v.Null = true
+		return nil
+	}
+	return json.Unmarshal(data, &v.Value)
+}
 
 type createDropPointRequest struct {
-	ClientName string `json:"client_name"`
-	TTLSeconds int    `json:"ttl_seconds"`
-	MaxBytes   int64  `json:"max_bytes"`
-	SingleUse  *bool  `json:"single_use"`
+	ClientName presentValue[string] `json:"client_name"`
+	TTLSeconds presentValue[int]    `json:"ttl_seconds"`
+	MaxBytes   presentValue[int64]  `json:"max_bytes"`
+	SingleUse  presentValue[bool]   `json:"single_use"`
 }
 
 type createDropPointResponse struct {
@@ -52,21 +74,13 @@ func HandleCreateDropPoint(deps Dependencies) http.HandlerFunc {
 			return
 		}
 
-		var req createDropPointRequest
-		decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxCreateRequestBytes))
-		decoder.DisallowUnknownFields()
-		if err := decoder.Decode(&req); err != nil {
-			writeError(w, http.StatusBadRequest, "invalid_json", "request body must be valid JSON")
+		mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+		if err != nil || mediaType != jsonContentType {
+			writeError(w, http.StatusUnsupportedMediaType, "content_type_invalid", "Content-Type must be application/json")
 			return
 		}
-		var trailing any
-		switch err := decoder.Decode(&trailing); {
-		case errors.Is(err, io.EOF):
-		case err == nil:
-			writeError(w, http.StatusBadRequest, "invalid_json", "request body must contain one JSON value")
-			return
-		default:
-			writeError(w, http.StatusBadRequest, "invalid_json", "request body must be valid JSON")
+		req, ok := decodeCreateRequest(w, r)
+		if !ok {
 			return
 		}
 
@@ -76,7 +90,7 @@ func HandleCreateDropPoint(deps Dependencies) http.HandlerFunc {
 		}
 
 		now := deps.Now().UTC()
-		created, err := createDropPoint(r.Context(), deps, authenticated.ID, authenticated.MaxActiveDropPoints, req.ClientName, time.Duration(ttlSeconds)*time.Second, maxBytes, now)
+		created, err := createDropPoint(r.Context(), deps, authenticated.ID, authenticated.MaxActiveDropPoints, req.ClientName.Value, time.Duration(ttlSeconds)*time.Second, maxBytes, now)
 		if err != nil {
 			if errors.Is(err, droppoint.ErrActiveDropPointQuotaExceeded) {
 				writeError(w, http.StatusTooManyRequests, "active_drop_point_quota_exceeded", "active drop point quota exceeded")
@@ -97,13 +111,58 @@ func HandleCreateDropPoint(deps Dependencies) http.HandlerFunc {
 	}
 }
 
+func decodeCreateRequest(w http.ResponseWriter, r *http.Request) (createDropPointRequest, bool) {
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxCreateRequestBytes))
+	var raw json.RawMessage
+	if err := decoder.Decode(&raw); err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			writeError(w, http.StatusRequestEntityTooLarge, "request_too_large", "create request exceeds the size limit")
+			return createDropPointRequest{}, false
+		}
+		writeError(w, http.StatusBadRequest, "invalid_json", "request body must be a non-null JSON object")
+		return createDropPointRequest{}, false
+	}
+	var trailing any
+	switch err := decoder.Decode(&trailing); {
+	case errors.Is(err, io.EOF):
+	case err == nil:
+		writeError(w, http.StatusBadRequest, "invalid_json", "request body must contain one JSON value")
+		return createDropPointRequest{}, false
+	default:
+		writeError(w, http.StatusBadRequest, "invalid_json", "request body must be valid JSON")
+		return createDropPointRequest{}, false
+	}
+	trimmed := bytes.TrimSpace(raw)
+	if !utf8.Valid(trimmed) || len(trimmed) == 0 || trimmed[0] != '{' {
+		writeError(w, http.StatusBadRequest, "invalid_json", "request body must be a non-null JSON object")
+		return createDropPointRequest{}, false
+	}
+	requestDecoder := json.NewDecoder(bytes.NewReader(trimmed))
+	requestDecoder.DisallowUnknownFields()
+	var req createDropPointRequest
+	if err := requestDecoder.Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_json", "request body must use the documented field types")
+		return createDropPointRequest{}, false
+	}
+	return req, true
+}
+
 func validateCreateRequest(w http.ResponseWriter, deps Dependencies, req createDropPointRequest) (int, int64, bool) {
-	if req.SingleUse != nil && !*req.SingleUse {
-		writeError(w, http.StatusBadRequest, "single_use_required", "drop points are always single-use")
+	if req.ClientName.Null || (req.ClientName.Present && !validClientName(req.ClientName.Value)) {
+		writeError(w, http.StatusBadRequest, "client_name_invalid", "client_name must be a non-blank string of at most 128 UTF-8 bytes without control characters")
 		return 0, 0, false
 	}
-	ttlSeconds := req.TTLSeconds
-	if ttlSeconds == 0 {
+	if req.SingleUse.Null || (req.SingleUse.Present && !req.SingleUse.Value) {
+		writeError(w, http.StatusBadRequest, "single_use_required", "single_use must be true when present")
+		return 0, 0, false
+	}
+	if req.TTLSeconds.Null {
+		writeError(w, http.StatusBadRequest, "ttl_seconds_invalid", "ttl_seconds must be a positive integer when present")
+		return 0, 0, false
+	}
+	ttlSeconds := req.TTLSeconds.Value
+	if !req.TTLSeconds.Present {
 		ttlSeconds = deps.Config.DefaultTTLSeconds
 	}
 	if ttlSeconds <= 0 {
@@ -114,8 +173,12 @@ func validateCreateRequest(w http.ResponseWriter, deps Dependencies, req createD
 		writeError(w, http.StatusBadRequest, "ttl_seconds_too_large", "ttl_seconds exceeds the configured maximum")
 		return 0, 0, false
 	}
-	maxBytes := req.MaxBytes
-	if maxBytes == 0 {
+	if req.MaxBytes.Null {
+		writeError(w, http.StatusBadRequest, "max_bytes_invalid", "max_bytes must be a positive integer when present")
+		return 0, 0, false
+	}
+	maxBytes := req.MaxBytes.Value
+	if !req.MaxBytes.Present {
 		maxBytes = deps.Config.DefaultMaxBytes
 	}
 	if maxBytes <= 0 {
@@ -127,6 +190,18 @@ func validateCreateRequest(w http.ResponseWriter, deps Dependencies, req createD
 		return 0, 0, false
 	}
 	return ttlSeconds, maxBytes, true
+}
+
+func validClientName(value string) bool {
+	if value == "" || !utf8.ValidString(value) || len(value) > maxClientNameUTF8Bytes || strings.TrimSpace(value) == "" {
+		return false
+	}
+	for _, r := range value {
+		if unicode.IsControl(r) || unicode.In(r, unicode.Cf) {
+			return false
+		}
+	}
+	return true
 }
 
 func createDropPoint(ctx context.Context, deps Dependencies, apiTokenID string, maxActive int, clientName string, ttl time.Duration, maxBytes int64, now time.Time) (droppoint.CreateDropPointResponse, error) {
