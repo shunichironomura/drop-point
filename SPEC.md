@@ -423,7 +423,7 @@ The default local storage layout is:
 
 `payload.bin` and `envelope.json` are protocol/storage terms and SHOULD keep these names.
 
-The local implementation MUST create the configured data directory and `drop-points/` subdirectory with owner-only permissions. SQLite database files and stored blob files SHOULD also use restrictive owner-only permissions.
+The local implementation MUST create the configured data directory and `drop-points/` subdirectory with owner-only permissions. The SQLite main database, live WAL/shared-memory sidecars, stored blob files, and per-drop directories MUST use restrictive owner-only permissions. The database mode MUST be established before WAL mode can create sidecars.
 
 Filesystem blob writes MUST be atomic from the repository point of view: write temporary files, flush file contents where supported, rename into place only after successful writes, and flush the containing directory where supported. Creating a per-drop-point directory MUST be followed by flushing the parent `drop-points/` directory before metadata can commit `ready`; removing a per-drop-point directory MUST be followed by flushing that parent before file pointers are cleared. Close and expiry cleanup MUST be safe to repeat when blob directories or files are already gone. Terminal rows are the durable cleanup queue: every cleanup run MUST reconcile all `closed`, `expired`, and `failed` rows with receiver-owned blob storage, including terminal rows whose file pointers were already cleared. Cleanup MUST also remove receiver-owned drop-point blob directories for which no metadata row exists. A deletion or pointer-clear failure MUST leave work retryable by a later cleanup run.
 

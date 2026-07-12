@@ -125,6 +125,49 @@ func TestOpenCreatesRestrictiveDatabaseFile(t *testing.T) {
 	}
 }
 
+func TestOpenCreatesRestrictiveLiveWALSidecars(t *testing.T) {
+	db := openTestDB(t)
+	defer db.Close()
+	if _, err := db.SQLDB().ExecContext(context.Background(), `INSERT INTO api_tokens (id, secret_hash, created_at) VALUES ('mode-test', 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', '2026-07-01T12:00:00.000000000Z')`); err != nil {
+		t.Fatalf("insert WAL row: %v", err)
+	}
+	for _, path := range []string{db.Path(), db.Path() + "-wal", db.Path() + "-shm"} {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatalf("stat live SQLite file %s: %v", path, err)
+		}
+		if got := info.Mode().Perm(); got != 0o600 {
+			t.Fatalf("mode(%s) = %o, want 600", path, got)
+		}
+	}
+}
+
+func TestOpenRestrictsExistingDatabaseBeforeWALSetup(t *testing.T) {
+	dataDir := filepath.Join(t.TempDir(), "data")
+	if err := config.EnsureDataDir(dataDir); err != nil {
+		t.Fatalf("EnsureDataDir: %v", err)
+	}
+	path := filepath.Join(dataDir, databaseFileName)
+	if err := os.WriteFile(path, nil, 0o666); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if err := os.Chmod(path, 0o666); err != nil {
+		t.Fatalf("Chmod: %v", err)
+	}
+	db, err := Open(context.Background(), dataDir)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer db.Close()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("Stat: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("database mode = %o, want 600", got)
+	}
+}
+
 func TestOpenTreatsQuestionMarkAsPathLiteral(t *testing.T) {
 	dataDir := filepath.Join(t.TempDir(), "data?literal")
 	if err := config.EnsureDataDir(dataDir); err != nil {
