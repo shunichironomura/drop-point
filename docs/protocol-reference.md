@@ -20,6 +20,12 @@ Exact protocol byte strings:
 
 Receivers must reject malformed envelopes, AES-GCM authentication failures, all-zero/low-order X25519 inputs, manifest size-sum mismatch, hostile or noncanonical filenames, unsafe MIME types, and normalization/lowercase comparison-key collisions. Bundles contain at most 1000 manifest entries; canonical names are NFC and at most 240 UTF-8 bytes, and MIME values are at most 255 UTF-8 bytes. `testdata/filename-policy.json` is the normative cross-language filename fixture.
 
+## Cross-language coverage status
+
+The existing low-maintenance Go CI validates the protocol implementation, deterministic vectors, negative cases, manifest bounds, and the normative `testdata/filename-policy.json` cases. The browser and Python implementations consume the same documented policy and can be checked locally with `node --check web/drop-page/app.js` and `ruff check scripts`.
+
+Executable browser/Python vector suites, browser E2E automation, new JavaScript package metadata/lockfiles, browser downloads, and a dedicated Python test/type environment are intentionally deferred while DropPoint is unreleased and has no supported client ecosystem. This is an accepted coverage risk, not a claim that substring/source checks provide behavioral coverage. Add those suites when supported clients or regression history justify their maintenance cost.
+
 ## Positive deterministic vectors
 
 ```json
