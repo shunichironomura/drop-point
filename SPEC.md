@@ -466,13 +466,14 @@ droppoint cleanup expired --config ./config.json
 Configuration rules:
 
 - API tokens MUST be managed in SQLite via the token CLI.
-- `base_url` MUST include scheme and host and MUST NOT include query or fragment components.
+- `base_url` MUST be an HTTP(S) root origin with scheme and host and MUST NOT include user info, a non-root path prefix, query, or fragment. External path-prefix hosting is not supported.
 - Sender-facing drop pages MUST be served to browsers over HTTPS, except for browser-recognized local secure contexts such as `localhost`.
 - LAN-IP-over-HTTP is not supported for browser encryption because WebCrypto requires a secure context.
 - The canonical system data directory is `/var/lib/droppoint`; local development configurations MAY use a project-local data directory.
 - The shipped default encrypted payload limit is 52428800 bytes, and the shipped maximum encrypted payload limit is 52428800 bytes.
-- `read_timeout_seconds`, `write_timeout_seconds`, and `cleanup_interval_seconds` MUST be positive. Defaults SHOULD allow slow mobile uploads up to the configured payload limit.
-- `terminal_retention_seconds` MUST be positive. The local implementation MUST purge terminal SQLite rows older than this retention window after any ciphertext pointers for those rows have been cleared.
+- Every configured duration in seconds MUST be between 1 and 31536000 (365 days), inclusive, before conversion or duration arithmetic. Defaults SHOULD allow slow mobile uploads up to the configured payload limit.
+- `default_max_bytes` and `max_bytes` MUST be between 1 and 1099511627776 (1 TiB), inclusive; request-limit additions MUST still use checked arithmetic. The shipped maximum remains 52428800 bytes.
+- The local implementation MUST purge terminal SQLite rows older than `terminal_retention_seconds` after any ciphertext pointers for those rows have been cleared.
 - Plaintext API tokens MUST NOT be stored.
 - `api_tokens.secret_hash` rows use `sha256:<lowercase-hex-sha256>` for high-entropy random API tokens.
 - `token add` MUST generate a high-entropy plaintext API token, store only the hash, and print the plaintext token exactly once.
@@ -876,7 +877,7 @@ Recommended English UI copy:
 
 ## 17. Deployment requirements
 
-DropPoint is deployment-neutral. It may run behind a reverse proxy, tunnel, CDN, or direct TLS termination as long as these externally visible requirements hold:
+The reference `droppoint` binary serves plain HTTP and does not provide certificate/key or built-in TLS configuration. Public/browser deployments MUST use an external TLS terminator such as a reverse proxy, tunnel, CDN, or container ingress. Localhost HTTP remains supported through browser secure-context exceptions. These externally visible requirements hold:
 
 - `/drop/:drop_token` is reachable by sender browsers.
 - `/api/drops/:drop_token` is reachable by sender browsers for metadata lookup and encrypted upload.
