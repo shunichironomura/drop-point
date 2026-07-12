@@ -18,6 +18,7 @@ from urllib import error, parse, request
 import qrcode
 
 from drop_point_protocol import b64u_encode, generate_x25519_keypair
+from drop_point_storage import atomic_write_private_json
 
 DEFAULT_TOKEN_ENV = "DROPPOINT_API_TOKEN"
 DEFAULT_STATE_PATH = Path(".local/droppoint-mobile-test-state.json")
@@ -70,7 +71,7 @@ def main() -> int:
         created = create_drop_point(args, base_url, api_token)
         drop_link_with_fragment = append_sender_fragment(created["drop_link"], public_key_raw, created["expires_at"])
         state = receiver_state(base_url, created, private_key_raw, public_key_raw, drop_link_with_fragment)
-        write_private_state(args.state, state)
+        atomic_write_private_json(args.state, state)
 
         print(f"State written to: {args.state}")
         print(f"Drop name: {created['display_name']}")
@@ -152,15 +153,6 @@ def receiver_state(
         "expires_at": created["expires_at"],
         "max_bytes": created["max_bytes"],
     }
-
-
-def write_private_state(path: Path, state: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
-    fd = os.open(path, flags, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as file:
-        json.dump(state, file, indent=2)
-        file.write("\n")
 
 
 def make_qr(data: str) -> qrcode.QRCode:

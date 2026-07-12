@@ -94,7 +94,7 @@ verify that the page shows the printed drop name, choose files, and submit the d
   --wait
 ```
 
-The decrypted files are written under `.local/browser-test/output`.
+The decrypted files are atomically published in an owner-only bundle directory under `.local/browser-test/output`. A durable receipt in that directory lets a retry verify the same bundle and safely resume remote close.
 
 ## 3. Receiver: create a drop point
 
@@ -131,6 +131,6 @@ The sender script encrypts the manifest and payload locally and uploads only cip
   --wait
 ```
 
-The decrypted file is written under `.local/local-test/output`.
+The decrypted file is atomically published in a `bundle-dp_...` directory under `.local/local-test/output` together with a durable identity receipt.
 
-By default pickup closes the remote drop point after decrypted files are written locally and removes `recipient_private_key` from the state file. Use `--no-close` to keep it open for repeated pickup testing.
+By default pickup closes the remote drop point only after the complete bundle and updated private receiver state have been fsynced, then atomically removes `recipient_private_key` from the state file. If interrupted, rerunning the command verifies the installed receipt and resumes close without overwriting files. Use `--no-close` to keep it open for repeated pickup testing.

@@ -219,32 +219,35 @@ This document lists repository files in dependency-first review order. Local scr
 71. `scripts/drop_point_protocol.py`
     - Shared Python DropPoint protocol helpers for local receiver/sender simulations.
 
-72. `scripts/droppoint-receiver.py`
-    - Python receiver simulation for create, status, pickup, decrypt, and close.
+72. `scripts/drop_point_storage.py`
+    - Shared owner-only atomic state writer and all-or-nothing durable receiver bundle installer with identity receipts.
 
-73. `scripts/droppoint-qr.py`
-    - Python public-endpoint mobile test helper for creating a drop point, saving receiver state, and rendering the sender link as a QR code.
+73. `scripts/droppoint-receiver.py`
+    - Python receiver simulation for create, status, durable bundle pickup/decrypt/install, retry-safe close, and private-key removal.
 
-74. `scripts/droppoint-sender.py`
+74. `scripts/droppoint-qr.py`
+    - Python public-endpoint mobile test helper for creating a drop point, durably saving receiver state, and rendering the sender link as a QR code.
+
+75. `scripts/droppoint-sender.py`
     - Python sender simulation for fragment parsing, browser-equivalent encryption, and encrypted drop upload.
 
-75. `docs/configuration.md`
+76. `docs/configuration.md`
     - Operator configuration reference and SQLite token CLI guidance.
 
-76. `docs/api.md`
+77. `docs/api.md`
     - Receiver API, sender metadata, and encrypted drop framing reference with curl examples.
 
-77. `docs/deployment.md`
+78. `docs/deployment.md`
     - Build, systemd, token-management, reverse-proxy/tunnel, secure-context, request-size, and log-redaction guidance.
 
-78. `docs/client-integration.md`
+79. `docs/client-integration.md`
     - Generic receiver/client integration boundary and durable local storage ordering guidance.
 
-79. `docs/local-testing.md`
+80. `docs/local-testing.md`
     - Local testing workflow using the token CLI plus Python receiver and sender simulation scripts.
 
-80. `README.md`
+81. `README.md`
     - Product overview, local development flow, security model, and operator entry points.
 
-81. `CODE_REVIEW_ORDER.md`
+82. `CODE_REVIEW_ORDER.md`
     - This review-order index. Update it whenever repository files change.
