@@ -14,7 +14,7 @@ type authenticatedAPIToken struct {
 	MaxActiveDropPoints int
 }
 
-func authenticateAPIToken(ctx context.Context, repository *store.Repository, defaultMaxActiveDropPoints int, authorization string) (authenticatedAPIToken, bool, error) {
+func authenticateAPIToken(ctx context.Context, repository Repository, defaultMaxActiveDropPoints int, authorization string) (authenticatedAPIToken, bool, error) {
 	plaintext, ok := bearerToken(authorization)
 	if !ok {
 		return authenticatedAPIToken{}, false, nil

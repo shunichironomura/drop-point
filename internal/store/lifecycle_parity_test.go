@@ -175,6 +175,7 @@ func assertSameLifecycleState(t *testing.T, got droppoint.DropPoint, want droppo
 		t.Fatalf("payload fields mismatch: got=%+v want=%+v", got, want)
 	}
 	assertTimePtrEqual(t, "dropped_at", got.DroppedAt, want.DroppedAt)
+	assertTimePtrEqual(t, "receiving_started_at", got.ReceivingStartedAt, want.ReceivingStartedAt)
 	assertTimePtrEqual(t, "first_picked_up_at", got.FirstPickedUpAt, want.FirstPickedUpAt)
 	assertTimePtrEqual(t, "closed_at", got.ClosedAt, want.ClosedAt)
 }

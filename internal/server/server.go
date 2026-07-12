@@ -51,6 +51,15 @@ func New(ctx context.Context, cfg config.Config, logger *log.Logger) (*Server, e
 
 	repository := store.NewRepository(db.SQLDB())
 	blobStore := blobstore.New(cfg.DataDir)
+	cleanupService := newCleanupService(cfg, repository, blobStore)
+	startupResult, err := cleanupService.ReconcileStartup(ctx)
+	if err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("reconcile interrupted drops: %w", err)
+	}
+	if cleanupResultHasWork(startupResult) {
+		logger.Printf("startup cleanup recovered_receiving=%d expired_drop_points=%d deleted_payloads=%d deleted_orphans=%d purged_rows=%d", startupResult.RecoveredReceiving, startupResult.ExpiredDropPoints, startupResult.DeletedPayloads, startupResult.DeletedOrphans, startupResult.PurgedRows)
+	}
 	handler := httpapi.NewRouterWithDependencies(httpapi.Dependencies{Config: cfg, Repository: repository, BlobStore: blobStore, Logger: logger})
 	return &Server{
 		Config:     cfg,
@@ -116,11 +125,7 @@ func (s *Server) startCleanupLoop(ctx context.Context) <-chan struct{} {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		service := cleanup.Service{
-			Repository:        s.Repository,
-			BlobStore:         s.BlobStore,
-			TerminalRetention: secondsDuration(s.Config.TerminalRetentionSeconds),
-		}
+		service := newCleanupService(s.Config, s.Repository, s.BlobStore)
 		run := func() {
 			runCtx, cancel := context.WithTimeout(ctx, cleanupOperationTimeout)
 			result, err := service.Expire(runCtx)
@@ -129,8 +134,8 @@ func (s *Server) startCleanupLoop(ctx context.Context) <-chan struct{} {
 				s.logger.Printf("cleanup error: %v", err)
 				return
 			}
-			if result.ExpiredDropPoints != 0 || result.DeletedPayloads != 0 || result.DeletedOrphans != 0 || result.PurgedRows != 0 {
-				s.logger.Printf("cleanup expired_drop_points=%d deleted_payloads=%d deleted_orphans=%d purged_rows=%d", result.ExpiredDropPoints, result.DeletedPayloads, result.DeletedOrphans, result.PurgedRows)
+			if cleanupResultHasWork(result) {
+				s.logger.Printf("cleanup recovered_receiving=%d expired_drop_points=%d deleted_payloads=%d deleted_orphans=%d purged_rows=%d", result.RecoveredReceiving, result.ExpiredDropPoints, result.DeletedPayloads, result.DeletedOrphans, result.PurgedRows)
 			}
 		}
 
@@ -147,6 +152,20 @@ func (s *Server) startCleanupLoop(ctx context.Context) <-chan struct{} {
 		}
 	}()
 	return done
+}
+
+func newCleanupService(cfg config.Config, repository *store.Repository, blobs *blobstore.Store) cleanup.Service {
+	staleAfter := max(secondsDuration(cfg.ReadTimeoutSeconds), secondsDuration(cfg.WriteTimeoutSeconds)) + cleanupOperationTimeout
+	return cleanup.Service{
+		Repository:          repository,
+		BlobStore:           blobs,
+		TerminalRetention:   secondsDuration(cfg.TerminalRetentionSeconds),
+		ReceivingStaleAfter: staleAfter,
+	}
+}
+
+func cleanupResultHasWork(result cleanup.Result) bool {
+	return result.RecoveredReceiving != 0 || result.ExpiredDropPoints != 0 || result.DeletedPayloads != 0 || result.DeletedOrphans != 0 || result.PurgedRows != 0
 }
 
 func secondsDuration(seconds int) time.Duration {

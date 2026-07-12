@@ -20,10 +20,10 @@ const sqliteTimeFormat = "2006-01-02T15:04:05.000000000Z07:00"
 const insertDropPointWithinQuotaSQL = `
 INSERT INTO drop_points (
   id, api_token_id, client_name, display_name, drop_token_hash, pickup_token_hash, status,
-  payload_path, envelope_path, encrypted_size, created_at, dropped_at,
+  payload_path, envelope_path, encrypted_size, created_at, dropped_at, receiving_started_at,
   first_picked_up_at, closed_at, expires_at, max_bytes
 )
-SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
 WHERE (
   SELECT count(*)
   FROM drop_points
@@ -75,7 +75,7 @@ func (r *Repository) CreateDropPointWithinQuota(ctx context.Context, dp droppoin
 func (r *Repository) FindDropPointByID(ctx context.Context, id string) (*droppoint.DropPoint, error) {
 	dp, err := r.queryOne(ctx, `
 SELECT id, api_token_id, client_name, display_name, drop_token_hash, pickup_token_hash, status,
-       payload_path, envelope_path, encrypted_size, created_at, dropped_at,
+       payload_path, envelope_path, encrypted_size, created_at, dropped_at, receiving_started_at,
        first_picked_up_at, closed_at, expires_at, max_bytes
 FROM drop_points
 WHERE id = ?`, id)
@@ -93,7 +93,7 @@ WHERE id = ?`, id)
 func (r *Repository) FindDropPointByDropTokenHash(ctx context.Context, dropTokenHash string, now time.Time) (*droppoint.DropPoint, error) {
 	dp, err := r.queryOne(ctx, `
 SELECT id, api_token_id, client_name, display_name, drop_token_hash, pickup_token_hash, status,
-       payload_path, envelope_path, encrypted_size, created_at, dropped_at,
+       payload_path, envelope_path, encrypted_size, created_at, dropped_at, receiving_started_at,
        first_picked_up_at, closed_at, expires_at, max_bytes
 FROM drop_points
 WHERE drop_token_hash = ?`, dropTokenHash)
@@ -152,9 +152,9 @@ func (r *Repository) AuthorizePickupToken(ctx context.Context, id string, pickup
 func (r *Repository) BeginReceivingDrop(ctx context.Context, id string, now time.Time) error {
 	result, err := r.db.ExecContext(ctx, `
 UPDATE drop_points
-SET status = ?
+SET status = ?, receiving_started_at = ?
 WHERE id = ? AND status = ? AND expires_at > ?`,
-		string(droppoint.StatusReceiving), id, string(droppoint.StatusOpen), formatTime(now),
+		string(droppoint.StatusReceiving), formatTime(now), id, string(droppoint.StatusOpen), formatTime(now),
 	)
 	if err != nil {
 		return fmt.Errorf("begin receiving drop %q: %w", id, err)
@@ -176,7 +176,7 @@ func (r *Repository) CommitReceivedDrop(ctx context.Context, id string, result d
 	}
 	res, err := r.db.ExecContext(ctx, `
 UPDATE drop_points
-SET status = ?, envelope_path = ?, payload_path = ?, encrypted_size = ?, dropped_at = ?
+SET status = ?, envelope_path = ?, payload_path = ?, encrypted_size = ?, dropped_at = ?, receiving_started_at = NULL
 WHERE id = ? AND status = ? AND expires_at > ?`,
 		string(droppoint.StatusReady), result.EnvelopePath, result.PayloadPath, result.EncryptedSize, formatTime(now),
 		id, string(droppoint.StatusReceiving), formatTime(now),
@@ -206,12 +206,20 @@ func (r *Repository) ResetReceivingDrop(ctx context.Context, id string, now time
 	if dp.Status != droppoint.StatusReceiving {
 		return droppoint.ErrDropPointNotOpen
 	}
-	_, err = r.db.ExecContext(ctx, `
+	result, err := r.db.ExecContext(ctx, `
 UPDATE drop_points
-SET status = ?, payload_path = NULL, envelope_path = NULL, encrypted_size = NULL, dropped_at = NULL
+SET status = ?, payload_path = NULL, envelope_path = NULL, encrypted_size = NULL, dropped_at = NULL,
+    receiving_started_at = NULL
 WHERE id = ? AND status = ?`, string(droppoint.StatusOpen), id, string(droppoint.StatusReceiving))
 	if err != nil {
 		return fmt.Errorf("reset receiving drop %q: %w", id, err)
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("reset receiving drop %q: rows affected: %w", id, err)
+	}
+	if changed != 1 {
+		return r.classifyMutationMiss(ctx, id, now)
 	}
 	return nil
 }
@@ -255,7 +263,7 @@ func (r *Repository) CloseDropPoint(ctx context.Context, id string, now time.Tim
 	}
 	res, err := r.db.ExecContext(ctx, `
 UPDATE drop_points
-SET status = ?, closed_at = ?
+SET status = ?, closed_at = ?, receiving_started_at = NULL
 WHERE id = ? AND status IN (?, ?, ?) AND expires_at > ?`,
 		string(droppoint.StatusClosed), formatTime(now), id,
 		string(droppoint.StatusOpen), string(droppoint.StatusReceiving), string(droppoint.StatusReady), formatTime(now),
@@ -278,7 +286,7 @@ WHERE id = ? AND status IN (?, ?, ?) AND expires_at > ?`,
 func (r *Repository) ExpireDropPoints(ctx context.Context, now time.Time) ([]droppoint.DropPoint, error) {
 	rows, err := r.db.QueryContext(ctx, `
 SELECT id, api_token_id, client_name, display_name, drop_token_hash, pickup_token_hash, status,
-       payload_path, envelope_path, encrypted_size, created_at, dropped_at,
+       payload_path, envelope_path, encrypted_size, created_at, dropped_at, receiving_started_at,
        first_picked_up_at, closed_at, expires_at, max_bytes
 FROM drop_points
 WHERE status IN (?, ?, ?) AND expires_at <= ?`,
@@ -309,13 +317,38 @@ WHERE status IN (?, ?, ?) AND expires_at <= ?`,
 	return expired, nil
 }
 
+// ReceivingDropPoints returns all in-flight attempts. It is intended for
+// startup reconciliation before the server can accept a new upload.
+func (r *Repository) ReceivingDropPoints(ctx context.Context) ([]droppoint.DropPoint, error) {
+	return r.queryMany(ctx, `
+SELECT id, api_token_id, client_name, display_name, drop_token_hash, pickup_token_hash, status,
+       payload_path, envelope_path, encrypted_size, created_at, dropped_at, receiving_started_at,
+       first_picked_up_at, closed_at, expires_at, max_bytes
+FROM drop_points
+WHERE status = ?
+ORDER BY id`, string(droppoint.StatusReceiving))
+}
+
+// ReceivingDropPointsStartedBefore returns interrupted receiving attempts whose
+// leases started at or before cutoff. A missing timestamp is treated as stale
+// internal state and is included for reconciliation.
+func (r *Repository) ReceivingDropPointsStartedBefore(ctx context.Context, cutoff time.Time) ([]droppoint.DropPoint, error) {
+	return r.queryMany(ctx, `
+SELECT id, api_token_id, client_name, display_name, drop_token_hash, pickup_token_hash, status,
+       payload_path, envelope_path, encrypted_size, created_at, dropped_at, receiving_started_at,
+       first_picked_up_at, closed_at, expires_at, max_bytes
+FROM drop_points
+WHERE status = ? AND (receiving_started_at IS NULL OR receiving_started_at <= ?)
+ORDER BY id`, string(droppoint.StatusReceiving), formatTime(cutoff))
+}
+
 // TerminalDropPoints returns every terminal row so cleanup can retry deleting
 // ciphertext after interruption, including rows whose pointers were already
 // cleared before a racing filesystem write completed.
 func (r *Repository) TerminalDropPoints(ctx context.Context) ([]droppoint.DropPoint, error) {
 	return r.queryMany(ctx, `
 SELECT id, api_token_id, client_name, display_name, drop_token_hash, pickup_token_hash, status,
-       payload_path, envelope_path, encrypted_size, created_at, dropped_at,
+       payload_path, envelope_path, encrypted_size, created_at, dropped_at, receiving_started_at,
        first_picked_up_at, closed_at, expires_at, max_bytes
 FROM drop_points
 WHERE status IN (?, ?, ?)
@@ -422,7 +455,7 @@ func errorForUnavailableStatus(status droppoint.Status) error {
 func (r *Repository) markExpired(ctx context.Context, id string) error {
 	_, err := r.db.ExecContext(ctx, `
 UPDATE drop_points
-SET status = ?
+SET status = ?, receiving_started_at = NULL
 WHERE id = ? AND status IN (?, ?, ?)`,
 		string(droppoint.StatusExpired), id,
 		string(droppoint.StatusOpen), string(droppoint.StatusReceiving), string(droppoint.StatusReady),
@@ -485,6 +518,7 @@ func dropPointInsertArgs(dp droppoint.DropPoint) []any {
 		nullInt64(dp.EncryptedSize, dp.EncryptedSize > 0),
 		formatTime(dp.CreatedAt),
 		nullTime(dp.DroppedAt),
+		nullTime(dp.ReceivingStartedAt),
 		nullTime(dp.FirstPickedUpAt),
 		nullTime(dp.ClosedAt),
 		formatTime(dp.ExpiresAt),
@@ -514,17 +548,18 @@ type scanner interface {
 
 func scanDropPoint(row scanner) (*droppoint.DropPoint, error) {
 	var (
-		dp              droppoint.DropPoint
-		clientName      sql.NullString
-		payloadPath     sql.NullString
-		envelopePath    sql.NullString
-		encryptedSize   sql.NullInt64
-		createdAt       string
-		droppedAt       sql.NullString
-		firstPickedUpAt sql.NullString
-		closedAt        sql.NullString
-		expiresAt       string
-		status          string
+		dp                 droppoint.DropPoint
+		clientName         sql.NullString
+		payloadPath        sql.NullString
+		envelopePath       sql.NullString
+		encryptedSize      sql.NullInt64
+		createdAt          string
+		droppedAt          sql.NullString
+		receivingStartedAt sql.NullString
+		firstPickedUpAt    sql.NullString
+		closedAt           sql.NullString
+		expiresAt          string
+		status             string
 	)
 	if err := row.Scan(
 		&dp.ID,
@@ -539,6 +574,7 @@ func scanDropPoint(row scanner) (*droppoint.DropPoint, error) {
 		&encryptedSize,
 		&createdAt,
 		&droppedAt,
+		&receivingStartedAt,
 		&firstPickedUpAt,
 		&closedAt,
 		&expiresAt,
@@ -564,6 +600,10 @@ func scanDropPoint(row scanner) (*droppoint.DropPoint, error) {
 	dp.DroppedAt, err = parseNullTime(droppedAt)
 	if err != nil {
 		return nil, fmt.Errorf("parse dropped_at for %q: %w", dp.ID, err)
+	}
+	dp.ReceivingStartedAt, err = parseNullTime(receivingStartedAt)
+	if err != nil {
+		return nil, fmt.Errorf("parse receiving_started_at for %q: %w", dp.ID, err)
 	}
 	dp.FirstPickedUpAt, err = parseNullTime(firstPickedUpAt)
 	if err != nil {

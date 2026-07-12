@@ -195,6 +195,72 @@ func TestExpireDeletesOrphanBlobDirectories(t *testing.T) {
 	}
 }
 
+func TestReconcileStartupRecoversInterruptedReceiving(t *testing.T) {
+	repo, blobs := newCleanupStore(t)
+	now := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
+	dp := cleanupDropPoint(t, "dp_cleanup_interrupted", "drop_interrupted", "pick_interrupted", now)
+	insertCleanupDropPoint(t, repo, dp)
+	if err := repo.BeginReceivingDrop(context.Background(), dp.ID, now); err != nil {
+		t.Fatalf("BeginReceivingDrop: %v", err)
+	}
+	if _, err := blobs.WriteDrop(context.Background(), dp.ID, []byte(`{}`), bytes.NewReader([]byte("partial")), 100); err != nil {
+		t.Fatalf("WriteDrop: %v", err)
+	}
+
+	result, err := (Service{Repository: repo, BlobStore: blobs, Now: func() time.Time { return now }}).ReconcileStartup(context.Background())
+	if err != nil {
+		t.Fatalf("ReconcileStartup: %v", err)
+	}
+	if result.RecoveredReceiving != 1 {
+		t.Fatalf("RecoveredReceiving = %d, want 1", result.RecoveredReceiving)
+	}
+	row, err := repo.FindDropPointByID(context.Background(), dp.ID)
+	if err != nil {
+		t.Fatalf("FindDropPointByID: %v", err)
+	}
+	if row.Status != droppoint.StatusOpen || row.ReceivingStartedAt != nil {
+		t.Fatalf("recovered row = %+v, want open without receiving lease", row)
+	}
+	if _, err := os.Stat(blobs.DropDir(dp.ID)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("drop dir stat err = %v, want not exist", err)
+	}
+}
+
+func TestExpireRecoversOnlyStaleReceiving(t *testing.T) {
+	repo, blobs := newCleanupStore(t)
+	now := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
+	stale := cleanupDropPoint(t, "dp_cleanup_stale", "drop_stale", "pick_stale", now)
+	active := cleanupDropPoint(t, "dp_cleanup_active_receiving", "drop_active_receiving", "pick_active_receiving", now)
+	for _, dp := range []droppoint.DropPoint{stale, active} {
+		insertCleanupDropPoint(t, repo, dp)
+	}
+	if err := repo.BeginReceivingDrop(context.Background(), stale.ID, now.Add(-2*time.Hour)); err != nil {
+		t.Fatalf("BeginReceivingDrop stale: %v", err)
+	}
+	if err := repo.BeginReceivingDrop(context.Background(), active.ID, now); err != nil {
+		t.Fatalf("BeginReceivingDrop active: %v", err)
+	}
+
+	result, err := (Service{Repository: repo, BlobStore: blobs, Now: func() time.Time { return now }, ReceivingStaleAfter: time.Hour}).Expire(context.Background())
+	if err != nil {
+		t.Fatalf("Expire: %v", err)
+	}
+	if result.RecoveredReceiving != 1 {
+		t.Fatalf("RecoveredReceiving = %d, want 1", result.RecoveredReceiving)
+	}
+	staleRow, err := repo.FindDropPointByID(context.Background(), stale.ID)
+	if err != nil {
+		t.Fatalf("Find stale: %v", err)
+	}
+	activeRow, err := repo.FindDropPointByID(context.Background(), active.ID)
+	if err != nil {
+		t.Fatalf("Find active: %v", err)
+	}
+	if staleRow.Status != droppoint.StatusOpen || activeRow.Status != droppoint.StatusReceiving {
+		t.Fatalf("stale status=%q active status=%q", staleRow.Status, activeRow.Status)
+	}
+}
+
 func TestExpireOpenDropPointWithoutFiles(t *testing.T) {
 	repo, blobs := newCleanupStore(t)
 	now := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)

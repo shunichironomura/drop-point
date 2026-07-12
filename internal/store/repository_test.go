@@ -122,6 +122,13 @@ func TestRepositoryDropTokenLookupAndReceivingAbort(t *testing.T) {
 	if err := repo.BeginReceivingDrop(context.Background(), dp.ID, now); err != nil {
 		t.Fatalf("BeginReceivingDrop: %v", err)
 	}
+	receiving, err := repo.FindDropPointByID(context.Background(), dp.ID)
+	if err != nil {
+		t.Fatalf("Find receiving: %v", err)
+	}
+	if receiving.ReceivingStartedAt == nil || !receiving.ReceivingStartedAt.Equal(now) {
+		t.Fatalf("receiving_started_at = %v, want %v", receiving.ReceivingStartedAt, now)
+	}
 	if err := repo.BeginReceivingDrop(context.Background(), dp.ID, now); !errors.Is(err, droppoint.ErrDropPointNotOpen) {
 		t.Fatalf("second BeginReceivingDrop err = %v, want ErrDropPointNotOpen", err)
 	}
@@ -132,8 +139,8 @@ func TestRepositoryDropTokenLookupAndReceivingAbort(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FindOpen after reset: %v", err)
 	}
-	if again.Status != droppoint.StatusOpen {
-		t.Fatalf("status after reset = %q, want open", again.Status)
+	if again.Status != droppoint.StatusOpen || again.ReceivingStartedAt != nil {
+		t.Fatalf("row after reset = %+v, want open without receiving lease", again)
 	}
 }
 

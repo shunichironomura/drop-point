@@ -61,6 +61,35 @@ func TestWriteDropRejectsOversizeWithoutFinalFiles(t *testing.T) {
 	}
 }
 
+func TestBlobOperationsHonorCanceledContext(t *testing.T) {
+	store := newTestBlobStore(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := store.WriteDrop(ctx, "dp_canceled_write", []byte(`{}`), bytes.NewReader([]byte("payload")), 10); !errors.Is(err, context.Canceled) {
+		t.Fatalf("WriteDrop err = %v, want context.Canceled", err)
+	}
+	if _, err := store.ReadEnvelope(ctx, "drop-points/dp_canceled_write/envelope.json"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("ReadEnvelope err = %v, want context.Canceled", err)
+	}
+	if _, err := store.OpenPayload(ctx, "drop-points/dp_canceled_write/payload.bin"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("OpenPayload err = %v, want context.Canceled", err)
+	}
+	if err := store.DeleteDropPoint(ctx, "dp_canceled_write"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("DeleteDropPoint err = %v, want context.Canceled", err)
+	}
+}
+
+func TestWriteDropClassifiesUploaderReadFailure(t *testing.T) {
+	store := newTestBlobStore(t)
+	_, err := store.WriteDrop(context.Background(), "dp_read_failure", []byte(`{}`), errorReader{}, 10)
+	if !errors.Is(err, ErrSourceRead) {
+		t.Fatalf("WriteDrop err = %v, want ErrSourceRead", err)
+	}
+	if got := ClassifyFailure(err); got != FailureClientInput {
+		t.Fatalf("ClassifyFailure = %v, want FailureClientInput", got)
+	}
+}
+
 func TestDeleteDropPointIsIdempotent(t *testing.T) {
 	store := newTestBlobStore(t)
 	if _, err := store.WriteDrop(context.Background(), "dp_delete", []byte(`{}`), bytes.NewReader([]byte("payload")), 10); err != nil {
@@ -85,6 +114,12 @@ func TestDeleteDropPointRejectsReservedAndNonDropPointIDs(t *testing.T) {
 			}
 		})
 	}
+}
+
+type errorReader struct{}
+
+func (errorReader) Read([]byte) (int, error) {
+	return 0, io.ErrUnexpectedEOF
 }
 
 func newTestBlobStore(t *testing.T) *Store {

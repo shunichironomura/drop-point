@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"github.com/shunichironomura/droppoint/internal/droppoint"
 	"github.com/shunichironomura/droppoint/internal/token"
@@ -23,6 +24,35 @@ const (
 	dirMode           = 0o700
 )
 
+// FailureClass is the HTTP-relevant class of a blob operation failure.
+type FailureClass uint8
+
+const (
+	FailureInternal FailureClass = iota
+	FailureClientInput
+	FailureCapacity
+	FailureUnavailable
+)
+
+// ErrSourceRead marks an error received while reading an uploader-controlled
+// stream rather than writing durable storage.
+var ErrSourceRead = errors.New("upload source read failed")
+
+// ClassifyFailure maps wrapped filesystem and source-reader failures without
+// exposing filesystem paths at the HTTP boundary.
+func ClassifyFailure(err error) FailureClass {
+	switch {
+	case errors.Is(err, ErrSourceRead):
+		return FailureClientInput
+	case errors.Is(err, syscall.ENOSPC), errors.Is(err, syscall.EDQUOT):
+		return FailureCapacity
+	case errors.Is(err, syscall.EAGAIN), errors.Is(err, syscall.EBUSY), errors.Is(err, syscall.ESTALE), errors.Is(err, syscall.ETIMEDOUT), errors.Is(err, context.DeadlineExceeded), errors.Is(err, context.Canceled):
+		return FailureUnavailable
+	default:
+		return FailureInternal
+	}
+}
+
 // Store writes encrypted payload and envelope blobs under dataDir/drop-points.
 type Store struct {
 	dataDir string
@@ -35,6 +65,9 @@ func New(dataDir string) *Store {
 
 // WriteDrop atomically stores envelope.json and payload.bin for a drop point.
 func (s *Store) WriteDrop(ctx context.Context, id string, envelope []byte, payload io.Reader, maxBytes int64) (droppoint.CommitDropResult, error) {
+	if err := contextError(ctx); err != nil {
+		return droppoint.CommitDropResult{}, err
+	}
 	if err := validateID(id); err != nil {
 		return droppoint.CommitDropResult{}, err
 	}
@@ -51,6 +84,9 @@ func (s *Store) WriteDrop(ctx context.Context, id string, envelope []byte, paylo
 	if err := os.Chmod(dir, dirMode); err != nil {
 		return droppoint.CommitDropResult{}, fmt.Errorf("set drop blob directory permissions %q: %w", dir, err)
 	}
+	if err := contextError(ctx); err != nil {
+		return droppoint.CommitDropResult{}, err
+	}
 
 	token, err := tempToken()
 	if err != nil {
@@ -66,10 +102,10 @@ func (s *Store) WriteDrop(ctx context.Context, id string, envelope []byte, paylo
 	}
 	defer cleanup()
 
-	if err := writeFileAtomicPart(envelopeTemp, envelope); err != nil {
+	if err := writeFileAtomicPart(ctx, envelopeTemp, envelope); err != nil {
 		return droppoint.CommitDropResult{}, err
 	}
-	size, err := writeStreamAtomicPart(payloadTemp, payload, maxBytes)
+	size, err := writeStreamAtomicPart(ctx, payloadTemp, payload, maxBytes)
 	if err != nil {
 		return droppoint.CommitDropResult{}, err
 	}
@@ -83,6 +119,9 @@ func (s *Store) WriteDrop(ctx context.Context, id string, envelope []byte, paylo
 	if err := syncDir(dir); err != nil {
 		return droppoint.CommitDropResult{}, err
 	}
+	if err := contextError(ctx); err != nil {
+		return droppoint.CommitDropResult{}, err
+	}
 
 	return droppoint.CommitDropResult{
 		EnvelopePath:  filepath.ToSlash(filepath.Join(DropPointsDirName, id, EnvelopeFileName)),
@@ -92,7 +131,10 @@ func (s *Store) WriteDrop(ctx context.Context, id string, envelope []byte, paylo
 }
 
 // ReadEnvelope reads a stored envelope by repository-relative path.
-func (s *Store) ReadEnvelope(_ context.Context, relative string) ([]byte, error) {
+func (s *Store) ReadEnvelope(ctx context.Context, relative string) ([]byte, error) {
+	if err := contextError(ctx); err != nil {
+		return nil, err
+	}
 	path, err := s.Path(relative)
 	if err != nil {
 		return nil, err
@@ -101,11 +143,17 @@ func (s *Store) ReadEnvelope(_ context.Context, relative string) ([]byte, error)
 	if err != nil {
 		return nil, fmt.Errorf("read envelope blob %q: %w", relative, err)
 	}
+	if err := contextError(ctx); err != nil {
+		return nil, err
+	}
 	return data, nil
 }
 
 // OpenPayload opens a stored encrypted payload by repository-relative path.
-func (s *Store) OpenPayload(_ context.Context, relative string) (io.ReadCloser, error) {
+func (s *Store) OpenPayload(ctx context.Context, relative string) (io.ReadCloser, error) {
+	if err := contextError(ctx); err != nil {
+		return nil, err
+	}
 	path, err := s.Path(relative)
 	if err != nil {
 		return nil, err
@@ -114,18 +162,21 @@ func (s *Store) OpenPayload(_ context.Context, relative string) (io.ReadCloser, 
 	if err != nil {
 		return nil, fmt.Errorf("open payload blob %q: %w", relative, err)
 	}
-	return file, nil
+	return &contextReadCloser{ctx: ctx, ReadCloser: file}, nil
 }
 
 // DeleteDropPoint removes a drop point blob directory. It is idempotent.
-func (s *Store) DeleteDropPoint(_ context.Context, id string) error {
+func (s *Store) DeleteDropPoint(ctx context.Context, id string) error {
+	if err := contextError(ctx); err != nil {
+		return err
+	}
 	if err := validateID(id); err != nil {
 		return err
 	}
 	if err := os.RemoveAll(s.dropDir(id)); err != nil {
 		return fmt.Errorf("delete drop point blobs %q: %w", id, err)
 	}
-	return nil
+	return contextError(ctx)
 }
 
 // DropPointIDs lists receiver-owned drop point blob directories. Entries that
@@ -173,14 +224,26 @@ func (s *Store) dropDir(id string) string {
 	return filepath.Join(s.dataDir, DropPointsDirName, id)
 }
 
-func writeFileAtomicPart(path string, data []byte) error {
+func writeFileAtomicPart(ctx context.Context, path string, data []byte) error {
+	if err := contextError(ctx); err != nil {
+		return err
+	}
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, fileMode)
 	if err != nil {
 		return fmt.Errorf("create envelope temp file: %w", err)
 	}
-	if _, err := file.Write(data); err != nil {
+	written, err := file.Write(data)
+	if err != nil {
 		_ = file.Close()
 		return fmt.Errorf("write envelope temp file: %w", err)
+	}
+	if written != len(data) {
+		_ = file.Close()
+		return fmt.Errorf("write envelope temp file: %w", io.ErrShortWrite)
+	}
+	if err := contextError(ctx); err != nil {
+		_ = file.Close()
+		return err
 	}
 	if err := file.Sync(); err != nil {
 		_ = file.Close()
@@ -192,20 +255,20 @@ func writeFileAtomicPart(path string, data []byte) error {
 	return nil
 }
 
-func writeStreamAtomicPart(path string, reader io.Reader, maxBytes int64) (int64, error) {
+func writeStreamAtomicPart(ctx context.Context, path string, reader io.Reader, maxBytes int64) (int64, error) {
+	if err := contextError(ctx); err != nil {
+		return 0, err
+	}
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, fileMode)
 	if err != nil {
 		return 0, fmt.Errorf("create payload temp file: %w", err)
 	}
-	limited := io.LimitReader(reader, maxBytes+1)
-	size, copyErr := io.Copy(file, limited)
+	size, copyErr := copyPayload(ctx, file, reader, maxBytes)
 	syncErr := file.Sync()
 	closeErr := file.Close()
 	switch {
 	case copyErr != nil:
-		return 0, fmt.Errorf("write payload temp file: %w", copyErr)
-	case size > maxBytes:
-		return 0, droppoint.ErrPayloadTooLarge
+		return 0, copyErr
 	case syncErr != nil:
 		return 0, fmt.Errorf("sync payload temp file: %w", syncErr)
 	case closeErr != nil:
@@ -213,6 +276,57 @@ func writeStreamAtomicPart(path string, reader io.Reader, maxBytes int64) (int64
 	default:
 		return size, nil
 	}
+}
+
+func copyPayload(ctx context.Context, file *os.File, reader io.Reader, maxBytes int64) (int64, error) {
+	buffer := make([]byte, 32*1024)
+	var size int64
+	for {
+		if err := contextError(ctx); err != nil {
+			return 0, fmt.Errorf("%w: %w", ErrSourceRead, err)
+		}
+		n, readErr := reader.Read(buffer)
+		if n > 0 {
+			if int64(n) > maxBytes-size {
+				return 0, droppoint.ErrPayloadTooLarge
+			}
+			written, writeErr := file.Write(buffer[:n])
+			if writeErr != nil {
+				return 0, fmt.Errorf("write payload temp file: %w", writeErr)
+			}
+			if written != n {
+				return 0, fmt.Errorf("write payload temp file: %w", io.ErrShortWrite)
+			}
+			size += int64(written)
+		}
+		switch {
+		case errors.Is(readErr, io.EOF):
+			return size, nil
+		case readErr != nil:
+			return 0, fmt.Errorf("%w: %w", ErrSourceRead, readErr)
+		case n == 0:
+			return 0, fmt.Errorf("%w: reader returned no data or error", ErrSourceRead)
+		}
+	}
+}
+
+type contextReadCloser struct {
+	ctx context.Context
+	io.ReadCloser
+}
+
+func (r *contextReadCloser) Read(p []byte) (int, error) {
+	if err := contextError(r.ctx); err != nil {
+		return 0, err
+	}
+	return r.ReadCloser.Read(p)
+}
+
+func contextError(ctx context.Context) error {
+	if ctx == nil {
+		return nil
+	}
+	return ctx.Err()
 }
 
 func syncDir(path string) error {

@@ -66,7 +66,15 @@ Parts:
 - `envelope`, `application/json`
 - `payload`, `application/octet-stream`
 
-The relay validates only the envelope shape and stores ciphertext. It does not decrypt metadata or payload.
+The relay validates only the envelope shape and stores ciphertext. It does not decrypt metadata or payload. Failed or interrupted attempts are cleaned up and the slot returns to `open`; startup and periodic reconciliation retry interrupted finalization.
+
+Submission errors use these status classes:
+
+- `400` for malformed envelope, multipart, or uploader-read input;
+- `413` for encrypted payload/request-size violations;
+- `507` for known storage-capacity exhaustion such as disk full;
+- `503` for known transient storage unavailability;
+- `500` for other durable-storage or internal finalization failures.
 
 ## Poll status
 
