@@ -9,6 +9,7 @@ import (
 )
 
 type BlobStore interface {
+	DropPointIDs(ctx context.Context) ([]string, error)
 	DeleteDropPoint(ctx context.Context, id string) error
 }
 
@@ -23,11 +24,13 @@ type Service struct {
 type Result struct {
 	ExpiredDropPoints int
 	DeletedPayloads   int
+	DeletedOrphans    int
 	PurgedRows        int
 }
 
-// Expire marks expired non-terminal drop points and deletes their blob
-// directories. It is safe to run repeatedly.
+// Expire marks elapsed rows expired, reconciles every terminal row with its
+// blob directory, and removes directories that no repository row owns. Each
+// step is safe to retry after interruption.
 func (s Service) Expire(ctx context.Context) (Result, error) {
 	if s.Repository == nil {
 		return Result{}, fmt.Errorf("repository must not be nil")
@@ -44,9 +47,13 @@ func (s Service) Expire(ctx context.Context) (Result, error) {
 		return Result{}, err
 	}
 	result := Result{ExpiredDropPoints: len(expired)}
-	for _, dp := range expired {
+	terminal, err := s.Repository.TerminalDropPoints(ctx)
+	if err != nil {
+		return result, err
+	}
+	for _, dp := range terminal {
 		if err := s.BlobStore.DeleteDropPoint(ctx, dp.ID); err != nil {
-			return result, err
+			return result, fmt.Errorf("delete terminal drop point %q blobs: %w", dp.ID, err)
 		}
 		if err := s.Repository.DeleteDropPointFiles(ctx, dp.ID); err != nil {
 			return result, err
@@ -55,6 +62,25 @@ func (s Service) Expire(ctx context.Context) (Result, error) {
 			result.DeletedPayloads++
 		}
 	}
+
+	rowIDs, err := s.Repository.DropPointIDs(ctx)
+	if err != nil {
+		return result, err
+	}
+	blobIDs, err := s.BlobStore.DropPointIDs(ctx)
+	if err != nil {
+		return result, err
+	}
+	for _, id := range blobIDs {
+		if _, exists := rowIDs[id]; exists {
+			continue
+		}
+		if err := s.BlobStore.DeleteDropPoint(ctx, id); err != nil {
+			return result, fmt.Errorf("delete orphan drop point %q blobs: %w", id, err)
+		}
+		result.DeletedOrphans++
+	}
+
 	if s.TerminalRetention > 0 {
 		purged, err := s.Repository.PurgeTerminalDropPoints(ctx, now.Add(-s.TerminalRetention))
 		if err != nil {
