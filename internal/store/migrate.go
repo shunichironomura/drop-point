@@ -6,12 +6,14 @@ import (
 	"fmt"
 )
 
+const schemaVersion = 1
+
 const schemaSQL = `
 CREATE TABLE IF NOT EXISTS drop_points (
   id TEXT PRIMARY KEY,
   api_token_id TEXT NOT NULL,
   client_name TEXT,
-  display_name TEXT NOT NULL DEFAULT '',
+  display_name TEXT NOT NULL CHECK (length(display_name) > 0),
   drop_token_hash TEXT NOT NULL UNIQUE,
   pickup_token_hash TEXT NOT NULL,
   status TEXT NOT NULL,
@@ -41,51 +43,46 @@ CREATE TABLE IF NOT EXISTS api_tokens (
   created_at TEXT NOT NULL,
   disabled_at TEXT
 );
+
+PRAGMA user_version = 1;
 `
 
-// Migrate applies the current SQLite schema and idempotent additive migrations.
+// Migrate creates or verifies the current schema. DropPoint is unreleased, so
+// unversioned legacy relay tables are rejected instead of being backfilled into
+// states that violate current invariants.
 func Migrate(ctx context.Context, db *sql.DB) error {
 	if db == nil {
 		return fmt.Errorf("sqlite database handle must not be nil")
 	}
-	if _, err := db.ExecContext(ctx, schemaSQL); err != nil {
-		return fmt.Errorf("migrate sqlite schema: %w", err)
+	var version int
+	if err := db.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {
+		return fmt.Errorf("read sqlite schema version: %w", err)
 	}
-	if err := ensureDropPointsColumn(ctx, db, "display_name", "ALTER TABLE drop_points ADD COLUMN display_name TEXT NOT NULL DEFAULT ''"); err != nil {
-		return err
+	switch {
+	case version == 0:
+		hasLegacyTables, err := relayTablesExist(ctx, db)
+		if err != nil {
+			return err
+		}
+		if hasLegacyTables {
+			return fmt.Errorf("unsupported unversioned DropPoint database; recreate the unreleased database with the current schema")
+		}
+	case version != schemaVersion:
+		return fmt.Errorf("unsupported DropPoint schema version %d, want %d", version, schemaVersion)
+	}
+	if _, err := db.ExecContext(ctx, schemaSQL); err != nil {
+		return fmt.Errorf("migrate sqlite schema version %d: %w", schemaVersion, err)
 	}
 	return nil
 }
 
-func ensureDropPointsColumn(ctx context.Context, db *sql.DB, name string, alterSQL string) error {
-	rows, err := db.QueryContext(ctx, "PRAGMA table_info(drop_points)")
-	if err != nil {
-		return fmt.Errorf("inspect drop_points columns: %w", err)
+func relayTablesExist(ctx context.Context, db *sql.DB) (bool, error) {
+	var count int
+	if err := db.QueryRowContext(ctx, `
+SELECT count(*)
+FROM sqlite_master
+WHERE type = 'table' AND name IN ('drop_points', 'api_tokens')`).Scan(&count); err != nil {
+		return false, fmt.Errorf("inspect existing relay schema: %w", err)
 	}
-	defer rows.Close()
-
-	for rows.Next() {
-		var (
-			cid        int
-			columnName string
-			columnType string
-			notNull    int
-			defaultVal sql.NullString
-			pk         int
-		)
-		if err := rows.Scan(&cid, &columnName, &columnType, &notNull, &defaultVal, &pk); err != nil {
-			return fmt.Errorf("scan drop_points column info: %w", err)
-		}
-		if columnName == name {
-			return nil
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("inspect drop_points columns: %w", err)
-	}
-
-	if _, err := db.ExecContext(ctx, alterSQL); err != nil {
-		return fmt.Errorf("add drop_points.%s column: %w", name, err)
-	}
-	return nil
+	return count != 0, nil
 }

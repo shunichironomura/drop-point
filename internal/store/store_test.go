@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -65,6 +66,16 @@ func TestMigrationCreatesDropPointsSchema(t *testing.T) {
 
 	assertDropPointsColumnExists(t, db.SQLDB(), "display_name")
 	assertDropPointsColumnExists(t, db.SQLDB(), "receiving_started_at")
+	var version int
+	if err := db.SQLDB().QueryRowContext(context.Background(), "PRAGMA user_version").Scan(&version); err != nil {
+		t.Fatalf("query user_version: %v", err)
+	}
+	if version != schemaVersion {
+		t.Fatalf("user_version = %d, want %d", version, schemaVersion)
+	}
+	if err := Migrate(context.Background(), db.SQLDB()); err != nil {
+		t.Fatalf("idempotent Migrate: %v", err)
+	}
 
 	now := formatTime(time.Now().UTC())
 	_, err := db.SQLDB().ExecContext(context.Background(), `
@@ -77,9 +88,17 @@ INSERT INTO drop_points (
 	if err != nil {
 		t.Fatalf("insert drop point row: %v", err)
 	}
+	_, err = db.SQLDB().ExecContext(context.Background(), `
+INSERT INTO drop_points (
+  id, api_token_id, display_name, drop_token_hash, pickup_token_hash, status,
+  created_at, expires_at, max_bytes
+) VALUES ('dp_empty_name', 'desktop-main', '', 'sha256:drop-empty', 'sha256:pick-empty', 'open', ?, ?, 1024)`, now, now)
+	if err == nil {
+		t.Fatal("schema accepted an empty display_name")
+	}
 }
 
-func TestMigrationAddsDisplayNameToLegacySchema(t *testing.T) {
+func TestMigrationRejectsUnversionedLegacySchema(t *testing.T) {
 	db, err := sql.Open("sqlite", ":memory:")
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -106,10 +125,9 @@ CREATE TABLE drop_points (
 )`); err != nil {
 		t.Fatalf("create legacy schema: %v", err)
 	}
-	if err := Migrate(context.Background(), db); err != nil {
-		t.Fatalf("Migrate: %v", err)
+	if err := Migrate(context.Background(), db); err == nil || !strings.Contains(err.Error(), "unsupported unversioned") {
+		t.Fatalf("Migrate error = %v, want unsupported legacy schema", err)
 	}
-	assertDropPointsColumnExists(t, db, "display_name")
 }
 
 func TestOpenCreatesRestrictiveDatabaseFile(t *testing.T) {
