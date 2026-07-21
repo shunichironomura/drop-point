@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import binascii
 import json
 import mimetypes
 import os
@@ -55,10 +56,16 @@ def b64u_encode(data: bytes) -> str:
 
 
 def b64u_decode(value: str) -> bytes:
-    if not value or "=" in value:
-        raise ValueError("base64url value must be non-empty and unpadded")
+    if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9_-]+", value):
+        raise ValueError("base64url value must use the non-empty unpadded URL-safe alphabet")
     padding = "=" * (-len(value) % 4)
-    return base64.urlsafe_b64decode((value + padding).encode("ascii"))
+    try:
+        decoded = base64.b64decode((value + padding).encode("ascii"), altchars=b"-_", validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise ValueError("base64url value is malformed") from exc
+    if b64u_encode(decoded) != value:
+        raise ValueError("base64url value is not canonical")
+    return decoded
 
 
 def generate_x25519_keypair() -> tuple[bytes, bytes]:
@@ -138,8 +145,18 @@ def decrypt_bundle(recipient_private_key_raw: bytes, envelope_json: bytes, encry
     recipient_private_key = X25519PrivateKey.from_private_bytes(recipient_private_key_raw)
     recipient_public_key_raw = public_key_to_raw(recipient_private_key.public_key())
 
-    envelope = json.loads(envelope_json.decode("utf-8"))
-    if envelope.get("protocol_version") != PROTOCOL_VERSION:
+    envelope = _load_json_object(envelope_json, "envelope")
+    expected_envelope_fields = {
+        "protocol_version",
+        "key_agreement",
+        "sender_ephemeral_public_key",
+        "metadata_nonce",
+        "payload_nonce",
+        "encrypted_metadata",
+    }
+    if set(envelope) != expected_envelope_fields:
+        raise ValueError("envelope fields do not match the protocol")
+    if isinstance(envelope.get("protocol_version"), bool) or envelope.get("protocol_version") != PROTOCOL_VERSION:
         raise ValueError("unsupported envelope protocol_version")
     if envelope.get("key_agreement") != KEY_AGREEMENT:
         raise ValueError("unsupported envelope key_agreement")
@@ -157,8 +174,27 @@ def decrypt_bundle(recipient_private_key_raw: bytes, envelope_json: bytes, encry
 
     manifest_json = AESGCM(metadata_key).decrypt(metadata_nonce, encrypted_metadata, AAD_METADATA)
     payload_plaintext = AESGCM(payload_key).decrypt(payload_nonce, encrypted_payload, AAD_PAYLOAD)
-    manifest = json.loads(manifest_json.decode("utf-8"))
+    manifest = _load_json_object(manifest_json, "manifest")
     return _split_payload(manifest, payload_plaintext)
+
+
+def _load_json_object(data: bytes, label: str) -> dict:
+    try:
+        value = json.loads(data.decode("utf-8"), object_pairs_hook=_unique_object_pairs)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"{label} must be valid UTF-8 JSON") from exc
+    if not isinstance(value, dict):
+        raise ValueError(f"{label} must be a JSON object")
+    return value
+
+
+def _unique_object_pairs(pairs: list[tuple[str, object]]) -> dict:
+    value: dict = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError(f"duplicate JSON field: {key}")
+        value[key] = item
+    return value
 
 
 def _field_b64(envelope: dict, field: str, length: int | None) -> bytes:
@@ -184,8 +220,11 @@ def _reject_all_zero(shared_secret: bytes) -> None:
 
 
 def _split_payload(manifest: dict, payload_plaintext: bytes) -> list[DecryptedFile]:
-    if manifest.get("protocol_version") != PROTOCOL_VERSION:
+    if set(manifest) != {"protocol_version", "files", "created_at"}:
+        raise ValueError("manifest fields do not match the protocol")
+    if isinstance(manifest.get("protocol_version"), bool) or manifest.get("protocol_version") != PROTOCOL_VERSION:
         raise ValueError("unsupported manifest protocol_version")
+    _validate_created_at(manifest.get("created_at"))
     files = manifest.get("files")
     if not isinstance(files, list) or not files or len(files) > MAX_MANIFEST_FILES:
         raise ValueError(f"manifest must contain between 1 and {MAX_MANIFEST_FILES} files")
@@ -194,8 +233,8 @@ def _split_payload(manifest: dict, payload_plaintext: bytes) -> list[DecryptedFi
     seen_names: set[str] = set()
     out: list[DecryptedFile] = []
     for entry in files:
-        if not isinstance(entry, dict):
-            raise ValueError("manifest file entry must be an object")
+        if not isinstance(entry, dict) or set(entry) != {"name", "type", "size"}:
+            raise ValueError("manifest file entry fields do not match the protocol")
         raw_name = entry.get("name")
         raw_type = entry.get("type")
         if not isinstance(raw_name, str) or not isinstance(raw_type, str):
@@ -224,6 +263,20 @@ def _split_payload(manifest: dict, payload_plaintext: bytes) -> list[DecryptedFi
         recovered.append(DecryptedFile(template.name, template.mime_type, payload_plaintext[offset : offset + size]))
         offset += size
     return recovered
+
+
+def _validate_created_at(value: object) -> None:
+    if not isinstance(value, str) or not re.fullmatch(
+        r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})",
+        value,
+    ):
+        raise ValueError("manifest created_at must be an RFC3339 timestamp")
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError("manifest created_at must be an RFC3339 timestamp") from exc
+    if parsed.tzinfo is None:
+        raise ValueError("manifest created_at must include a timezone")
 
 
 def canonicalize_filenames(names: Iterable[str]) -> list[str]:
@@ -343,6 +396,6 @@ def sanitize_mime_type(value: str) -> str:
     if len(encoded) > MAX_MIME_TYPE_UTF8_BYTES:
         raise ValueError(f"MIME type exceeds {MAX_MIME_TYPE_UTF8_BYTES} UTF-8 bytes")
     lowered = value.lower()
-    if not _MIME_RE.match(lowered):
+    if not _MIME_RE.fullmatch(lowered):
         raise ValueError(f"unsafe MIME type: {value!r}")
     return lowered

@@ -491,7 +491,7 @@ Earlier local notes call this design "v2" because it followed an RSA-OAEP draft.
 - Byte concatenation is written as `||`.
 - X25519 public keys, private keys, and shared secrets are raw 32-byte RFC 7748 values.
 - X25519 keys MUST NOT be encoded as SPKI, DER, or PEM in this protocol.
-- Binary values in JSON or URL fragments use base64url without padding.
+- Binary values in JSON or URL fragments use canonical base64url without padding: only `A-Z`, `a-z`, `0-9`, `-`, and `_` are accepted; standard-base64 `+`/`/`, whitespace, padding, malformed lengths, and non-zero unused trailing bits are rejected.
 - HKDF `info` labels and AAD field labels are exact ASCII byte strings with no trailing newline, NUL, or padding.
 - AES-GCM ciphertext fields are stored as `ciphertext || tag`, where the tag is the final 16 bytes.
 
@@ -724,11 +724,11 @@ Manifest plaintext JSON:
 Rules:
 
 - `files` is an ordered array with one entry per file and MUST contain between 1 and 1000 entries.
-- Each file entry has `name`, `type`, and `size`.
+- The manifest object has exactly `protocol_version`, `files`, and `created_at`; each file entry has exactly `name`, `type`, and `size`, with no duplicate or unknown JSON fields.
 - `name` is a sender-canonicalized filename satisfying Section 12 and is at most 240 UTF-8 bytes.
-- `type` is at most 255 UTF-8 bytes.
+- `type` is a string of at most 255 UTF-8 bytes containing a canonical parameter-free MIME type, or the empty string meaning `application/octet-stream`.
 - `size` is the original plaintext byte length and MUST be a non-negative integer.
-- `created_at` is the sender-side bundle creation time in ISO 8601 format.
+- `created_at` is a string containing the sender-side bundle creation time in RFC3339 format with a timezone.
 - `payload_plaintext` is the concatenation of file bytes in `files` order.
 - The receiver MUST verify that the sum of all `size` values equals `len(payload_plaintext)`.
 - If the size sum does not match, the receiver MUST reject the bundle.

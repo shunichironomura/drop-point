@@ -27,6 +27,7 @@ func TestValidateEnvelopeJSONRejectsInvalidShape(t *testing.T) {
 		"nonce length":      strings.Replace(validEnvelopeJSON(), EncodeBase64URL(make([]byte, 12)), EncodeBase64URL(make([]byte, 11)), 1),
 		"padding":           strings.Replace(validEnvelopeJSON(), EncodeBase64URL(make([]byte, 16)), EncodeBase64URL(make([]byte, 16))+"=", 1),
 		"unknown field":     strings.TrimSuffix(validEnvelopeJSON(), "}") + `,"extra":true}`,
+		"duplicate field":   strings.Replace(validEnvelopeJSON(), `"protocol_version":2`, `"protocol_version":2,"protocol_version":2`, 1),
 	}
 	for name, body := range tests {
 		t.Run(name, func(t *testing.T) {

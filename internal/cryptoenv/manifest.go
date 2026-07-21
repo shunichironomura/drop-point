@@ -67,6 +67,9 @@ func BuildManifest(files []PlainFile, createdAt time.Time) (Manifest, []byte, er
 }
 
 func ParseManifest(data []byte) (Manifest, error) {
+	if err := rejectDuplicateJSONFields(data); err != nil {
+		return Manifest{}, fmt.Errorf("decode manifest JSON: %w", err)
+	}
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
 	var manifest Manifest
@@ -225,9 +228,12 @@ func SanitizeMIMEType(value string) (string, error) {
 	if !utf8.ValidString(value) || len(value) > MaxMIMETypeUTF8Bytes {
 		return "", fmt.Errorf("MIME type must be valid UTF-8 and at most %d bytes", MaxMIMETypeUTF8Bytes)
 	}
-	mediaType, _, err := mime.ParseMediaType(value)
+	mediaType, parameters, err := mime.ParseMediaType(value)
 	if err != nil {
 		return "", err
+	}
+	if len(parameters) != 0 {
+		return "", fmt.Errorf("MIME type parameters are not canonical manifest values")
 	}
 	mediaType = strings.ToLower(mediaType)
 	if !safeMIMEPattern.MatchString(mediaType) {
