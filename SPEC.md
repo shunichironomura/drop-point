@@ -812,7 +812,7 @@ Logs MUST NOT include:
 - Plaintext filenames, MIME types, or manifest data.
 - Payload bytes.
 
-HTTP access logs MUST redact token-bearing paths such as `/drop/:drop_token` and `/api/drops/:drop_token`.
+HTTP access logs MUST use matched route templates where possible and MUST redact token-bearing paths such as `/drop/:drop_token` and `/api/drops/:drop_token`, including URL-encoded delimiters, malformed paths, redirects/errors, and panic paths. Client/helper HTTP errors MUST NOT echo capability-bearing URLs or capability values from response details.
 
 Recommended structured log events include:
 

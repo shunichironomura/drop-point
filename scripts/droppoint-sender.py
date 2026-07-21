@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 import uuid
 from pathlib import Path
@@ -20,6 +21,7 @@ from drop_point_protocol import b64u_decode, encrypt_files
 # agent before API requests reach DropPoint, so use a stable tool-specific
 # value instead of the stdlib default.
 USER_AGENT = "DropPointSender/1.0"
+_CAPABILITY_RE = re.compile(r"(?:drop|pick|api)_[A-Za-z0-9_-]+")
 
 
 def main() -> int:
@@ -108,7 +110,19 @@ def http_request(method: str, url: str, body: bytes | None = None, headers: dict
             detail = json.dumps(parsed, indent=2)
         except json.JSONDecodeError:
             pass
-        raise RuntimeError(f"HTTP {exc.code} from {url}: {detail}") from exc
+        safe_url = redact_capability_url(url)
+        safe_detail = _CAPABILITY_RE.sub(":capability", detail)
+        raise RuntimeError(f"HTTP {exc.code} from {safe_url}: {safe_detail}") from exc
+
+
+def redact_capability_url(url: str) -> str:
+    parsed = parse.urlparse(url)
+    parts = parsed.path.split("/")
+    if len(parts) >= 4 and parts[-3:-1] == ["api", "drops"]:
+        parts[-1] = ":drop_token"
+    redacted_path = _CAPABILITY_RE.sub(":capability", "/".join(parts))
+    redacted_query = _CAPABILITY_RE.sub(":capability", parsed.query)
+    return parse.urlunparse((parsed.scheme, parsed.netloc, redacted_path, "", redacted_query, ""))
 
 
 if __name__ == "__main__":
