@@ -242,6 +242,7 @@ func TestSubmitDropMapsStorageFailures(t *testing.T) {
 		err        error
 		wantStatus int
 	}{
+		{name: "request limit", err: fmt.Errorf("read: %w", &http.MaxBytesError{Limit: 1}), wantStatus: http.StatusRequestEntityTooLarge},
 		{name: "disk full", err: fmt.Errorf("write: %w", syscall.ENOSPC), wantStatus: http.StatusInsufficientStorage},
 		{name: "temporarily unavailable", err: fmt.Errorf("write: %w", syscall.EAGAIN), wantStatus: http.StatusServiceUnavailable},
 		{name: "durability failure", err: errors.New("simulated fsync failure"), wantStatus: http.StatusInternalServerError},

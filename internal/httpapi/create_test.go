@@ -71,10 +71,10 @@ func TestCreateDropPointWithValidAPIToken(t *testing.T) {
 	if dp.DropTokenHash == strings.TrimPrefix(parsed.Path, "/drop/") || dp.PickupTokenHash == response.PickupToken {
 		t.Fatalf("raw tokens were stored in row: %+v response=%+v", dp, response)
 	}
-	if !token.VerifySecretHash(strings.TrimPrefix(parsed.Path, "/drop/"), dp.DropTokenHash) {
+	if !token.EqualHash(token.HashSecret(strings.TrimPrefix(parsed.Path, "/drop/")), dp.DropTokenHash) {
 		t.Fatal("stored drop token hash does not verify drop link token")
 	}
-	if !token.VerifySecretHash(response.PickupToken, dp.PickupTokenHash) {
+	if !token.EqualHash(token.HashSecret(response.PickupToken), dp.PickupTokenHash) {
 		t.Fatal("stored pickup token hash does not verify pickup token")
 	}
 }

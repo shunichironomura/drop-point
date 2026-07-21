@@ -191,7 +191,7 @@ func writeSubmitDropFailure(w http.ResponseWriter, deps Dependencies, id string,
 		writeMultipartDropError(w, failure.OperationErr)
 	case dropFailureStorage:
 		switch {
-		case errors.Is(failure.OperationErr, droppoint.ErrPayloadTooLarge):
+		case dropRequestTooLarge(failure.OperationErr):
 			writeError(w, http.StatusRequestEntityTooLarge, "payload_too_large", "encrypted payload exceeds the drop point limit")
 		case blobstore.ClassifyFailure(failure.OperationErr) == blobstore.FailureClientInput:
 			writeError(w, http.StatusBadRequest, "drop_multipart_invalid", "could not read the encrypted payload")
@@ -203,6 +203,11 @@ func writeSubmitDropFailure(w http.ResponseWriter, deps Dependencies, id string,
 	default:
 		writeError(w, http.StatusInternalServerError, "drop_failed", "could not complete drop")
 	}
+}
+
+func dropRequestTooLarge(err error) bool {
+	var maxBytesErr *http.MaxBytesError
+	return errors.Is(err, droppoint.ErrPayloadTooLarge) || errors.As(err, &maxBytesErr)
 }
 
 func errorMessage(err error) string {

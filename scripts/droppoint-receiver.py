@@ -14,8 +14,9 @@ import time
 from email import policy
 from email.parser import BytesParser
 from pathlib import Path
-from urllib import error, parse, request
+from urllib import parse
 
+from drop_point_http import request_bytes
 from drop_point_protocol import b64u_encode, decrypt_bundle, generate_x25519_keypair
 from drop_point_storage import (
     BundleInstall,
@@ -233,17 +234,17 @@ def raw_request(
     body: bytes | None = None,
     headers: dict[str, str] | None = None,
 ) -> tuple[str, bytes]:
-    all_headers = {"User-Agent": USER_AGENT, "Accept": "application/json"}
+    all_headers = {"Accept": "application/json"}
     all_headers.update(headers or {})
-    if token:
-        all_headers["Authorization"] = "Bearer " + token
-    req = request.Request(url, data=body, headers=all_headers, method=method)
-    try:
-        with request.urlopen(req, timeout=30) as response:  # noqa: S310 - local/dev CLI target supplied by user.
-            return response.headers.get("Content-Type", ""), response.read()
-    except error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"HTTP {exc.code} from {url}: {detail}") from exc
+    response = request_bytes(
+        method,
+        url,
+        user_agent=USER_AGENT,
+        bearer_token=token,
+        body=body,
+        headers=all_headers,
+    )
+    return response.content_type, response.body
 
 
 def api_url(state: dict, path: str) -> str:

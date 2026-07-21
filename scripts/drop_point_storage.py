@@ -42,7 +42,7 @@ def encrypted_bundle_identity(envelope_json: bytes, encrypted_payload: bytes) ->
 
 
 def atomic_write_private_json(path: Path, value: object) -> None:
-    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    _ensure_directory(path.parent, 0o700)
     fd, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
     temporary_path = Path(temporary_name)
     try:
@@ -77,7 +77,7 @@ def install_bundle(
 
     files = tuple(recovered_files)
     receipt = _build_receipt(drop_point_id, identity, files)
-    out_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    _ensure_directory(out_dir, 0o700)
     final_path = out_dir / f"bundle-{drop_point_id}"
     if final_path.exists():
         _verify_receipt_and_files(final_path, receipt)
@@ -119,6 +119,32 @@ def verify_installed_bundle(path: Path, drop_point_id: str, identity: str) -> Bu
     files = receipt.get("files")
     assert isinstance(files, list)
     return BundleInstall(path, identity, True, tuple(entry["name"] for entry in files))
+
+
+def _ensure_directory(path: Path, mode: int) -> None:
+    missing: list[Path] = []
+    current = path
+    while True:
+        try:
+            current_stat = current.lstat()
+        except FileNotFoundError:
+            missing.append(current)
+            parent = current.parent
+            if parent == current:
+                raise RuntimeError(f"cannot find an existing parent for directory: {path}")
+            current = parent
+            continue
+        if not stat.S_ISDIR(current_stat.st_mode):
+            raise RuntimeError(f"receiver-controlled path is not a directory: {current}")
+        break
+    for directory in reversed(missing):
+        try:
+            os.mkdir(directory, mode)
+        except FileExistsError:
+            directory_stat = directory.lstat()
+            if not stat.S_ISDIR(directory_stat.st_mode):
+                raise RuntimeError(f"receiver-controlled path is not a directory: {directory}") from None
+        fsync_directory(directory.parent)
 
 
 def fsync_directory(path: Path) -> None:

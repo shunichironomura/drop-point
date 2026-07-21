@@ -506,7 +506,7 @@ function sanitizeManifestName(value) {
 }
 
 function isReservedWindowsName(name) {
-  const base = name.split('.', 1)[0].toUpperCase();
+  const base = name.split('.', 1)[0].replace(/ +$/u, '').toUpperCase();
   return WINDOWS_RESERVED_NAMES.has(base);
 }
 

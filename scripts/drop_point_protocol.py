@@ -380,7 +380,7 @@ def filename_collision_key(name: str) -> str:
 
 
 def _reserved_windows_name(name: str) -> bool:
-    return name.split(".", 1)[0].upper() in WINDOWS_RESERVED_NAMES
+    return name.split(".", 1)[0].rstrip(" ").upper() in WINDOWS_RESERVED_NAMES
 
 
 _MIME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]*/[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]*$")
