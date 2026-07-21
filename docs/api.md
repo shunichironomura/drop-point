@@ -93,7 +93,7 @@ curl -sS https://drop.example.com/api/drop-points/$DROP_POINT_ID/pickup \
   -o pickup.multipart
 ```
 
-The response is `multipart/mixed` with the same logical `envelope` and `payload` parts. Pickup is repeatable and does not close or delete the drop point.
+The response is `multipart/mixed` with the same logical `envelope` and `payload` parts. Pickup is repeatable and does not close or delete the drop point. The relay records a successful pickup only after it writes the full GET multipart response without a response-writer error; HEAD and partial/failed writes do not count. Timestamp finalization is detached from request cancellation and survives a concurrent close or expiry.
 
 ## Close drop point
 

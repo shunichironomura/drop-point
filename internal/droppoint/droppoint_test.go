@@ -77,6 +77,21 @@ func TestStatusTransitions(t *testing.T) {
 	}
 }
 
+func TestMarkPickedUpSurvivesTerminalRace(t *testing.T) {
+	now := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
+	for _, status := range []Status{StatusClosed, StatusExpired} {
+		dp := mustDropPoint(t, now)
+		dp.Status = status
+		picked, err := MarkPickedUp(dp, now)
+		if err != nil {
+			t.Fatalf("MarkPickedUp(%s): %v", status, err)
+		}
+		if picked.Status != status || picked.FirstPickedUpAt == nil {
+			t.Fatalf("MarkPickedUp(%s) = %+v", status, picked)
+		}
+	}
+}
+
 func TestRejectedTransitions(t *testing.T) {
 	now := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
 	dp := mustDropPoint(t, now)

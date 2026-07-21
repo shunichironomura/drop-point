@@ -1,14 +1,18 @@
 package httpapi
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"mime/multipart"
 	"net/http"
 	"net/textproto"
+	"time"
 
 	"github.com/shunichironomura/droppoint/internal/droppoint"
 )
+
+const pickupFinalizationTimeout = 10 * time.Second
 
 // HandlePickupPayload handles GET /api/drop-points/:drop_point_id/pickup.
 func HandlePickupPayload(deps Dependencies) http.HandlerFunc {
@@ -46,12 +50,24 @@ func HandlePickupPayload(deps Dependencies) http.HandlerFunc {
 		defer payload.Close()
 
 		if err := writePickupMultipart(w, envelope, payload); err != nil {
+			if deps.Logger != nil {
+				deps.Logger.Printf("event=pickup.response_failed drop_point_id=%s error=%q", id, err)
+			}
 			return
 		}
-		if err := deps.Repository.MarkFirstPickedUp(r.Context(), id, deps.Now().UTC()); err != nil && deps.Logger != nil {
-			deps.Logger.Printf("pickup timestamp update failed drop_point_id=%s error=%s", id, err)
+		finalizeCtx, cancel := pickupFinalizationContext(r.Context())
+		defer cancel()
+		if err := deps.Repository.MarkFirstPickedUp(finalizeCtx, id, deps.Now().UTC()); err != nil && deps.Logger != nil {
+			deps.Logger.Printf("event=pickup.timestamp_failed drop_point_id=%s error=%q", id, err)
 		}
 	}
+}
+
+func pickupFinalizationContext(parent context.Context) (context.Context, context.CancelFunc) {
+	if parent == nil {
+		parent = context.Background()
+	}
+	return context.WithTimeout(context.WithoutCancel(parent), pickupFinalizationTimeout)
 }
 
 func writePickupMultipart(w http.ResponseWriter, envelope []byte, payload io.Reader) error {

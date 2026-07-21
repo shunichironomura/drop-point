@@ -320,7 +320,10 @@ Rules:
 
 - Pickup is allowed only for `ready` drop points that have not expired.
 - Pickup is idempotent and repeatable until close or expiry.
-- Successful pickup records `first_picked_up_at` if it was not already set.
+- A successful pickup means the relay completed writing the full GET multipart response without a `ResponseWriter` error; it does not claim that the remote client durably received the bytes.
+- After that final write, the relay MUST record `first_picked_up_at` if it was not already set, using a bounded context detached from request cancellation.
+- A concurrent close or expiry MUST NOT erase or prevent recording a pickup whose response write already completed.
+- HEAD requests and failed or partial response writes MUST NOT record a pickup.
 - Pickup MUST NOT delete payload files and MUST NOT close the drop point.
 
 ### 7.7 Close drop point
