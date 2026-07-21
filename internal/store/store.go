@@ -33,6 +33,9 @@ func Open(ctx context.Context, dataDir string) (*DB, error) {
 	if err != nil {
 		return nil, fmt.Errorf("resolve sqlite database path: %w", err)
 	}
+	if err := ensureDatabaseFileMode(databasePath); err != nil {
+		return nil, err
+	}
 	sqlDB, err := sql.Open("sqlite", sqliteFileDSN(databasePath))
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite database %q: %w", databasePath, err)
@@ -52,9 +55,9 @@ func Open(ctx context.Context, dataDir string) (*DB, error) {
 		opened.Close()
 		return nil, err
 	}
-	if err := os.Chmod(databasePath, 0o600); err != nil {
+	if err := enforceSQLiteFileModes(databasePath); err != nil {
 		opened.Close()
-		return nil, fmt.Errorf("set permissions on sqlite database %q: %w", databasePath, err)
+		return nil, err
 	}
 
 	return opened, nil
@@ -82,6 +85,30 @@ func (d *DB) SQLDB() *sql.DB {
 		return nil
 	}
 	return d.db
+}
+
+func ensureDatabaseFileMode(path string) error {
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return fmt.Errorf("create sqlite database %q with restrictive permissions: %w", path, err)
+	}
+	if err := file.Chmod(0o600); err != nil {
+		_ = file.Close()
+		return fmt.Errorf("set permissions on sqlite database %q: %w", path, err)
+	}
+	if err := file.Close(); err != nil {
+		return fmt.Errorf("close sqlite database %q after setting permissions: %w", path, err)
+	}
+	return nil
+}
+
+func enforceSQLiteFileModes(databasePath string) error {
+	for _, path := range []string{databasePath, databasePath + "-wal", databasePath + "-shm"} {
+		if err := os.Chmod(path, 0o600); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("set permissions on sqlite file %q: %w", path, err)
+		}
+	}
+	return nil
 }
 
 func sqliteFileDSN(path string) string {
