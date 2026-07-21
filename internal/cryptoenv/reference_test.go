@@ -3,6 +3,7 @@ package cryptoenv
 import (
 	"bytes"
 	"encoding/json"
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -142,6 +143,36 @@ func TestNegativeVectorsAreRejected(t *testing.T) {
 	if _, err := SharedSecret(recipientPrivate, make([]byte, 32)); err == nil {
 		t.Fatal("low-order/all-zero X25519 public key was accepted")
 	}
+}
+
+func TestManifestSizeOverflowIsRejectedWithoutPanic(t *testing.T) {
+	manifest := Manifest{
+		ProtocolVersion: ProtocolVersion,
+		CreatedAt:       time.Date(2026, 6, 30, 12, 0, 0, 0, time.UTC).Format(time.RFC3339Nano),
+		Files: []ManifestFile{
+			{Name: "one.bin", Type: "application/octet-stream", Size: math.MaxInt64},
+			{Name: "two.bin", Type: "application/octet-stream", Size: math.MaxInt64},
+			{Name: "three.bin", Type: "application/octet-stream", Size: 2},
+		},
+	}
+	if err := ValidateManifest(manifest, nil); err == nil {
+		t.Fatal("ValidateManifest accepted overflowing size sum")
+	}
+	if _, err := SplitPayload(manifest, nil); err == nil {
+		t.Fatal("SplitPayload accepted overflowing size sum")
+	}
+}
+
+func FuzzSplitPayloadNeverPanics(f *testing.F) {
+	f.Add([]byte(`{"protocol_version":2,"files":[{"name":"safe.txt","type":"text/plain","size":0}],"created_at":"2026-06-30T12:00:00Z"}`), []byte{})
+	f.Add([]byte(`{"protocol_version":2,"files":[{"name":"one","type":"application/octet-stream","size":9223372036854775807},{"name":"two","type":"application/octet-stream","size":9223372036854775807},{"name":"three","type":"application/octet-stream","size":2}],"created_at":"2026-06-30T12:00:00Z"}`), []byte{})
+	f.Fuzz(func(t *testing.T, manifestJSON []byte, payload []byte) {
+		var manifest Manifest
+		if err := json.Unmarshal(manifestJSON, &manifest); err != nil {
+			return
+		}
+		_, _ = SplitPayload(manifest, payload)
+	})
 }
 
 func TestManifestValidationAndSanitization(t *testing.T) {

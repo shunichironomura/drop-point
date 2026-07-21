@@ -73,10 +73,13 @@ func ValidateManifest(manifest Manifest, payloadPlaintext []byte) error {
 		return fmt.Errorf("manifest created_at is invalid: %w", err)
 	}
 	seen := make(map[string]struct{}, len(manifest.Files))
-	var total int64
+	remaining := int64(len(payloadPlaintext))
 	for i, file := range manifest.Files {
 		if file.Size < 0 {
 			return fmt.Errorf("manifest file %d size must be non-negative", i)
+		}
+		if file.Size > remaining {
+			return fmt.Errorf("manifest file %d size %d exceeds remaining payload length %d", i, file.Size, remaining)
 		}
 		safeName, err := SanitizeFilename(file.Name)
 		if err != nil {
@@ -89,10 +92,10 @@ func ValidateManifest(manifest Manifest, payloadPlaintext []byte) error {
 		if _, err := SanitizeMIMEType(file.Type); err != nil {
 			return fmt.Errorf("manifest file %d MIME type invalid: %w", i, err)
 		}
-		total += file.Size
+		remaining -= file.Size
 	}
-	if total != int64(len(payloadPlaintext)) {
-		return fmt.Errorf("manifest size sum = %d, payload length = %d", total, len(payloadPlaintext))
+	if remaining != 0 {
+		return fmt.Errorf("manifest size sum = %d, payload length = %d", int64(len(payloadPlaintext))-remaining, len(payloadPlaintext))
 	}
 	return nil
 }
@@ -102,9 +105,15 @@ func SplitPayload(manifest Manifest, payloadPlaintext []byte) ([]RecoveredFile, 
 		return nil, err
 	}
 	files := make([]RecoveredFile, 0, len(manifest.Files))
-	offset := int64(0)
-	for _, entry := range manifest.Files {
-		next := offset + entry.Size
+	offset := 0
+	for i, entry := range manifest.Files {
+		if entry.Size < 0 || entry.Size > int64(len(payloadPlaintext)-offset) {
+			return nil, fmt.Errorf("manifest file %d size is outside the remaining payload", i)
+		}
+		next := offset + int(entry.Size)
+		if next < offset || next > len(payloadPlaintext) {
+			return nil, fmt.Errorf("manifest file %d payload range is invalid", i)
+		}
 		safeName, err := SanitizeFilename(entry.Name)
 		if err != nil {
 			return nil, err
