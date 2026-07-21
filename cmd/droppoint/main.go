@@ -28,7 +28,10 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	if len(args) > 0 {
 		switch args[0] {
 		case "help", "-h", "--help":
-			printUsage(stdout)
+			if err := printUsage(stdout); err != nil {
+				_, _ = fmt.Fprintf(stderr, "write help output: %v\n", err)
+				return 1
+			}
 			return 0
 		case "token":
 			return runToken(args[1:], stdout, stderr)
@@ -109,7 +112,10 @@ func runTokenGenerate(args []string, stdout io.Writer, stderr io.Writer) int {
 		return 1
 	}
 	hash := token.HashSecret(plaintext)
-	_, _ = fmt.Fprintf(stdout, "api_token: %s\nsecret_hash: %s\n", plaintext, hash)
+	if _, err := fmt.Fprintf(stdout, "api_token: %s\nsecret_hash: %s\n", plaintext, hash); err != nil {
+		_, _ = fmt.Fprintf(stderr, "token output error: %v\n", err)
+		return 1
+	}
 	return 0
 }
 
@@ -160,8 +166,21 @@ func runTokenAdd(args []string, stdout io.Writer, stderr io.Writer) int {
 		_, _ = fmt.Fprintf(stderr, "token add error: %v\n", err)
 		return 1
 	}
+	if _, err := fmt.Fprintf(stdout, "api_token: %s\nid: %s\n", plaintext, *id); err != nil {
+		rollbackErr := repo.RemoveAPIToken(ctx, *id)
+		rollbackMessage := ""
+		if rollbackErr != nil {
+			rollbackMessage = rollbackErr.Error()
+		}
+		logger.Printf("event=api_token.add_output_failed api_token_id=%q output_error=%q rollback_error=%q", *id, err.Error(), rollbackMessage)
+		if rollbackErr != nil {
+			_, _ = fmt.Fprintf(stderr, "token output error: %v; rollback error: %v\n", err, rollbackErr)
+		} else {
+			_, _ = fmt.Fprintf(stderr, "token output error: %v; token row removed\n", err)
+		}
+		return 1
+	}
 	logger.Printf("event=api_token.added api_token_id=%q max_active_drop_points=%s", *id, formatOptionalInt(maxActiveOverride))
-	_, _ = fmt.Fprintf(stdout, "api_token: %s\nid: %s\n", plaintext, *id)
 	return 0
 }
 
@@ -190,13 +209,16 @@ func runTokenList(args []string, stdout io.Writer, stderr io.Writer) int {
 		return 1
 	}
 	for _, apiToken := range tokens {
-		_, _ = fmt.Fprintf(stdout, "id=%s enabled=%t max_active_drop_points=%s created_at=%s disabled_at=%s\n",
+		if _, err := fmt.Fprintf(stdout, "id=%s enabled=%t max_active_drop_points=%s created_at=%s disabled_at=%s\n",
 			apiToken.ID,
 			apiToken.Enabled,
 			formatOptionalInt(apiToken.MaxActiveDropPoints),
 			formatOptionalTime(apiToken.CreatedAt),
 			formatOptionalTimePtr(apiToken.DisabledAt),
-		)
+		); err != nil {
+			_, _ = fmt.Fprintf(stderr, "token list output error: %v\n", err)
+			return 1
+		}
 	}
 	return 0
 }
@@ -364,12 +386,15 @@ func runCleanup(args []string, stdout io.Writer, stderr io.Writer) int {
 		_, _ = fmt.Fprintf(stderr, "cleanup error: %v\n", err)
 		return 1
 	}
-	_, _ = fmt.Fprintf(stdout, "recovered_receiving=%d expired_drop_points=%d deleted_payloads=%d deleted_orphans=%d purged_rows=%d\n", result.RecoveredReceiving, result.ExpiredDropPoints, result.DeletedPayloads, result.DeletedOrphans, result.PurgedRows)
+	if _, err := fmt.Fprintf(stdout, "recovered_receiving=%d expired_drop_points=%d deleted_payloads=%d deleted_orphans=%d purged_rows=%d\n", result.RecoveredReceiving, result.ExpiredDropPoints, result.DeletedPayloads, result.DeletedOrphans, result.PurgedRows); err != nil {
+		_, _ = fmt.Fprintf(stderr, "cleanup output error: %v\n", err)
+		return 1
+	}
 	return 0
 }
 
-func printTokenUsage(w io.Writer) {
-	_, _ = fmt.Fprint(w, `Usage:
+func printTokenUsage(w io.Writer) error {
+	_, err := fmt.Fprint(w, `Usage:
   droppoint token add --id label [--max-active n] [--config path]
   droppoint token list [--config path]
   droppoint token disable --id label [--config path]
@@ -377,10 +402,11 @@ func printTokenUsage(w io.Writer) {
   droppoint token generate
 
 `)
+	return err
 }
 
-func printUsage(w io.Writer) {
-	_, _ = fmt.Fprint(w, `Usage:
+func printUsage(w io.Writer) error {
+	_, err := fmt.Fprint(w, `Usage:
   droppoint serve [--config path]
   droppoint [--config path]
   droppoint token add --id label [--max-active n] [--config path]
@@ -395,4 +421,5 @@ Defaults:
   data_dir: .data/droppoint
 
 `)
+	return err
 }

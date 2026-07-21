@@ -46,7 +46,7 @@ droppoint token remove --id desktop-main --config /etc/droppoint/config.json
 
 Use `--max-active n` with `token add` to override `default_max_active_drop_points` for one token.
 
-DropPoint stores only token hashes; the plaintext token is shown only when `token add` creates it.
+DropPoint stores only token hashes; the plaintext token is shown only when `token add` creates it. CLI output failures return non-zero. If the one-time `token add` output cannot be written, the command removes the just-created row so an unusable token is not left behind.
 
 ## Environment overrides
 

@@ -476,7 +476,7 @@ Configuration rules:
 - The local implementation MUST purge terminal SQLite rows older than `terminal_retention_seconds` after any ciphertext pointers for those rows have been cleared.
 - Plaintext API tokens MUST NOT be stored.
 - `api_tokens.secret_hash` rows use `sha256:<lowercase-hex-sha256>` for high-entropy random API tokens.
-- `token add` MUST generate a high-entropy plaintext API token, store only the hash, and print the plaintext token exactly once.
+- `token add` MUST generate a high-entropy plaintext API token, store only the hash, and print the plaintext token exactly once. If writing that only plaintext copy fails, the command MUST remove the newly inserted row and return non-zero; it MUST report a rollback failure if compensation itself fails.
 - `token disable` MUST make an API token immediately invalid for new drop point creation without restarting the relay.
 - `token add`, `token disable`, and `token remove` SHOULD write structured audit log events without plaintext token material.
 
