@@ -109,7 +109,7 @@ This document lists repository files in dependency-first review order. Local scr
     - Relay-side protocol envelope schema validation and base64url helpers.
 
 35. `internal/cryptoenv/manifest.go`
-    - Bundle manifest building, parsing, validation, payload splitting, filename sanitization, and MIME sanitization.
+    - Bounded bundle manifest building/parsing, checked payload splitting, canonical filename policy, collision checks, and MIME validation.
 
 36. `internal/cryptoenv/reference.go`
     - X25519/HKDF/AES-GCM reference encrypt/decrypt implementation outside the relay path.
@@ -120,134 +120,137 @@ This document lists repository files in dependency-first review order. Local scr
 38. `internal/cryptoenv/envelope_test.go`
     - Envelope shape, algorithm, length, padding, and unknown-field validation tests.
 
-39. `internal/cryptoenv/reference_test.go`
+39. `testdata/filename-policy.json`
+    - Normative cross-language canonical filename, validation, collision, and conservative bound fixtures.
+
+40. `internal/cryptoenv/reference_test.go`
     - Reference round-trip, negative vector rejection, manifest validation, and sanitization tests.
 
-40. `docs/protocol-reference.md`
+41. `docs/protocol-reference.md`
     - Protocol implementation pointers and deterministic positive/negative test-vector documentation.
 
-41. `web/drop-page/index.html`
+42. `web/drop-page/index.html`
     - Sender-facing mobile-friendly drop page shell and canonical UI copy.
 
-42. `web/drop-page/styles.css`
+43. `web/drop-page/styles.css`
     - Sender-facing drop page styles.
 
-43. `web/drop-page/app.js`
-    - Browser WebCrypto X25519/HKDF/AES-GCM bundle encryption, sender metadata lookup, and multipart encrypted drop submission.
+44. `web/drop-page/app.js`
+    - Browser WebCrypto bundle encryption, canonical filename disambiguation, sender metadata lookup, and multipart encrypted drop submission.
 
-44. `web/drop-page/assets.go`
+45. `web/drop-page/assets.go`
     - Embedded static asset filesystem for the drop page.
 
-45. `internal/httpapi/health.go`
+46. `internal/httpapi/health.go`
     - Low-information `/health` handler.
 
-46. `internal/httpapi/responses.go`
+47. `internal/httpapi/responses.go`
     - Shared JSON response and error helpers for API handlers.
 
-47. `internal/httpapi/auth.go`
+48. `internal/httpapi/auth.go`
     - Bearer API token parsing and SQLite token-hash authentication.
 
-48. `internal/httpapi/create.go`
+49. `internal/httpapi/create.go`
     - Authenticated drop point creation handler, request validation, display-name generation, quota enforcement, and drop-link construction.
 
-49. `internal/httpapi/receiver.go`
+50. `internal/httpapi/receiver.go`
     - Pickup-token authorization, receiver status, close API handlers, and blob-store interface.
 
-50. `internal/httpapi/drop_metadata.go`
+51. `internal/httpapi/drop_metadata.go`
     - Sender drop-token metadata handler for server-bound display names and upload limits.
 
-51. `internal/httpapi/drop.go`
+52. `internal/httpapi/drop.go`
     - Encrypted multipart drop endpoint, envelope validation, streaming size enforcement, and ready-state commit handling.
 
-52. `internal/httpapi/pickup.go`
+53. `internal/httpapi/pickup.go`
     - Multipart encrypted pickup endpoint and first-pickup timestamp recording.
 
-53. `internal/httpapi/drop_page.go`
+54. `internal/httpapi/drop_page.go`
     - Sender-facing drop page and same-origin asset HTTP handlers with strict security headers.
 
-54. `internal/httpapi/cors.go`
+55. `internal/httpapi/cors.go`
     - Same-origin CORS/preflight policy for browser requests while preserving non-browser bearer-token clients.
 
-55. `internal/httpapi/middleware.go`
+56. `internal/httpapi/middleware.go`
     - Request logging, token-path redaction, and panic recovery middleware.
 
-56. `internal/httpapi/router.go`
+57. `internal/httpapi/router.go`
     - HTTP route assembly and dependency injection.
 
-57. `internal/httpapi/router_test.go`
+58. `internal/httpapi/router_test.go`
     - Health, method rejection, redaction, and recovery tests.
 
-58. `internal/httpapi/create_test.go`
+59. `internal/httpapi/create_test.go`
     - Authenticated create API tests for valid, invalid, disabled, quota, and limit cases.
 
-59. `internal/httpapi/receiver_test.go`
+60. `internal/httpapi/receiver_test.go`
     - Receiver status and close API tests for pickup-token scoping, expiry reporting, retry safety, and file-pointer cleanup.
 
-60. `internal/httpapi/drop_metadata_test.go`
+61. `internal/httpapi/drop_metadata_test.go`
     - Sender metadata API tests for server-bound display names and unavailable drops.
 
-61. `internal/httpapi/drop_test.go`
+62. `internal/httpapi/drop_test.go`
     - Drop endpoint tests for valid encrypted storage, second-drop rejection, oversize reset, malformed reset, authorization scoping, and concurrency.
 
-62. `internal/httpapi/pickup_test.go`
+63. `internal/httpapi/pickup_test.go`
     - Pickup tests for ready retrieval, repeatability, first-pickup timestamps, and rejection cases.
 
-63. `internal/httpapi/drop_page_test.go`
+64. `internal/httpapi/drop_page_test.go`
     - Drop page security header, copy, asset, metadata lookup, and token-redaction tests.
 
-64. `internal/httpapi/integration_test.go`
+65. `internal/httpapi/integration_test.go`
     - End-to-end create/drop/status/pickup/close, failure, concurrency, cleanup, CORS, redaction, and disk-write failure tests.
 
-65. `internal/server/server.go`
+66. `internal/server/server.go`
     - Imperative shell wiring config, data directory, SQLite repository, blob store, and HTTP server.
 
-66. `internal/server/server_test.go`
+67. `internal/server/server_test.go`
     - Server initialization, timeout, cleanup, and health routing tests.
 
-67. `cmd/droppoint/main.go`
+68. `cmd/droppoint/main.go`
     - `droppoint` CLI entrypoint, default `serve` command, SQLite API token management commands, token generation utility, and cleanup command.
 
-68. `cmd/droppoint/main_test.go`
+69. `cmd/droppoint/main_test.go`
     - CLI token generation and SQLite token management command tests.
 
-69. `Dockerfile`
+70. `Dockerfile`
     - Multi-stage non-root container image for the DropPoint relay.
 
-70. `compose.yaml`
+71. `compose.yaml`
     - Docker Compose service definition for building and running the relay with persistent storage and ignored `.env` configuration.
 
-71. `scripts/drop_point_protocol.py`
-    - Shared Python DropPoint protocol helpers for local receiver/sender simulations.
+72. `scripts/drop_point_protocol.py`
+    - Shared Python protocol, canonical filename, bounded manifest, encryption, and decryption helpers for client simulations.
 
-72. `scripts/drop_point_storage.py`
+73. `scripts/drop_point_storage.py`
     - Shared owner-only atomic state writer and all-or-nothing durable receiver bundle installer with identity receipts.
 
-73. `scripts/droppoint-receiver.py`
+74. `scripts/droppoint-receiver.py`
     - Python receiver simulation for create, status, durable bundle pickup/decrypt/install, retry-safe close, and private-key removal.
 
-74. `scripts/droppoint-qr.py`
+75. `scripts/droppoint-qr.py`
     - Python public-endpoint mobile test helper for creating a drop point, durably saving receiver state, and rendering the sender link as a QR code.
 
-75. `scripts/droppoint-sender.py`
+76. `scripts/droppoint-sender.py`
     - Python sender simulation for fragment parsing, browser-equivalent encryption, and encrypted drop upload.
 
-76. `docs/configuration.md`
+77. `docs/configuration.md`
     - Operator configuration reference and SQLite token CLI guidance.
 
-77. `docs/api.md`
+78. `docs/api.md`
     - Receiver API, sender metadata, and encrypted drop framing reference with curl examples.
 
-78. `docs/deployment.md`
+79. `docs/deployment.md`
     - Build, systemd, token-management, reverse-proxy/tunnel, secure-context, request-size, and log-redaction guidance.
 
-79. `docs/client-integration.md`
+80. `docs/client-integration.md`
     - Generic receiver/client integration boundary and durable local storage ordering guidance.
 
-80. `docs/local-testing.md`
+81. `docs/local-testing.md`
     - Local testing workflow using the token CLI plus Python receiver and sender simulation scripts.
 
-81. `README.md`
+82. `README.md`
     - Product overview, local development flow, security model, and operator entry points.
 
-82. `CODE_REVIEW_ORDER.md`
+83. `CODE_REVIEW_ORDER.md`
     - This review-order index. Update it whenever repository files change.

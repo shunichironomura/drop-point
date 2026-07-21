@@ -4,7 +4,17 @@ const COUNTDOWN_INTERVAL_MS = 1000;
 const IMAGE_TYPE_PREFIX = 'image/';
 const IMAGE_NAME_PATTERN = /\.(?:apng|avif|bmp|gif|heic|heif|ico|jpe?g|png|svg|webp)$/i;
 const BASE64URL_PATTERN = /^[A-Za-z0-9_-]+$/;
-const WINDOWS_RESERVED_NAMES = new Set(['CON', 'PRN', 'AUX', 'NUL', 'COM1', 'COM2', 'COM3', 'COM4', 'COM5', 'COM6', 'COM7', 'COM8', 'COM9', 'LPT1', 'LPT2', 'LPT3', 'LPT4', 'LPT5', 'LPT6', 'LPT7', 'LPT8', 'LPT9']);
+const MAX_MANIFEST_FILES = 1000;
+const MAX_FILENAME_UTF8_BYTES = 240;
+const MAX_FILENAME_EXTENSION_BYTES = 32;
+const MAX_MIME_TYPE_UTF8_BYTES = 255;
+const SAFE_MIME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]*\/[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]*$/;
+const RESERVED_RECEIPT_NAME = '.droppoint-receipt.json';
+const WINDOWS_RESERVED_NAMES = new Set([
+  'CON', 'PRN', 'AUX', 'NUL',
+  'COM1', 'COM2', 'COM3', 'COM4', 'COM5', 'COM6', 'COM7', 'COM8', 'COM9', 'COM¹', 'COM²', 'COM³',
+  'LPT1', 'LPT2', 'LPT3', 'LPT4', 'LPT5', 'LPT6', 'LPT7', 'LPT8', 'LPT9', 'LPT¹', 'LPT²', 'LPT³',
+]);
 const INFO_METADATA = new TextEncoder().encode('DropPoint/protocol/v2 key=metadata');
 const INFO_PAYLOAD = new TextEncoder().encode('DropPoint/protocol/v2 key=payload');
 const AAD_METADATA = aad('metadata');
@@ -413,12 +423,15 @@ async function assertX25519Support(recipientPublicKey) {
 }
 
 async function buildEncryptedBundle(files, recipientPublicKeyBytes) {
+  if (files.length === 0 || files.length > MAX_MANIFEST_FILES) {
+    throw userError(`Choose between 1 and ${MAX_MANIFEST_FILES} files.`);
+  }
   const manifestFiles = [];
   const chunks = [];
   const usedManifestNames = new Set();
   for (const file of files) {
     const bytes = new Uint8Array(await file.arrayBuffer());
-    manifestFiles.push({ name: uniqueManifestName(file.name || 'file', usedManifestNames), type: file.type || 'application/octet-stream', size: bytes.byteLength });
+    manifestFiles.push({ name: uniqueManifestName(file.name || 'file', usedManifestNames), type: canonicalManifestMIME(file.type), size: bytes.byteLength });
     chunks.push(bytes);
   }
   const payloadPlaintext = concat(chunks);
@@ -457,6 +470,14 @@ async function buildEncryptedBundle(files, recipientPublicKeyBytes) {
   };
 }
 
+function canonicalManifestMIME(value) {
+  const mediaType = String(value || 'application/octet-stream').toLowerCase();
+  if (utf8Length(mediaType) > MAX_MIME_TYPE_UTF8_BYTES || !SAFE_MIME_PATTERN.test(mediaType)) {
+    return 'application/octet-stream';
+  }
+  return mediaType;
+}
+
 function uniqueManifestName(name, usedNames) {
   const baseName = sanitizeManifestName(name);
   let candidate = baseName;
@@ -470,28 +491,69 @@ function uniqueManifestName(name, usedNames) {
 }
 
 function sanitizeManifestName(value) {
-  const name = String(value || 'file').replace(/[\/\\\x00-\x1F\x7F]/g, '_').trim();
-  if (name === '' || name === '.' || name === '..' || isReservedWindowsName(name)) {
-    return 'file';
+  const normalized = String(value || 'file').normalize('NFC');
+  let name = normalized
+    .replace(/[\/\\\x00<>:"|?*]/gu, '_')
+    .replace(/[\p{Cc}\p{Cf}\p{Cs}]/gu, '_')
+    .replace(/[ .]+$/u, '');
+  if (/^\p{White_Space}*$/u.test(name) || name === '.' || name === '..') {
+    name = 'file';
   }
-  return name;
+  if (isReservedWindowsName(name) || name.toLowerCase() === RESERVED_RECEIPT_NAME) {
+    name = `_${name}`;
+  }
+  return fitManifestName(name, '');
 }
 
 function isReservedWindowsName(name) {
-  const base = name.replace(/\.[^.]*$/u, '').toUpperCase();
+  const base = name.split('.', 1)[0].toUpperCase();
   return WINDOWS_RESERVED_NAMES.has(base);
 }
 
 function appendNameSuffix(name, suffix) {
+  return fitManifestName(name, ` (${suffix})`);
+}
+
+function fitManifestName(name, suffix) {
+  let stem = name;
+  let extension = '';
   const dot = name.lastIndexOf('.');
   if (dot > 0) {
-    return `${name.slice(0, dot)} (${suffix})${name.slice(dot)}`;
+    const possibleExtension = name.slice(dot);
+    if (utf8Length(possibleExtension) <= MAX_FILENAME_EXTENSION_BYTES) {
+      stem = name.slice(0, dot);
+      extension = possibleExtension;
+    }
   }
-  return `${name} (${suffix})`;
+  let budget = MAX_FILENAME_UTF8_BYTES - utf8Length(suffix) - utf8Length(extension);
+  if (budget < 1) {
+    extension = '';
+    budget = MAX_FILENAME_UTF8_BYTES - utf8Length(suffix);
+  }
+  stem = truncateUTF8(stem, budget).replace(/[ .]+$/u, '');
+  if (/^\p{White_Space}*$/u.test(stem) || stem === '.' || stem === '..') {
+    stem = 'file';
+  }
+  return `${stem}${suffix}${extension}`;
+}
+
+function truncateUTF8(value, maxBytes) {
+  let out = '';
+  for (const character of value) {
+    if (utf8Length(out) + utf8Length(character) > maxBytes) {
+      break;
+    }
+    out += character;
+  }
+  return out;
+}
+
+function utf8Length(value) {
+  return new TextEncoder().encode(value).byteLength;
 }
 
 function foldManifestName(name) {
-  return name.toLocaleLowerCase('en-US');
+  return name.normalize('NFC').toLowerCase();
 }
 
 async function deriveAESKey(hkdfKey, salt, info) {

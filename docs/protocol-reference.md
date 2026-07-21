@@ -18,7 +18,7 @@ Exact protocol byte strings:
 - `AAD_METADATA = 0x02 || "metadata"`
 - `AAD_PAYLOAD = 0x02 || "payload"`
 
-Receivers must reject malformed envelopes, AES-GCM authentication failures, all-zero/low-order X25519 inputs, manifest size-sum mismatch, hostile filenames or MIME types, and duplicate filenames.
+Receivers must reject malformed envelopes, AES-GCM authentication failures, all-zero/low-order X25519 inputs, manifest size-sum mismatch, hostile or noncanonical filenames, unsafe MIME types, and normalization/lowercase comparison-key collisions. Bundles contain at most 1000 manifest entries; canonical names are NFC and at most 240 UTF-8 bytes, and MIME values are at most 255 UTF-8 bytes. `testdata/filename-policy.json` is the normative cross-language filename fixture.
 
 ## Positive deterministic vectors
 
@@ -73,5 +73,6 @@ The `internal/cryptoenv` test suite builds a positive bundle and verifies reject
 - protocol version change;
 - all-zero/low-order X25519 public input;
 - manifest size-sum mismatch;
-- hostile filenames and MIME types;
-- duplicate filenames in a bundle.
+- hostile/noncanonical filenames and unsafe MIME types;
+- normalization or lowercase comparison-key collisions in a bundle;
+- manifest entry and filename/MIME length violations.

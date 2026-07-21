@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"math"
+	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -142,6 +144,81 @@ func TestNegativeVectorsAreRejected(t *testing.T) {
 	}
 	if _, err := SharedSecret(recipientPrivate, make([]byte, 32)); err == nil {
 		t.Fatal("low-order/all-zero X25519 public key was accepted")
+	}
+}
+
+func TestFilenamePolicyFixtures(t *testing.T) {
+	data, err := os.ReadFile("../../testdata/filename-policy.json")
+	if err != nil {
+		t.Fatalf("ReadFile filename policy: %v", err)
+	}
+	var fixture struct {
+		MaxFilenameUTF8Bytes int `json:"max_filename_utf8_bytes"`
+		MaxManifestFiles     int `json:"max_manifest_files"`
+		Canonicalization     []struct {
+			Input  []string `json:"input"`
+			Output []string `json:"output"`
+		} `json:"canonicalization_bundles"`
+		Validation []struct {
+			Name  string `json:"name"`
+			Valid bool   `json:"valid"`
+		} `json:"validation"`
+		Collisions []struct {
+			Names    []string `json:"names"`
+			Collides bool     `json:"collides"`
+		} `json:"collisions"`
+	}
+	if err := json.Unmarshal(data, &fixture); err != nil {
+		t.Fatalf("Unmarshal filename policy: %v", err)
+	}
+	if fixture.MaxFilenameUTF8Bytes != MaxFilenameUTF8Bytes || fixture.MaxManifestFiles != MaxManifestFiles {
+		t.Fatalf("fixture limits = %d/%d, code limits = %d/%d", fixture.MaxFilenameUTF8Bytes, fixture.MaxManifestFiles, MaxFilenameUTF8Bytes, MaxManifestFiles)
+	}
+	for i, bundle := range fixture.Canonicalization {
+		got, err := CanonicalizeFilenames(bundle.Input)
+		if err != nil {
+			t.Fatalf("canonicalization bundle %d: %v", i, err)
+		}
+		if !slices.Equal(got, bundle.Output) {
+			t.Fatalf("canonicalization bundle %d = %#v, want %#v", i, got, bundle.Output)
+		}
+		for _, name := range got {
+			if _, err := SanitizeFilename(name); err != nil {
+				t.Fatalf("canonical output %q is invalid: %v", name, err)
+			}
+		}
+	}
+	for _, entry := range fixture.Validation {
+		_, err := SanitizeFilename(entry.Name)
+		if gotValid := err == nil; gotValid != entry.Valid {
+			t.Fatalf("SanitizeFilename(%q) valid = %t, want %t (err=%v)", entry.Name, gotValid, entry.Valid, err)
+		}
+	}
+	for _, entry := range fixture.Collisions {
+		if len(entry.Names) != 2 {
+			t.Fatalf("collision fixture names = %#v, want two", entry.Names)
+		}
+		got := filenameCollisionKey(entry.Names[0]) == filenameCollisionKey(entry.Names[1])
+		if got != entry.Collides {
+			t.Fatalf("collision(%q, %q) = %t, want %t", entry.Names[0], entry.Names[1], got, entry.Collides)
+		}
+	}
+}
+
+func TestManifestEnforcesEntryAndFilenameBounds(t *testing.T) {
+	tooMany := make([]PlainFile, MaxManifestFiles+1)
+	if _, _, err := BuildManifest(tooMany, time.Now()); err == nil {
+		t.Fatal("BuildManifest accepted too many files")
+	}
+	longNames := []string{strings.Repeat("é", MaxFilenameUTF8Bytes), strings.Repeat("é", MaxFilenameUTF8Bytes)}
+	canonical, err := CanonicalizeFilenames(longNames)
+	if err != nil {
+		t.Fatalf("CanonicalizeFilenames: %v", err)
+	}
+	for _, name := range canonical {
+		if len(name) > MaxFilenameUTF8Bytes {
+			t.Fatalf("canonical filename length = %d, want <= %d", len(name), MaxFilenameUTF8Bytes)
+		}
 	}
 }
 

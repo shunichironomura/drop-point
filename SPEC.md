@@ -653,7 +653,7 @@ The receiver:
 6. Decrypts and authenticates `encrypted_metadata` using `AAD_METADATA`.
 7. Decrypts and authenticates `encrypted_payload` using `AAD_PAYLOAD`.
 8. Verifies the manifest and splits payload bytes using Section 11.
-9. Sanitizes filenames and treats MIME types as untrusted using Section 12.
+9. Validates canonical filenames, rejects comparison-key collisions, and treats MIME types as untrusted using Section 12.
 10. Deletes the receiver private key when no longer needed.
 
 Any authentication failure MUST reject the drop.
@@ -718,8 +718,10 @@ Manifest plaintext JSON:
 
 Rules:
 
-- `files` is an ordered array with one entry per file.
+- `files` is an ordered array with one entry per file and MUST contain between 1 and 1000 entries.
 - Each file entry has `name`, `type`, and `size`.
+- `name` is a sender-canonicalized filename satisfying Section 12 and is at most 240 UTF-8 bytes.
+- `type` is at most 255 UTF-8 bytes.
 - `size` is the original plaintext byte length and MUST be a non-negative integer.
 - `created_at` is the sender-side bundle creation time in ISO 8601 format.
 - `payload_plaintext` is the concatenation of file bytes in `files` order.
@@ -728,21 +730,30 @@ Rules:
 
 The manifest is encrypted and authenticated as metadata; filenames, MIME types, and per-file sizes are not visible to the relay except for ciphertext length leakage.
 
-## 12. Receiver validation obligations
+## 12. Canonical filename and receiver validation policy
 
-Decrypted manifest fields are sender-controlled. Receivers MUST NOT trust filenames, MIME types, or timestamps.
+Decrypted manifest fields are sender-controlled. Receivers MUST NOT trust filenames, MIME types, or timestamps. The normative filename fixtures are in `testdata/filename-policy.json`.
 
-For each manifest entry, the receiver MUST:
+A canonical manifest filename MUST:
 
-- Sanitize the filename to a safe base name.
-- Remove or reject path separators, NUL bytes, and control characters.
-- Reject empty filenames, absolute paths, and platform-reserved names.
-- Reject or disambiguate duplicate filenames within the bundle.
-- Never let a filename choose the destination directory.
-- Treat MIME type as advisory and prefer content-based type detection where relevant.
-- Verify the manifest size sum before writing recovered files.
+- be valid UTF-8 normalized to Unicode NFC;
+- contain between 1 and 240 UTF-8 bytes;
+- be a base name with no `/`, `\\`, NUL, Unicode control (`Cc`) or format (`Cf`) characters, or Windows-invalid `<`, `>`, `:`, `"`, `|`, `?`, or `*` characters;
+- not end in an ASCII space or dot;
+- not be empty, `.`, `..`, entirely Unicode whitespace, or the receiver-reserved `.droppoint-receipt.json` name (ASCII-case-insensitive);
+- not have a Windows-reserved stem before the first dot: `CON`, `PRN`, `AUX`, `NUL`, `COM1` through `COM9`, `LPT1` through `LPT9`, or the equivalent `COM`/`LPT` superscript-1/2/3 forms, compared case-insensitively.
 
-Receivers SHOULD store files by content hash or another receiver-controlled safe name and keep the original filename only as display metadata.
+Senders MUST normalize each source base name to NFC, replace every forbidden character with `_`, remove trailing ASCII spaces/dots, use `file` for a blank/reserved result, and prefix `_` to a Windows-reserved stem or receiver-reserved name. Senders MUST fit the result to 240 UTF-8 bytes without splitting a code point; they preserve a final extension only when it is at most 32 UTF-8 bytes. In input order, a sender MUST deterministically disambiguate comparison-key collisions by inserting ` (2)`, ` (3)`, and so on before the preserved extension while refitting to 240 bytes.
+
+The filename comparison key is NFC followed by the implementation language's locale-independent Unicode lowercase mapping. The shared fixtures lock required cross-language cases. Receivers MUST reject duplicate comparison keys. Receivers MUST independently validate canonical manifest names and MUST reject a noncanonical bundle rather than silently rewriting it.
+
+For each manifest entry, the receiver MUST also:
+
+- never let a filename choose the parent destination directory;
+- treat MIME type as advisory and prefer content-based type detection where relevant;
+- verify the manifest size sum using checked remaining-length arithmetic before slicing or writing recovered files.
+
+A receiver MAY use validated canonical manifest names only within a receiver-controlled, all-or-nothing bundle directory. It MAY instead store files by content hash or another receiver-controlled safe name and retain the canonical name as display metadata.
 
 ## 13. Security model
 
