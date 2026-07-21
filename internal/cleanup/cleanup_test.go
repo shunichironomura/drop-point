@@ -261,6 +261,41 @@ func TestExpireRecoversOnlyStaleReceiving(t *testing.T) {
 	}
 }
 
+func TestExpireReconcilesFailedPayload(t *testing.T) {
+	repo, blobs := newCleanupStore(t)
+	now := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
+	dp := cleanupDropPoint(t, "dp_cleanup_failed", "drop_cleanup_failed", "pick_cleanup_failed", now)
+	insertCleanupDropPoint(t, repo, dp)
+	if err := repo.BeginReceivingDrop(context.Background(), dp.ID, now); err != nil {
+		t.Fatalf("BeginReceivingDrop: %v", err)
+	}
+	stored, err := blobs.WriteDrop(context.Background(), dp.ID, []byte(`{}`), bytes.NewReader([]byte("payload")), 100)
+	if err != nil {
+		t.Fatalf("WriteDrop: %v", err)
+	}
+	if err := repo.CommitReceivedDrop(context.Background(), dp.ID, stored, now); err != nil {
+		t.Fatalf("CommitReceivedDrop: %v", err)
+	}
+	if err := repo.FailDropPoint(context.Background(), dp.ID, now.Add(time.Second)); err != nil {
+		t.Fatalf("FailDropPoint: %v", err)
+	}
+
+	result, err := (Service{Repository: repo, BlobStore: blobs, Now: func() time.Time { return now.Add(2 * time.Second) }}).Expire(context.Background())
+	if err != nil {
+		t.Fatalf("Expire: %v", err)
+	}
+	if result.DeletedPayloads != 1 {
+		t.Fatalf("DeletedPayloads = %d, want 1", result.DeletedPayloads)
+	}
+	row, err := repo.FindDropPointByID(context.Background(), dp.ID)
+	if err != nil {
+		t.Fatalf("FindDropPointByID: %v", err)
+	}
+	if row.Status != droppoint.StatusFailed || row.PayloadPath != "" || row.EnvelopePath != "" || row.FailedAt == nil {
+		t.Fatalf("failed cleanup row = %+v", row)
+	}
+}
+
 func TestExpireOpenDropPointWithoutFiles(t *testing.T) {
 	repo, blobs := newCleanupStore(t)
 	now := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
@@ -280,12 +315,16 @@ func TestExpirePurgesTerminalRowsAfterRetention(t *testing.T) {
 	now := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
 	oldClosed := cleanupDropPoint(t, "dp_cleanup_old_closed", "drop_old_closed", "pick_old_closed", now.Add(-48*time.Hour))
 	oldExpired := cleanupDropPoint(t, "dp_cleanup_old_expired", "drop_old_expired", "pick_old_expired", now.Add(-48*time.Hour))
+	oldFailed := cleanupDropPoint(t, "dp_cleanup_old_failed", "drop_old_failed", "pick_old_failed", now.Add(-48*time.Hour))
 	newClosed := cleanupDropPoint(t, "dp_cleanup_new_closed", "drop_new_closed", "pick_new_closed", now.Add(-5*time.Minute))
-	for _, dp := range []droppoint.DropPoint{oldClosed, oldExpired, newClosed} {
+	for _, dp := range []droppoint.DropPoint{oldClosed, oldExpired, oldFailed, newClosed} {
 		insertCleanupDropPoint(t, repo, dp)
 	}
 	if err := repo.CloseDropPoint(context.Background(), oldClosed.ID, now.Add(-47*time.Hour-55*time.Minute)); err != nil {
 		t.Fatalf("CloseDropPoint old: %v", err)
+	}
+	if err := repo.FailDropPoint(context.Background(), oldFailed.ID, now.Add(-47*time.Hour-55*time.Minute)); err != nil {
+		t.Fatalf("FailDropPoint old: %v", err)
 	}
 	if err := repo.CloseDropPoint(context.Background(), newClosed.ID, now.Add(-4*time.Minute)); err != nil {
 		t.Fatalf("CloseDropPoint new: %v", err)
@@ -295,10 +334,10 @@ func TestExpirePurgesTerminalRowsAfterRetention(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Expire: %v", err)
 	}
-	if result.ExpiredDropPoints != 1 || result.PurgedRows != 2 {
-		t.Fatalf("cleanup result = %+v, want one newly expired and two purged", result)
+	if result.ExpiredDropPoints != 1 || result.PurgedRows != 3 {
+		t.Fatalf("cleanup result = %+v, want one newly expired and three purged", result)
 	}
-	for _, id := range []string{oldClosed.ID, oldExpired.ID} {
+	for _, id := range []string{oldClosed.ID, oldExpired.ID, oldFailed.ID} {
 		if _, err := repo.FindDropPointByID(context.Background(), id); !errors.Is(err, droppoint.ErrDropPointNotFound) {
 			t.Fatalf("FindDropPointByID(%s) err = %v, want ErrDropPointNotFound", id, err)
 		}

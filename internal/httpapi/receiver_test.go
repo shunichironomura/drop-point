@@ -68,6 +68,28 @@ func TestStatusReportsExpiredConsistently(t *testing.T) {
 	}
 }
 
+func TestFailedDropPointHasConsistentReceiverAPIBehavior(t *testing.T) {
+	repo, handler := newCreateTestHandler(t)
+	now := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
+	dp := testHTTPDropPoint(t, "dp_receiver_failed", "drop_receiver_failed", "pick_receiver_failed", now)
+	insertHTTPDropPoint(t, repo, dp)
+	if err := repo.FailDropPoint(context.Background(), dp.ID, now.Add(time.Second)); err != nil {
+		t.Fatalf("FailDropPoint: %v", err)
+	}
+	status := authorizedRequest(t, handler, http.MethodGet, "/api/drop-points/"+dp.ID+"/status", "pick_receiver_failed")
+	if status.Code != http.StatusOK || !strings.Contains(status.Body.String(), `"status":"failed"`) {
+		t.Fatalf("failed status response = %d %s", status.Code, status.Body.String())
+	}
+	pickup := authorizedRequest(t, handler, http.MethodGet, "/api/drop-points/"+dp.ID+"/pickup", "pick_receiver_failed")
+	if pickup.Code != http.StatusGone {
+		t.Fatalf("failed pickup response = %d %s", pickup.Code, pickup.Body.String())
+	}
+	closeResponse := authorizedRequest(t, handler, http.MethodDelete, "/api/drop-points/"+dp.ID, "pick_receiver_failed")
+	if closeResponse.Code != http.StatusGone {
+		t.Fatalf("failed close response = %d %s", closeResponse.Code, closeResponse.Body.String())
+	}
+}
+
 func TestCloseIsIdempotentAndPreventsDrops(t *testing.T) {
 	repo, handler := newCreateTestHandler(t)
 	now := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)

@@ -70,8 +70,12 @@ func TestGetDropMetadataRejectsUnknownExpiredAndUsedDrops(t *testing.T) {
 	ready.EnvelopePath = "drop-points/dp_ready_metadata/envelope.json"
 	ready.PayloadPath = "drop-points/dp_ready_metadata/payload.bin"
 	ready.EncryptedSize = 42
-	for _, dp := range []droppoint.DropPoint{expired, ready} {
+	failed := metadataTestDropPoint(t, "dp_failed_metadata", "drop_failed_metadata", now)
+	for _, dp := range []droppoint.DropPoint{expired, ready, failed} {
 		insertHTTPDropPoint(t, repo, dp)
+	}
+	if err := repo.FailDropPoint(t.Context(), failed.ID, now.Add(time.Second)); err != nil {
+		t.Fatalf("FailDropPoint: %v", err)
 	}
 
 	tests := map[string]struct {
@@ -81,6 +85,7 @@ func TestGetDropMetadataRejectsUnknownExpiredAndUsedDrops(t *testing.T) {
 		"unknown": {token: "drop_unknown_metadata", want: http.StatusNotFound},
 		"expired": {token: "drop_expired_metadata", want: http.StatusGone},
 		"used":    {token: "drop_ready_metadata", want: http.StatusConflict},
+		"failed":  {token: "drop_failed_metadata", want: http.StatusGone},
 	}
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {

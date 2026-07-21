@@ -66,6 +66,7 @@ func TestMigrationCreatesDropPointsSchema(t *testing.T) {
 
 	assertDropPointsColumnExists(t, db.SQLDB(), "display_name")
 	assertDropPointsColumnExists(t, db.SQLDB(), "receiving_started_at")
+	assertDropPointsColumnExists(t, db.SQLDB(), "failed_at")
 	var version int
 	if err := db.SQLDB().QueryRowContext(context.Background(), "PRAGMA user_version").Scan(&version); err != nil {
 		t.Fatalf("query user_version: %v", err)

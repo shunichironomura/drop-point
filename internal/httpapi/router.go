@@ -21,6 +21,7 @@ type Repository interface {
 	BeginReceivingDrop(ctx context.Context, id string, now time.Time) error
 	CommitReceivedDrop(ctx context.Context, id string, result droppoint.CommitDropResult, now time.Time) error
 	ResetReceivingDrop(ctx context.Context, id string, now time.Time) error
+	FailDropPoint(ctx context.Context, id string, now time.Time) error
 	AuthorizePickupToken(ctx context.Context, id string, pickupTokenHash string, now time.Time) (*droppoint.DropPoint, error)
 	MarkFirstPickedUp(ctx context.Context, id string, now time.Time) error
 	CloseDropPoint(ctx context.Context, id string, now time.Time) error

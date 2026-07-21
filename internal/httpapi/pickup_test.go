@@ -91,6 +91,29 @@ func TestPickupRetrievesReadyCiphertextAndRecordsFirstPickup(t *testing.T) {
 	}
 }
 
+func TestPickupMarksMissingBlobPointersFailed(t *testing.T) {
+	repo, _, handler := newDropTestHandler(t)
+	dp := readyPickupDropPoint(t, repo, handler, "dp_pickup_corrupt", "drop_pickup_corrupt", "pick_pickup_corrupt")
+	if err := repo.DeleteDropPointFiles(context.Background(), dp.ID); err != nil {
+		t.Fatalf("DeleteDropPointFiles: %v", err)
+	}
+	recorder := authorizedRequest(t, handler, http.MethodGet, "/api/drop-points/"+dp.ID+"/pickup", "pick_pickup_corrupt")
+	if recorder.Code != http.StatusInternalServerError {
+		t.Fatalf("first corrupt pickup status = %d body=%s", recorder.Code, recorder.Body.String())
+	}
+	row, err := repo.FindDropPointByID(context.Background(), dp.ID)
+	if err != nil {
+		t.Fatalf("FindDropPointByID: %v", err)
+	}
+	if row.Status != droppoint.StatusFailed || row.FailedAt == nil {
+		t.Fatalf("corrupt row was not failed: %+v", row)
+	}
+	recorder = authorizedRequest(t, handler, http.MethodGet, "/api/drop-points/"+dp.ID+"/pickup", "pick_pickup_corrupt")
+	if recorder.Code != http.StatusGone {
+		t.Fatalf("failed pickup status = %d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
 func TestPickupRecordsAfterFinalWriteDespiteCancellationAndClose(t *testing.T) {
 	repo, _, handler := newDropTestHandler(t)
 	dp := readyPickupDropPoint(t, repo, handler, "dp_pickup_finalize", "drop_pickup_finalize", "pick_pickup_finalize")

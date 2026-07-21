@@ -103,6 +103,31 @@ func TestSubmitDropRejectsOversizeAndResetsOpen(t *testing.T) {
 	}
 }
 
+func TestSubmitDropEnforcesNormativeMultipartFraming(t *testing.T) {
+	tests := []struct {
+		name  string
+		parts []testMultipartPart
+	}{
+		{name: "payload before envelope", parts: []testMultipartPart{{payloadPartName, octetContentType, []byte("payload")}, {envelopePartName, jsonContentType, []byte(testEnvelopeJSON())}}},
+		{name: "extra third part", parts: []testMultipartPart{{envelopePartName, jsonContentType, []byte(testEnvelopeJSON())}, {payloadPartName, octetContentType, []byte("payload")}, {"extra", octetContentType, []byte("extra")}}},
+		{name: "envelope over one MiB", parts: []testMultipartPart{{envelopePartName, jsonContentType, bytes.Repeat([]byte(" "), maxEnvelopeBytes+1)}, {payloadPartName, octetContentType, []byte("payload")}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo, _, handler := newDropTestHandler(t)
+			suffix := strings.NewReplacer(" ", "_", "-", "_").Replace(tt.name)
+			dp := testHTTPDropPoint(t, "dp_framing_"+suffix, "drop_framing_"+suffix, "pick_framing_"+suffix, dropTestNow())
+			insertHTTPDropPoint(t, repo, dp)
+			recorder := httptest.NewRecorder()
+			handler.ServeHTTP(recorder, multipartDropRequestWithParts(t, "/api/drops/drop_framing_"+suffix, tt.parts))
+			if recorder.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d body=%s, want bad request", recorder.Code, recorder.Body.String())
+			}
+			assertDropStatus(t, repo, dp.ID, droppoint.StatusOpen)
+		})
+	}
+}
+
 func TestSubmitDropRejectsMalformedMultipartWithoutConsumingSlot(t *testing.T) {
 	repo, _, handler := newDropTestHandler(t)
 	dp := testHTTPDropPoint(t, "dp_bad_envelope", "drop_bad_envelope", "pick_bad_envelope", dropTestNow())
@@ -264,6 +289,29 @@ func TestSubmitDropFinalizationFailuresRemainRecoverable(t *testing.T) {
 		}
 	})
 
+	t.Run("ambiguous commit", func(t *testing.T) {
+		repo, blobs, _ := newDropTestHandler(t)
+		dp := testHTTPDropPoint(t, "dp_ambiguous_commit", "drop_ambiguous_commit", "pick_ambiguous_commit", dropTestNow())
+		insertHTTPDropPoint(t, repo, dp)
+		repository := &repositoryOverride{Repository: repo, errorAfterCommit: true}
+		handler := dropHandler(repository, blobs, nil)
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, multipartDropRequest(t, "/api/drops/drop_ambiguous_commit", []byte(testEnvelopeJSON()), []byte("payload")))
+		if recorder.Code != http.StatusInternalServerError {
+			t.Fatalf("status = %d body=%s", recorder.Code, recorder.Body.String())
+		}
+		row, err := repo.FindDropPointByID(context.Background(), dp.ID)
+		if err != nil {
+			t.Fatalf("FindDropPointByID: %v", err)
+		}
+		if row.Status != droppoint.StatusFailed || row.FailedAt == nil {
+			t.Fatalf("ambiguous commit row = %+v, want failed", row)
+		}
+		if _, err := os.Stat(blobs.DropDir(dp.ID)); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("drop dir stat err = %v, want not exist", err)
+		}
+	})
+
 	t.Run("reset", func(t *testing.T) {
 		repo, blobs, _ := newDropTestHandler(t)
 		dp := testHTTPDropPoint(t, "dp_reset_failure", "drop_reset_failure", "pick_reset_failure", dropTestNow())
@@ -301,6 +349,20 @@ func TestSubmitDropFinalizationFailuresRemainRecoverable(t *testing.T) {
 	})
 }
 
+func TestSubmitDropReportsFailedPointGone(t *testing.T) {
+	repo, _, handler := newDropTestHandler(t)
+	dp := testHTTPDropPoint(t, "dp_submit_failed", "drop_submit_failed", "pick_submit_failed", dropTestNow())
+	insertHTTPDropPoint(t, repo, dp)
+	if err := repo.FailDropPoint(context.Background(), dp.ID, dropTestNow()); err != nil {
+		t.Fatalf("FailDropPoint: %v", err)
+	}
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, multipartDropRequest(t, "/api/drops/drop_submit_failed", []byte(testEnvelopeJSON()), []byte("payload")))
+	if recorder.Code != http.StatusGone {
+		t.Fatalf("status = %d body=%s, want gone", recorder.Code, recorder.Body.String())
+	}
+}
+
 func TestConcurrentDropAttemptsCommitAtMostOne(t *testing.T) {
 	repo, _, handler := newDropTestHandler(t)
 	dp := testHTTPDropPoint(t, "dp_race", "drop_race", "pick_race", dropTestNow())
@@ -331,15 +393,22 @@ func TestConcurrentDropAttemptsCommitAtMostOne(t *testing.T) {
 
 type repositoryOverride struct {
 	Repository
-	commitErr error
-	resetErr  error
+	commitErr        error
+	resetErr         error
+	errorAfterCommit bool
 }
 
 func (r *repositoryOverride) CommitReceivedDrop(ctx context.Context, id string, result droppoint.CommitDropResult, now time.Time) error {
 	if r.commitErr != nil {
 		return r.commitErr
 	}
-	return r.Repository.CommitReceivedDrop(ctx, id, result, now)
+	if err := r.Repository.CommitReceivedDrop(ctx, id, result, now); err != nil {
+		return err
+	}
+	if r.errorAfterCommit {
+		return errors.New("injected ambiguous commit result")
+	}
+	return nil
 }
 
 func (r *repositoryOverride) ResetReceivingDrop(ctx context.Context, id string, now time.Time) error {
@@ -411,6 +480,27 @@ func newDropTestHandler(t *testing.T) (*store.Repository, *blobstore.Store, http
 		Now:        dropTestNow,
 	})
 	return repo, blobs, handler
+}
+
+type testMultipartPart struct {
+	name        string
+	contentType string
+	data        []byte
+}
+
+func multipartDropRequestWithParts(t *testing.T, path string, parts []testMultipartPart) *http.Request {
+	t.Helper()
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	for _, part := range parts {
+		mustWritePart(t, writer, part.name, part.contentType, part.data)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close multipart writer: %v", err)
+	}
+	request := httptest.NewRequest(http.MethodPut, path, bytes.NewReader(body.Bytes()))
+	request.Header.Set("Content-Type", writer.FormDataContentType())
+	return request
 }
 
 func multipartDropRequest(t *testing.T, path string, envelope []byte, payload []byte) *http.Request {
