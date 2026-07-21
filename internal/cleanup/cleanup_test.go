@@ -60,6 +60,141 @@ func TestExpireDeletesExpiredPayloadsIdempotently(t *testing.T) {
 	}
 }
 
+func TestExpireReconcilesPreMarkedTerminalRows(t *testing.T) {
+	repo, blobs := newCleanupStore(t)
+	now := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
+	dp := cleanupDropPoint(t, "dp_cleanup_premarked", "drop_premarked", "pick_premarked", now.Add(-20*time.Minute))
+	insertCleanupDropPoint(t, repo, dp)
+	if err := repo.BeginReceivingDrop(context.Background(), dp.ID, now.Add(-19*time.Minute)); err != nil {
+		t.Fatalf("BeginReceivingDrop: %v", err)
+	}
+	stored, err := blobs.WriteDrop(context.Background(), dp.ID, []byte(`{}`), bytes.NewReader([]byte("payload")), 100)
+	if err != nil {
+		t.Fatalf("WriteDrop: %v", err)
+	}
+	if err := repo.CommitReceivedDrop(context.Background(), dp.ID, stored, now.Add(-18*time.Minute)); err != nil {
+		t.Fatalf("CommitReceivedDrop: %v", err)
+	}
+	if _, err := repo.AuthorizePickupToken(context.Background(), dp.ID, token.HashSecret("pick_premarked"), now); err != nil {
+		t.Fatalf("AuthorizePickupToken: %v", err)
+	}
+
+	result, err := (Service{Repository: repo, BlobStore: blobs, Now: func() time.Time { return now }}).Expire(context.Background())
+	if err != nil {
+		t.Fatalf("Expire: %v", err)
+	}
+	if result.ExpiredDropPoints != 0 || result.DeletedPayloads != 1 {
+		t.Fatalf("cleanup result = %+v, want pre-marked payload reconciled", result)
+	}
+	if _, err := os.Stat(blobs.DropDir(dp.ID)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("drop dir stat err = %v, want not exist", err)
+	}
+}
+
+func TestExpireRetriesDeleteAndPointerClearFailures(t *testing.T) {
+	t.Run("delete", func(t *testing.T) {
+		repo, blobs := newCleanupStore(t)
+		now := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
+		dp := readyCleanupDropPoint(t, repo, blobs, "dp_cleanup_delete_retry", now)
+		failing := &failOnceDeleteStore{Store: blobs}
+		service := Service{Repository: repo, BlobStore: failing, Now: func() time.Time { return now }}
+
+		if _, err := service.Expire(context.Background()); err == nil {
+			t.Fatal("Expire succeeded on injected delete failure")
+		}
+		if _, err := os.Stat(blobs.DropDir(dp.ID)); err != nil {
+			t.Fatalf("drop dir after failed delete: %v", err)
+		}
+		if _, err := service.Expire(context.Background()); err != nil {
+			t.Fatalf("Expire retry: %v", err)
+		}
+		if _, err := os.Stat(blobs.DropDir(dp.ID)); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("drop dir stat err = %v, want not exist", err)
+		}
+	})
+
+	t.Run("pointer clear", func(t *testing.T) {
+		db, repo, blobs := newCleanupStoreWithDB(t)
+		now := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
+		dp := readyCleanupDropPoint(t, repo, blobs, "dp_cleanup_pointer_retry", now)
+		if _, err := db.SQLDB().ExecContext(context.Background(), `
+CREATE TRIGGER fail_pointer_clear
+BEFORE UPDATE OF payload_path ON drop_points
+WHEN OLD.id = 'dp_cleanup_pointer_retry' AND NEW.payload_path IS NULL
+BEGIN
+  SELECT RAISE(FAIL, 'injected pointer clear failure');
+END`); err != nil {
+			t.Fatalf("create trigger: %v", err)
+		}
+		service := Service{Repository: repo, BlobStore: blobs, Now: func() time.Time { return now }}
+
+		if _, err := service.Expire(context.Background()); err == nil {
+			t.Fatal("Expire succeeded on injected pointer-clear failure")
+		}
+		row, err := repo.FindDropPointByID(context.Background(), dp.ID)
+		if err != nil {
+			t.Fatalf("FindDropPointByID: %v", err)
+		}
+		if row.PayloadPath == "" || row.EnvelopePath == "" {
+			t.Fatalf("pointers cleared despite transaction failure: %+v", row)
+		}
+		if _, err := db.SQLDB().ExecContext(context.Background(), `DROP TRIGGER fail_pointer_clear`); err != nil {
+			t.Fatalf("drop trigger: %v", err)
+		}
+		if _, err := service.Expire(context.Background()); err != nil {
+			t.Fatalf("Expire retry: %v", err)
+		}
+		row, err = repo.FindDropPointByID(context.Background(), dp.ID)
+		if err != nil {
+			t.Fatalf("FindDropPointByID after retry: %v", err)
+		}
+		if row.PayloadPath != "" || row.EnvelopePath != "" {
+			t.Fatalf("pointers remain after retry: %+v", row)
+		}
+	})
+}
+
+func TestExpireRetriesAfterCancellation(t *testing.T) {
+	repo, blobs := newCleanupStore(t)
+	now := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
+	dp := readyCleanupDropPoint(t, repo, blobs, "dp_cleanup_cancel_retry", now)
+	ctx, cancel := context.WithCancel(context.Background())
+	canceling := &cancelOnceDeleteStore{Store: blobs, cancel: cancel}
+	service := Service{Repository: repo, BlobStore: canceling, Now: func() time.Time { return now }}
+
+	if _, err := service.Expire(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Expire err = %v, want context.Canceled", err)
+	}
+	if _, err := service.Expire(context.Background()); err != nil {
+		t.Fatalf("Expire retry: %v", err)
+	}
+	if _, err := os.Stat(blobs.DropDir(dp.ID)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("drop dir stat err = %v, want not exist", err)
+	}
+}
+
+func TestExpireDeletesOrphanBlobDirectories(t *testing.T) {
+	repo, blobs := newCleanupStore(t)
+	orphanDir := blobs.DropDir("dp_cleanup_orphan")
+	if err := os.MkdirAll(orphanDir, 0o700); err != nil {
+		t.Fatalf("MkdirAll orphan: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(orphanDir, blobstore.PayloadFileName), []byte("orphan"), 0o600); err != nil {
+		t.Fatalf("WriteFile orphan: %v", err)
+	}
+
+	result, err := (Service{Repository: repo, BlobStore: blobs}).Expire(context.Background())
+	if err != nil {
+		t.Fatalf("Expire: %v", err)
+	}
+	if result.DeletedOrphans != 1 {
+		t.Fatalf("DeletedOrphans = %d, want 1", result.DeletedOrphans)
+	}
+	if _, err := os.Stat(orphanDir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("orphan dir stat err = %v, want not exist", err)
+	}
+}
+
 func TestExpireOpenDropPointWithoutFiles(t *testing.T) {
 	repo, blobs := newCleanupStore(t)
 	now := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
@@ -107,7 +242,41 @@ func TestExpirePurgesTerminalRowsAfterRetention(t *testing.T) {
 	}
 }
 
+type failOnceDeleteStore struct {
+	*blobstore.Store
+	failed bool
+}
+
+func (s *failOnceDeleteStore) DeleteDropPoint(ctx context.Context, id string) error {
+	if !s.failed {
+		s.failed = true
+		return errors.New("injected delete failure")
+	}
+	return s.Store.DeleteDropPoint(ctx, id)
+}
+
+type cancelOnceDeleteStore struct {
+	*blobstore.Store
+	cancel   context.CancelFunc
+	canceled bool
+}
+
+func (s *cancelOnceDeleteStore) DeleteDropPoint(ctx context.Context, id string) error {
+	if !s.canceled {
+		s.canceled = true
+		s.cancel()
+		return ctx.Err()
+	}
+	return s.Store.DeleteDropPoint(ctx, id)
+}
+
 func newCleanupStore(t *testing.T) (*store.Repository, *blobstore.Store) {
+	t.Helper()
+	_, repo, blobs := newCleanupStoreWithDB(t)
+	return repo, blobs
+}
+
+func newCleanupStoreWithDB(t *testing.T) (*store.DB, *store.Repository, *blobstore.Store) {
 	t.Helper()
 	dataDir := filepath.Join(t.TempDir(), "data")
 	if err := config.EnsureDataDir(dataDir); err != nil {
@@ -118,7 +287,24 @@ func newCleanupStore(t *testing.T) (*store.Repository, *blobstore.Store) {
 		t.Fatalf("store.Open: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	return store.NewRepository(db.SQLDB()), blobstore.New(dataDir)
+	return db, store.NewRepository(db.SQLDB()), blobstore.New(dataDir)
+}
+
+func readyCleanupDropPoint(t *testing.T, repo *store.Repository, blobs *blobstore.Store, id string, now time.Time) droppoint.DropPoint {
+	t.Helper()
+	dp := cleanupDropPoint(t, id, "drop_"+id, "pick_"+id, now.Add(-20*time.Minute))
+	insertCleanupDropPoint(t, repo, dp)
+	if err := repo.BeginReceivingDrop(context.Background(), dp.ID, now.Add(-19*time.Minute)); err != nil {
+		t.Fatalf("BeginReceivingDrop: %v", err)
+	}
+	stored, err := blobs.WriteDrop(context.Background(), dp.ID, []byte(`{}`), bytes.NewReader([]byte("payload")), 100)
+	if err != nil {
+		t.Fatalf("WriteDrop: %v", err)
+	}
+	if err := repo.CommitReceivedDrop(context.Background(), dp.ID, stored, now.Add(-18*time.Minute)); err != nil {
+		t.Fatalf("CommitReceivedDrop: %v", err)
+	}
+	return dp
 }
 
 func insertCleanupDropPoint(t *testing.T, repo *store.Repository, dp droppoint.DropPoint) {

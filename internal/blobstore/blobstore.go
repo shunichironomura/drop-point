@@ -128,6 +128,33 @@ func (s *Store) DeleteDropPoint(_ context.Context, id string) error {
 	return nil
 }
 
+// DropPointIDs lists receiver-owned drop point blob directories. Entries that
+// could not have been created by this store are ignored rather than passed to
+// the deletion boundary.
+func (s *Store) DropPointIDs(ctx context.Context) ([]string, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	entries, err := os.ReadDir(filepath.Join(s.dataDir, DropPointsDirName))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("list drop point blob directories: %w", err)
+	}
+	ids := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if !entry.IsDir() || validateID(entry.Name()) != nil {
+			continue
+		}
+		ids = append(ids, entry.Name())
+	}
+	return ids, nil
+}
+
 // DropDir returns the absolute directory for id.
 func (s *Store) DropDir(id string) string {
 	return s.dropDir(id)

@@ -359,7 +359,7 @@ func runCleanup(args []string, stdout io.Writer, stderr io.Writer) int {
 		_, _ = fmt.Fprintf(stderr, "cleanup error: %v\n", err)
 		return 1
 	}
-	_, _ = fmt.Fprintf(stdout, "expired_drop_points=%d deleted_payloads=%d purged_rows=%d\n", result.ExpiredDropPoints, result.DeletedPayloads, result.PurgedRows)
+	_, _ = fmt.Fprintf(stdout, "expired_drop_points=%d deleted_payloads=%d deleted_orphans=%d purged_rows=%d\n", result.ExpiredDropPoints, result.DeletedPayloads, result.DeletedOrphans, result.PurgedRows)
 	return 0
 }
 

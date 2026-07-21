@@ -104,7 +104,9 @@ WHERE drop_token_hash = ?`, dropTokenHash)
 		return nil, err
 	}
 	if dp.IsExpiredAt(now) {
-		_ = r.markExpired(ctx, dp.ID)
+		if err := r.markExpired(ctx, dp.ID); err != nil {
+			return nil, err
+		}
 		dp.Status = droppoint.StatusExpired
 	}
 	return dp, nil
@@ -137,7 +139,9 @@ func (r *Repository) AuthorizePickupToken(ctx context.Context, id string, pickup
 		return nil, droppoint.ErrPickupTokenInvalid
 	}
 	if dp.IsExpiredAt(now) {
-		_ = r.markExpired(ctx, dp.ID)
+		if err := r.markExpired(ctx, dp.ID); err != nil {
+			return nil, err
+		}
 		dp.Status = droppoint.StatusExpired
 		return dp, nil
 	}
@@ -194,7 +198,9 @@ func (r *Repository) ResetReceivingDrop(ctx context.Context, id string, now time
 		return err
 	}
 	if dp.IsExpiredAt(now) {
-		_ = r.markExpired(ctx, id)
+		if err := r.markExpired(ctx, id); err != nil {
+			return err
+		}
 		return droppoint.ErrDropPointExpired
 	}
 	if dp.Status != droppoint.StatusReceiving {
@@ -239,7 +245,9 @@ func (r *Repository) CloseDropPoint(ctx context.Context, id string, now time.Tim
 		return nil
 	}
 	if dp.Status == droppoint.StatusExpired || dp.IsExpiredAt(now) {
-		_ = r.markExpired(ctx, id)
+		if err := r.markExpired(ctx, id); err != nil {
+			return err
+		}
 		return droppoint.ErrDropPointExpired
 	}
 	if dp.Status == droppoint.StatusFailed {
@@ -301,6 +309,47 @@ WHERE status IN (?, ?, ?) AND expires_at <= ?`,
 	return expired, nil
 }
 
+// TerminalDropPoints returns every terminal row so cleanup can retry deleting
+// ciphertext after interruption, including rows whose pointers were already
+// cleared before a racing filesystem write completed.
+func (r *Repository) TerminalDropPoints(ctx context.Context) ([]droppoint.DropPoint, error) {
+	return r.queryMany(ctx, `
+SELECT id, api_token_id, client_name, display_name, drop_token_hash, pickup_token_hash, status,
+       payload_path, envelope_path, encrypted_size, created_at, dropped_at,
+       first_picked_up_at, closed_at, expires_at, max_bytes
+FROM drop_points
+WHERE status IN (?, ?, ?)
+ORDER BY id`,
+		string(droppoint.StatusClosed), string(droppoint.StatusExpired), string(droppoint.StatusFailed),
+	)
+}
+
+// DropPointIDs returns the IDs represented by repository rows. Cleanup uses the
+// result to distinguish receiver-owned orphan blob directories from live rows.
+func (r *Repository) DropPointIDs(ctx context.Context) (map[string]struct{}, error) {
+	if err := r.ensureReady(); err != nil {
+		return nil, err
+	}
+	rows, err := r.db.QueryContext(ctx, `SELECT id FROM drop_points`)
+	if err != nil {
+		return nil, fmt.Errorf("select drop point IDs: %w", err)
+	}
+	defer rows.Close()
+
+	ids := make(map[string]struct{})
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scan drop point ID: %w", err)
+		}
+		ids[id] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("scan drop point IDs: %w", err)
+	}
+	return ids, nil
+}
+
 // PurgeTerminalDropPoints deletes terminal metadata rows whose ciphertext file
 // pointers have already been cleared and whose terminal timestamp is older than
 // cutoff. Closed rows use closed_at; expired and failed rows use expires_at.
@@ -349,7 +398,9 @@ func (r *Repository) classifyMutationMiss(ctx context.Context, id string, now ti
 		return err
 	}
 	if dp.IsExpiredAt(now) {
-		_ = r.markExpired(ctx, id)
+		if err := r.markExpired(ctx, id); err != nil {
+			return err
+		}
 		return droppoint.ErrDropPointExpired
 	}
 	return errorForUnavailableStatus(dp.Status)
@@ -387,6 +438,30 @@ func (r *Repository) queryOne(ctx context.Context, query string, args ...any) (*
 		return nil, err
 	}
 	return scanDropPoint(r.db.QueryRowContext(ctx, query, args...))
+}
+
+func (r *Repository) queryMany(ctx context.Context, query string, args ...any) ([]droppoint.DropPoint, error) {
+	if err := r.ensureReady(); err != nil {
+		return nil, err
+	}
+	rows, err := r.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var dropPoints []droppoint.DropPoint
+	for rows.Next() {
+		dp, err := scanDropPoint(rows)
+		if err != nil {
+			return nil, err
+		}
+		dropPoints = append(dropPoints, *dp)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return dropPoints, nil
 }
 
 func (r *Repository) ensureReady() error {

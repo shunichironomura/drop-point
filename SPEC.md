@@ -407,7 +407,7 @@ The default local storage layout is:
 
 The local implementation MUST create the configured data directory and `drop-points/` subdirectory with owner-only permissions. SQLite database files and stored blob files SHOULD also use restrictive owner-only permissions.
 
-Filesystem blob writes MUST be atomic from the repository point of view: write temporary files, flush file contents where supported, rename into place only after successful writes, and flush the containing directory where supported. Close and expiry cleanup MUST be safe to repeat when blob directories or files are already gone.
+Filesystem blob writes MUST be atomic from the repository point of view: write temporary files, flush file contents where supported, rename into place only after successful writes, and flush the containing directory where supported. Close and expiry cleanup MUST be safe to repeat when blob directories or files are already gone. Terminal rows are the durable cleanup queue: every cleanup run MUST reconcile all `closed`, `expired`, and `failed` rows with receiver-owned blob storage, including terminal rows whose file pointers were already cleared. Cleanup MUST also remove receiver-owned drop-point blob directories for which no metadata row exists. A deletion or pointer-clear failure MUST leave work retryable by a later cleanup run.
 
 ## 9. Configuration surface
 
@@ -443,7 +443,7 @@ droppoint token generate
 droppoint cleanup expired --config ./config.json
 ```
 
-`serve` starts the HTTP relay and runs expiry cleanup periodically. Running `droppoint` without an explicit subcommand MAY default to `serve`. `token add` manages SQLite token rows and prints the newly generated plaintext token exactly once. `token generate` MAY remain available as a standalone token/hash utility but MUST NOT be required for normal token management. `cleanup expired` marks expired non-terminal drop points expired, removes expired blob directories idempotently, and purges terminal metadata rows older than the configured retention window after their blob pointers have been cleared.
+`serve` starts the HTTP relay and runs lifecycle reconciliation at startup and periodically. Running `droppoint` without an explicit subcommand MAY default to `serve`. `token add` manages SQLite token rows and prints the newly generated plaintext token exactly once. `token generate` MAY remain available as a standalone token/hash utility but MUST NOT be required for normal token management. `cleanup expired` marks elapsed non-terminal drop points expired, reconciles every terminal row and orphan blob directory idempotently, and purges terminal metadata rows older than the configured retention window after their blob pointers have been cleared.
 
 Configuration rules:
 

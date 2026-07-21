@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -224,6 +225,33 @@ func TestRepositoryExpireDropPoints(t *testing.T) {
 	}
 	if gotExpired.Status != droppoint.StatusExpired {
 		t.Fatalf("expired status = %q, want expired", gotExpired.Status)
+	}
+}
+
+func TestRepositoryPropagatesMarkExpiredFailure(t *testing.T) {
+	repo := newTestRepository(t)
+	now := testNow()
+	dp := testDropPoint(t, "dp_expire_failure", "drop_expire_failure", "pick_expire_failure", now.Add(-20*time.Minute))
+	insertTestDropPoint(t, repo, dp)
+	if _, err := repo.db.ExecContext(context.Background(), `
+CREATE TRIGGER fail_mark_expired
+BEFORE UPDATE OF status ON drop_points
+WHEN OLD.id = 'dp_expire_failure' AND NEW.status = 'expired'
+BEGIN
+  SELECT RAISE(FAIL, 'injected mark-expired failure');
+END`); err != nil {
+		t.Fatalf("create trigger: %v", err)
+	}
+
+	if _, err := repo.FindDropPointByDropTokenHash(context.Background(), token.HashSecret("drop_expire_failure"), now); err == nil || !strings.Contains(err.Error(), "mark drop point expired") {
+		t.Fatalf("FindDropPointByDropTokenHash err = %v, want persisted expiry error", err)
+	}
+	row, err := repo.FindDropPointByID(context.Background(), dp.ID)
+	if err != nil {
+		t.Fatalf("FindDropPointByID: %v", err)
+	}
+	if row.Status != droppoint.StatusOpen {
+		t.Fatalf("status = %q, want open after failed expiry update", row.Status)
 	}
 }
 

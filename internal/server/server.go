@@ -129,8 +129,8 @@ func (s *Server) startCleanupLoop(ctx context.Context) <-chan struct{} {
 				s.logger.Printf("cleanup error: %v", err)
 				return
 			}
-			if result.ExpiredDropPoints != 0 || result.DeletedPayloads != 0 || result.PurgedRows != 0 {
-				s.logger.Printf("cleanup expired_drop_points=%d deleted_payloads=%d purged_rows=%d", result.ExpiredDropPoints, result.DeletedPayloads, result.PurgedRows)
+			if result.ExpiredDropPoints != 0 || result.DeletedPayloads != 0 || result.DeletedOrphans != 0 || result.PurgedRows != 0 {
+				s.logger.Printf("cleanup expired_drop_points=%d deleted_payloads=%d deleted_orphans=%d purged_rows=%d", result.ExpiredDropPoints, result.DeletedPayloads, result.DeletedOrphans, result.PurgedRows)
 			}
 		}
 
