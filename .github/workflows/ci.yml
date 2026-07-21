@@ -67,3 +67,19 @@ jobs:
           go-version-file: go.mod
           go-package: ./...
           cache-dependency-path: go.sum
+
+  collect:
+    needs: [checks, govulncheck]
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check results
+        run: |
+          results=("${{ needs.checks.result }}" "${{ needs.govulncheck.result }}")
+          for result in "${results[@]}"; do
+            if [[ "$result" != "success" ]]; then
+              echo "One or more jobs failed"
+              exit 1
+            fi
+          done
+          echo "All jobs passed"
