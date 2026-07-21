@@ -109,16 +109,72 @@ func TestLoadRejectsInvalidEnvironmentOverride(t *testing.T) {
 	}
 }
 
-func TestValidateRejectsInvalidBaseURL(t *testing.T) {
-	cfg := Default()
-	cfg.BaseURL = "https://drop.example.com/?debug=true#fragment"
-
-	err := cfg.Validate()
-	if err == nil {
-		t.Fatal("Validate() succeeded, want error")
+func TestValidateRestrictsBaseURLToHTTPRootOrigins(t *testing.T) {
+	for _, valid := range []string{"http://localhost:8080", "https://drop.example.com", "https://drop.example.com/"} {
+		cfg := Default()
+		cfg.BaseURL = valid
+		if err := cfg.Validate(); err != nil {
+			t.Fatalf("Validate(%q): %v", valid, err)
+		}
 	}
-	if !strings.Contains(err.Error(), "base_url") {
-		t.Fatalf("Validate() error = %v, want base_url error", err)
+	for _, invalid := range []string{
+		"ftp://drop.example.com",
+		"https://drop.example.com/prefix",
+		"https://drop.example.com/?debug=true",
+		"https://drop.example.com/#fragment",
+		"https://user@drop.example.com",
+		"https://:443",
+	} {
+		cfg := Default()
+		cfg.BaseURL = invalid
+		err := cfg.Validate()
+		if err == nil || !strings.Contains(err.Error(), "base_url") {
+			t.Fatalf("Validate(%q) error = %v, want base_url error", invalid, err)
+		}
+	}
+}
+
+func TestValidateBoundsDurationAndPayloadArithmetic(t *testing.T) {
+	durationCases := []struct {
+		name  string
+		apply func(*Config)
+	}{
+		{name: "default_ttl_seconds", apply: func(cfg *Config) {
+			cfg.DefaultTTLSeconds = MaxConfiguredDurationSeconds + 1
+			cfg.MaxTTLSeconds = MaxConfiguredDurationSeconds + 1
+		}},
+		{name: "max_ttl_seconds", apply: func(cfg *Config) { cfg.MaxTTLSeconds = MaxConfiguredDurationSeconds + 1 }},
+		{name: "read_timeout_seconds", apply: func(cfg *Config) { cfg.ReadTimeoutSeconds = MaxConfiguredDurationSeconds + 1 }},
+		{name: "write_timeout_seconds", apply: func(cfg *Config) { cfg.WriteTimeoutSeconds = MaxConfiguredDurationSeconds + 1 }},
+		{name: "cleanup_interval_seconds", apply: func(cfg *Config) { cfg.CleanupIntervalSeconds = MaxConfiguredDurationSeconds + 1 }},
+		{name: "terminal_retention_seconds", apply: func(cfg *Config) { cfg.TerminalRetentionSeconds = MaxConfiguredDurationSeconds + 1 }},
+	}
+	for _, tt := range durationCases {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := Default()
+			tt.apply(&cfg)
+			if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), tt.name) {
+				t.Fatalf("Validate error = %v, want %s bound", err, tt.name)
+			}
+		})
+	}
+	for _, tt := range []struct {
+		name  string
+		apply func(*Config)
+	}{
+		{name: "default_max_bytes", apply: func(cfg *Config) {
+			cfg.DefaultMaxBytes = MaxConfiguredPayloadBytes + 1
+			cfg.MaxBytes = MaxConfiguredPayloadBytes + 1
+		}},
+		{name: "max_bytes", apply: func(cfg *Config) { cfg.MaxBytes = MaxConfiguredPayloadBytes + 1 }},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := Default()
+			tt.apply(&cfg)
+			if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), tt.name) {
+				t.Fatalf("Validate error = %v, want %s bound", err, tt.name)
+			}
+		})
 	}
 }
 

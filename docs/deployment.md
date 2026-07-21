@@ -1,6 +1,6 @@
 # Deployment guide
 
-DropPoint is deployment-neutral. It can run behind Cloudflare Tunnel, Caddy, another reverse proxy, a container ingress, direct TLS, or local development routing.
+The `droppoint` binary serves plain HTTP only. Public/browser deployments must put it behind an external TLS terminator such as Cloudflare Tunnel, Caddy, another reverse proxy, or a container ingress. Localhost HTTP remains suitable for local secure-context development.
 
 ## Build
 
@@ -92,7 +92,7 @@ from a timer or cron as an operational backstop.
 - Receiver APIs under `/api/drop-points` must be reachable by receiver clients.
 - Sender browsers must see HTTPS or localhost. HTTP over a LAN IP is not a secure browser context.
 - Request body limits and idle/upload timeouts must allow `max_bytes` plus multipart overhead for slow mobile senders.
-- TLS may terminate outside DropPoint.
+- TLS must terminate outside DropPoint for public/browser deployments; the binary has no certificate/key or built-in TLS configuration.
 - `/health` is unauthenticated and low-information.
 - Public deployments must enforce rate limits and connection caps at the ingress or TLS terminator. Apply them to invalid `Authorization` attempts, drop-token metadata/upload routes, and unauthenticated page/asset/health routes; leaked drop links can otherwise be used to force repeated large failed uploads during their TTL.
 - Public TLS terminators should emit `Strict-Transport-Security: max-age=31536000; includeSubDomains` for the DropPoint origin after HTTPS is confirmed working. Consider HSTS preload only when every subdomain is permanently HTTPS-ready.

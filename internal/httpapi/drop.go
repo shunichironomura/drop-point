@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"mime"
 	"mime/multipart"
 	"net/http"
@@ -77,6 +78,14 @@ func HandleSubmitDrop(deps Dependencies) http.HandlerFunc {
 			writeDropAuthError(w, err)
 			return
 		}
+		requestLimit, err := dropRequestSizeLimit(dp.MaxBytes)
+		if err != nil {
+			if deps.Logger != nil {
+				deps.Logger.Printf("event=drop.invalid_size_limit drop_point_id=%s error=%q", dp.ID, err)
+			}
+			writeError(w, http.StatusInternalServerError, "drop_storage_failed", "drop point has an invalid storage limit")
+			return
+		}
 		if err := deps.Repository.BeginReceivingDrop(r.Context(), dp.ID, now); err != nil {
 			writeDropAuthError(w, err)
 			return
@@ -87,7 +96,7 @@ func HandleSubmitDrop(deps Dependencies) http.HandlerFunc {
 			writeSubmitDropFailure(w, deps, dp.ID, submitDropFailure{Stage: stage, OperationErr: operationErr, Finalization: finalization})
 		}
 
-		r.Body = http.MaxBytesReader(w, r.Body, dp.MaxBytes+maxEnvelopeBytes+multipartOverhead)
+		r.Body = http.MaxBytesReader(w, r.Body, requestLimit)
 		envelope, payload, err := multipartDropParts(r)
 		if err != nil {
 			fail(dropFailureMultipart, err)
@@ -112,6 +121,14 @@ func HandleSubmitDrop(deps Dependencies) http.HandlerFunc {
 		}
 		writeJSON(w, http.StatusOK, submitDropResponse{Status: droppoint.StatusReady})
 	}
+}
+
+func dropRequestSizeLimit(maxPayloadBytes int64) (int64, error) {
+	const framingBytes = int64(maxEnvelopeBytes + multipartOverhead)
+	if maxPayloadBytes <= 0 || maxPayloadBytes > math.MaxInt64-framingBytes {
+		return 0, fmt.Errorf("payload limit %d cannot be combined with framing allowance", maxPayloadBytes)
+	}
+	return maxPayloadBytes + framingBytes, nil
 }
 
 func dropFinalizationContext(parent context.Context) (context.Context, context.CancelFunc) {

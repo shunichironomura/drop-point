@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"strconv"
+	"strings"
 )
 
 const (
@@ -23,6 +24,8 @@ const (
 	DefaultWriteTimeoutSeconds      = 600
 	DefaultCleanupIntervalSeconds   = 60
 	DefaultTerminalRetentionSeconds = 30 * 24 * 60 * 60
+	MaxConfiguredDurationSeconds    = 365 * 24 * 60 * 60
+	MaxConfiguredPayloadBytes       = int64(1 << 40)
 )
 
 const (
@@ -215,20 +218,20 @@ func (c Config) Validate() error {
 	if c.DataDir == "" {
 		errs = append(errs, errors.New("data_dir must not be empty"))
 	}
-	if c.DefaultTTLSeconds <= 0 {
-		errs = append(errs, errors.New("default_ttl_seconds must be positive"))
+	if err := validateDurationSeconds("default_ttl_seconds", c.DefaultTTLSeconds); err != nil {
+		errs = append(errs, err)
 	}
-	if c.MaxTTLSeconds <= 0 {
-		errs = append(errs, errors.New("max_ttl_seconds must be positive"))
+	if err := validateDurationSeconds("max_ttl_seconds", c.MaxTTLSeconds); err != nil {
+		errs = append(errs, err)
 	}
 	if c.DefaultTTLSeconds > c.MaxTTLSeconds {
 		errs = append(errs, errors.New("default_ttl_seconds must not exceed max_ttl_seconds"))
 	}
-	if c.DefaultMaxBytes <= 0 {
-		errs = append(errs, errors.New("default_max_bytes must be positive"))
+	if c.DefaultMaxBytes <= 0 || c.DefaultMaxBytes > MaxConfiguredPayloadBytes {
+		errs = append(errs, fmt.Errorf("default_max_bytes must be between 1 and %d", MaxConfiguredPayloadBytes))
 	}
-	if c.MaxBytes <= 0 {
-		errs = append(errs, errors.New("max_bytes must be positive"))
+	if c.MaxBytes <= 0 || c.MaxBytes > MaxConfiguredPayloadBytes {
+		errs = append(errs, fmt.Errorf("max_bytes must be between 1 and %d", MaxConfiguredPayloadBytes))
 	}
 	if c.DefaultMaxBytes > c.MaxBytes {
 		errs = append(errs, errors.New("default_max_bytes must not exceed max_bytes"))
@@ -236,20 +239,27 @@ func (c Config) Validate() error {
 	if c.DefaultMaxActiveDropPoints <= 0 {
 		errs = append(errs, errors.New("default_max_active_drop_points must be positive"))
 	}
-	if c.ReadTimeoutSeconds <= 0 {
-		errs = append(errs, errors.New("read_timeout_seconds must be positive"))
+	if err := validateDurationSeconds("read_timeout_seconds", c.ReadTimeoutSeconds); err != nil {
+		errs = append(errs, err)
 	}
-	if c.WriteTimeoutSeconds <= 0 {
-		errs = append(errs, errors.New("write_timeout_seconds must be positive"))
+	if err := validateDurationSeconds("write_timeout_seconds", c.WriteTimeoutSeconds); err != nil {
+		errs = append(errs, err)
 	}
-	if c.CleanupIntervalSeconds <= 0 {
-		errs = append(errs, errors.New("cleanup_interval_seconds must be positive"))
+	if err := validateDurationSeconds("cleanup_interval_seconds", c.CleanupIntervalSeconds); err != nil {
+		errs = append(errs, err)
 	}
-	if c.TerminalRetentionSeconds <= 0 {
-		errs = append(errs, errors.New("terminal_retention_seconds must be positive"))
+	if err := validateDurationSeconds("terminal_retention_seconds", c.TerminalRetentionSeconds); err != nil {
+		errs = append(errs, err)
 	}
 
 	return errors.Join(errs...)
+}
+
+func validateDurationSeconds(name string, value int) error {
+	if value <= 0 || value > MaxConfiguredDurationSeconds {
+		return fmt.Errorf("%s must be between 1 and %d", name, MaxConfiguredDurationSeconds)
+	}
+	return nil
 }
 
 func parseEnvInt(name string, value string) (int, error) {
@@ -273,14 +283,20 @@ func validateBaseURL(raw string) error {
 	if err != nil {
 		return fmt.Errorf("base_url is invalid: %w", err)
 	}
-	if parsed.Scheme == "" || parsed.Host == "" {
+	if parsed.Scheme == "" || parsed.Host == "" || parsed.Hostname() == "" {
 		return errors.New("base_url must include scheme and host")
+	}
+	if !strings.EqualFold(parsed.Scheme, "http") && !strings.EqualFold(parsed.Scheme, "https") {
+		return errors.New("base_url scheme must be http or https")
 	}
 	if parsed.RawQuery != "" || parsed.Fragment != "" {
 		return errors.New("base_url must not include query or fragment")
 	}
 	if parsed.User != nil {
 		return errors.New("base_url must not include user info")
+	}
+	if parsed.Path != "" && parsed.Path != "/" {
+		return errors.New("base_url must be a root origin without a path prefix")
 	}
 	return nil
 }

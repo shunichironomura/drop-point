@@ -22,10 +22,10 @@ Example:
 Fields:
 
 - `listen_addr`: local address for the HTTP server.
-- `base_url`: externally visible origin, with scheme and host, no query or fragment.
+- `base_url`: externally visible HTTP(S) root origin. It must contain a scheme and host and no user info, non-root path prefix, query, or fragment. External path-prefix hosting is not supported.
 - `data_dir`: directory for `relay.db` and ciphertext directories. Use `/var/lib/droppoint` for system installs.
-- `default_ttl_seconds` / `max_ttl_seconds`: receiver-requested TTL default and upper bound.
-- `default_max_bytes` / `max_bytes`: encrypted payload size default and upper bound. The shipped maximum is `52428800` bytes.
+- `default_ttl_seconds` / `max_ttl_seconds`: receiver-requested TTL default and upper bound. Every configured duration is limited to 31536000 seconds (365 days) before conversion to `time.Duration`.
+- `default_max_bytes` / `max_bytes`: encrypted payload size default and upper bound. The shipped maximum is `52428800` bytes; the implementation safety ceiling is 1099511627776 bytes (1 TiB) so request framing arithmetic remains bounded.
 - `default_max_active_drop_points`: quota used when an API token has no per-token override in SQLite.
 - `read_timeout_seconds` / `write_timeout_seconds`: HTTP body/response timeouts. Defaults are long enough for slow mobile uploads up to the shipped payload limit.
 - `cleanup_interval_seconds`: how often the running relay expires old drop points, deletes expired ciphertext directories, and purges old terminal metadata rows.

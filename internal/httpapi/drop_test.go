@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -168,6 +169,19 @@ func TestSubmitDropCommitsAfterRequestContextCanceledPostUpload(t *testing.T) {
 	}
 	if ready.Status != droppoint.StatusReady {
 		t.Fatalf("status = %q, want ready", ready.Status)
+	}
+}
+
+func TestDropRequestSizeLimitRejectsOverflow(t *testing.T) {
+	if _, err := dropRequestSizeLimit(math.MaxInt64); err == nil {
+		t.Fatal("dropRequestSizeLimit accepted overflowing payload limit")
+	}
+	got, err := dropRequestSizeLimit(1024)
+	if err != nil {
+		t.Fatalf("dropRequestSizeLimit: %v", err)
+	}
+	if want := int64(1024 + maxEnvelopeBytes + multipartOverhead); got != want {
+		t.Fatalf("dropRequestSizeLimit = %d, want %d", got, want)
 	}
 }
 
