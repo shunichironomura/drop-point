@@ -34,7 +34,7 @@ This document lists repository files in dependency-first review order. Local scr
    - Go dependency checksums.
 
 10. `.github/workflows/ci.yml`
-    - GitHub Actions CI workflow for formatting, build, vet, race tests, Staticcheck, and govulncheck.
+    - GitHub Actions CI workflow for module tidiness, formatting, build, vet, race tests, Staticcheck, and govulncheck.
 
 11. `config.example.json`
     - Example operator configuration using the canonical `/var/lib/droppoint` data directory.

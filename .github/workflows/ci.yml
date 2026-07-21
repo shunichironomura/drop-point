@@ -30,6 +30,9 @@ jobs:
       - name: Download dependencies
         run: go mod download
 
+      - name: Check module files are tidy
+        run: go mod tidy -diff
+
       - name: Check formatting
         run: |
           unformatted="$(gofmt -l .)"
