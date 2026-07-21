@@ -11,6 +11,8 @@ curl -sS https://drop.example.com/api/drop-points \
   -d '{"client_name":"desktop","ttl_seconds":600,"max_bytes":52428800,"single_use":true}'
 ```
 
+The request body must be one non-null JSON object with `Content-Type: application/json` (media-type parameters are accepted). Omitted `ttl_seconds` and `max_bytes` use configured defaults; explicit zero or `null` is invalid. Omitted `single_use` means `true`, while explicit `false` or `null` is invalid. Optional `client_name`, when present, must be a non-null, non-blank string of at most 128 UTF-8 bytes without Unicode control or format characters.
+
 Response:
 
 ```json

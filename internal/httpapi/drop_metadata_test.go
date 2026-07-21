@@ -21,6 +21,7 @@ func TestGetDropMetadataReturnsServerBoundDisplayName(t *testing.T) {
 	createRecorder := httptest.NewRecorder()
 	createRequest := httptest.NewRequest(http.MethodPost, "/api/drop-points", strings.NewReader(`{"client_name":"test-client","ttl_seconds":120,"max_bytes":2048,"single_use":true}`))
 	createRequest.Header.Set("Authorization", "Bearer "+apiPlain)
+	createRequest.Header.Set("Content-Type", "application/json")
 	handler.ServeHTTP(createRecorder, createRequest)
 	if createRecorder.Code != http.StatusCreated {
 		t.Fatalf("create status = %d body=%s", createRecorder.Code, createRecorder.Body.String())

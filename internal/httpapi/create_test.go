@@ -122,6 +122,7 @@ func TestCreateDropPointValidatesLimitsAndQuota(t *testing.T) {
 			recorder := httptest.NewRecorder()
 			request := httptest.NewRequest(http.MethodPost, "/api/drop-points", strings.NewReader(body))
 			request.Header.Set("Authorization", "Bearer "+apiPlain)
+			request.Header.Set("Content-Type", "application/json")
 			handler.ServeHTTP(recorder, request)
 			if recorder.Code != http.StatusBadRequest {
 				t.Fatalf("status = %d body=%s", recorder.Code, recorder.Body.String())
@@ -132,6 +133,7 @@ func TestCreateDropPointValidatesLimitsAndQuota(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/api/drop-points", strings.NewReader(`{}`))
 	request.Header.Set("Authorization", "Bearer "+apiPlain)
+	request.Header.Set("Content-Type", "application/json")
 	handler.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusCreated {
 		t.Fatalf("first create status = %d body=%s", recorder.Code, recorder.Body.String())
@@ -140,9 +142,76 @@ func TestCreateDropPointValidatesLimitsAndQuota(t *testing.T) {
 	recorder = httptest.NewRecorder()
 	request = httptest.NewRequest(http.MethodPost, "/api/drop-points", strings.NewReader(`{}`))
 	request.Header.Set("Authorization", "Bearer "+apiPlain)
+	request.Header.Set("Content-Type", "application/json")
 	handler.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusTooManyRequests {
 		t.Fatalf("quota status = %d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestCreateDropPointRequiresPresenceAwareJSONObject(t *testing.T) {
+	apiPlain := "api_presence"
+	repo, handler := newCreateTestHandler(t, apiTokenSeed{ID: "presence", SecretHash: token.HashSecret(apiPlain), Enabled: true, MaxActiveDropPoints: intPtr(100)})
+
+	for _, tt := range []struct {
+		name        string
+		body        string
+		contentType string
+		wantStatus  int
+	}{
+		{name: "omitted optionals use defaults", body: `{}`, contentType: "application/json", wantStatus: http.StatusCreated},
+		{name: "JSON charset parameter accepted", body: `{"single_use":true}`, contentType: "application/json; charset=utf-8", wantStatus: http.StatusCreated},
+		{name: "null root", body: `null`, contentType: "application/json", wantStatus: http.StatusBadRequest},
+		{name: "array root", body: `[]`, contentType: "application/json", wantStatus: http.StatusBadRequest},
+		{name: "zero TTL", body: `{"ttl_seconds":0}`, contentType: "application/json", wantStatus: http.StatusBadRequest},
+		{name: "null TTL", body: `{"ttl_seconds":null}`, contentType: "application/json", wantStatus: http.StatusBadRequest},
+		{name: "zero max bytes", body: `{"max_bytes":0}`, contentType: "application/json", wantStatus: http.StatusBadRequest},
+		{name: "null max bytes", body: `{"max_bytes":null}`, contentType: "application/json", wantStatus: http.StatusBadRequest},
+		{name: "false single use", body: `{"single_use":false}`, contentType: "application/json", wantStatus: http.StatusBadRequest},
+		{name: "null single use", body: `{"single_use":null}`, contentType: "application/json", wantStatus: http.StatusBadRequest},
+		{name: "null client name", body: `{"client_name":null}`, contentType: "application/json", wantStatus: http.StatusBadRequest},
+		{name: "non-string client name", body: `{"client_name":42}`, contentType: "application/json", wantStatus: http.StatusBadRequest},
+		{name: "blank client name", body: `{"client_name":"  "}`, contentType: "application/json", wantStatus: http.StatusBadRequest},
+		{name: "control in client name", body: `{"client_name":"bad\u000aname"}`, contentType: "application/json", wantStatus: http.StatusBadRequest},
+		{name: "format in client name", body: `{"client_name":"bad\u200dname"}`, contentType: "application/json", wantStatus: http.StatusBadRequest},
+		{name: "oversize client name", body: `{"client_name":"` + strings.Repeat("a", maxClientNameUTF8Bytes+1) + `"}`, contentType: "application/json", wantStatus: http.StatusBadRequest},
+		{name: "missing content type", body: `{}`, contentType: "", wantStatus: http.StatusUnsupportedMediaType},
+		{name: "wrong content type", body: `{}`, contentType: "text/plain", wantStatus: http.StatusUnsupportedMediaType},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			request := httptest.NewRequest(http.MethodPost, "/api/drop-points", strings.NewReader(tt.body))
+			request.Header.Set("Authorization", "Bearer "+apiPlain)
+			if tt.contentType != "" {
+				request.Header.Set("Content-Type", tt.contentType)
+			}
+			handler.ServeHTTP(recorder, request)
+			if recorder.Code != tt.wantStatus {
+				t.Fatalf("status = %d body=%s, want %d", recorder.Code, recorder.Body.String(), tt.wantStatus)
+			}
+		})
+	}
+
+	rows, err := repo.DropPointIDs(context.Background())
+	if err != nil {
+		t.Fatalf("DropPointIDs: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("created rows = %d, want only two valid requests", len(rows))
+	}
+}
+
+func TestCreateDropPointMapsOversizeRequestTo413(t *testing.T) {
+	apiPlain := "api_oversize_create"
+	_, handler := newCreateTestHandler(t, apiTokenSeed{ID: "oversize", SecretHash: token.HashSecret(apiPlain), Enabled: true})
+	body := `{"client_name":"` + strings.Repeat("a", maxCreateRequestBytes) + `"}`
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/drop-points", strings.NewReader(body))
+	request.Header.Set("Authorization", "Bearer "+apiPlain)
+	request.Header.Set("Content-Type", "application/json")
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d body=%s, want 413", recorder.Code, recorder.Body.String())
 	}
 }
 
