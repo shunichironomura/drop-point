@@ -34,22 +34,23 @@ var (
 // DropPoint is the domain entity. Token fields contain hashes only; raw
 // capability tokens never belong in this structure.
 type DropPoint struct {
-	ID              string
-	APITokenID      string
-	ClientName      string
-	DisplayName     string
-	DropTokenHash   string
-	PickupTokenHash string
-	Status          Status
-	PayloadPath     string
-	EnvelopePath    string
-	EncryptedSize   int64
-	CreatedAt       time.Time
-	DroppedAt       *time.Time
-	FirstPickedUpAt *time.Time
-	ClosedAt        *time.Time
-	ExpiresAt       time.Time
-	MaxBytes        int64
+	ID                 string
+	APITokenID         string
+	ClientName         string
+	DisplayName        string
+	DropTokenHash      string
+	PickupTokenHash    string
+	Status             Status
+	PayloadPath        string
+	EnvelopePath       string
+	EncryptedSize      int64
+	CreatedAt          time.Time
+	DroppedAt          *time.Time
+	ReceivingStartedAt *time.Time
+	FirstPickedUpAt    *time.Time
+	ClosedAt           *time.Time
+	ExpiresAt          time.Time
+	MaxBytes           int64
 }
 
 // CreateDropPointRequest contains validated token hashes and lifecycle limits
@@ -151,6 +152,8 @@ func BeginReceiving(d DropPoint, now time.Time) (DropPoint, error) {
 	switch d.Status {
 	case StatusOpen:
 		d.Status = StatusReceiving
+		startedAt := now.UTC()
+		d.ReceivingStartedAt = &startedAt
 		return d, nil
 	case StatusClosed:
 		return d, ErrDropPointClosed
@@ -186,6 +189,7 @@ func CommitReceived(d DropPoint, result CommitDropResult, now time.Time) (DropPo
 		return d, fmt.Errorf("encrypted size must not be negative")
 	}
 	d.Status = StatusReady
+	d.ReceivingStartedAt = nil
 	d.PayloadPath = result.PayloadPath
 	d.EnvelopePath = result.EnvelopePath
 	d.EncryptedSize = result.EncryptedSize
@@ -203,6 +207,7 @@ func AbortReceiving(d DropPoint, now time.Time) (DropPoint, error) {
 		return d, ErrDropPointNotOpen
 	}
 	d.Status = StatusOpen
+	d.ReceivingStartedAt = nil
 	return d, nil
 }
 
@@ -243,6 +248,7 @@ func Close(d DropPoint, now time.Time) (DropPoint, error) {
 		return d, ErrDropPointNotOpen
 	}
 	d.Status = StatusClosed
+	d.ReceivingStartedAt = nil
 	closedAt := now.UTC()
 	d.ClosedAt = &closedAt
 	return d, nil
@@ -258,5 +264,6 @@ func expireIfElapsed(d DropPoint, now time.Time) (DropPoint, bool) {
 		return d, false
 	}
 	d.Status = StatusExpired
+	d.ReceivingStartedAt = nil
 	return d, true
 }

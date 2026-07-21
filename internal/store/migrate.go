@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS drop_points (
   encrypted_size INTEGER,
   created_at TEXT NOT NULL,
   dropped_at TEXT,
+  receiving_started_at TEXT,
   first_picked_up_at TEXT,
   closed_at TEXT,
   expires_at TEXT NOT NULL,

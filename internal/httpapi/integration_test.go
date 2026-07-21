@@ -215,7 +215,7 @@ func TestIntegrationConcurrentOversizeCleanupAndDiskFailure(t *testing.T) {
 	failed := createViaAPI(t, failHandler, failAPIPlain)
 	failedRecorder := httptest.NewRecorder()
 	failHandler.ServeHTTP(failedRecorder, multipartDropRequest(t, "/api/drops/"+dropTokenFromCreatedLink(t, failed.DropLink), []byte(testEnvelopeJSON()), []byte("payload")))
-	if failedRecorder.Code != http.StatusBadRequest {
+	if failedRecorder.Code != http.StatusInternalServerError {
 		t.Fatalf("disk failure status = %d body=%s", failedRecorder.Code, failedRecorder.Body.String())
 	}
 	row, err := failRepo.FindDropPointByID(context.Background(), failed.DropPointID)

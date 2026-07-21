@@ -93,8 +93,10 @@ Required transition rules:
 
 - `open` MAY transition to `receiving` when a valid drop starts.
 - `receiving` MUST transition to `ready` only after the envelope and payload are durably stored.
-- A failed or partial drop MUST NOT consume the single-use slot; the drop point MUST return to `open` unless it has expired or failed terminally.
+- A failed or partial drop MUST NOT consume the single-use slot; the relay MUST delete attempt artifacts and return the drop point to `open` unless it has expired or failed terminally.
 - Durable storage failures, including disk-full or write-failure paths, MUST NOT mark a drop point `ready` and MUST NOT consume the single-use slot unless it has expired or failed terminally.
+- The relay MUST durably record when a `receiving` attempt begins. Startup reconciliation MUST recover every interrupted `receiving` attempt before serving requests, and periodic reconciliation MUST recover attempts older than the configured HTTP operation bound plus a conservative grace period.
+- `failed` is reserved for unrecoverable internal inconsistency or corruption. Malformed requests, interrupted uploads, and transient storage failures MUST remain recoverable and MUST NOT ordinarily transition to `failed`.
 - `open`, `receiving`, and `ready` MAY transition to `closed` by receiver request.
 - Any non-terminal status whose expiry time has elapsed MUST be treated as expired and MUST NOT accept new drops or pickups.
 - Pickup records `first_picked_up_at` and optionally `last_picked_up_at`; pickup MUST NOT be modeled as a terminal status.
@@ -268,6 +270,16 @@ Response:
 { "status": "ready" }
 ```
 
+Error status rules:
+
+- malformed envelope or multipart input: `400 Bad Request`;
+- encrypted payload or request-size violation: `413 Request Entity Too Large`;
+- known storage capacity exhaustion, including disk full: `507 Insufficient Storage`;
+- known transient storage unavailability: `503 Service Unavailable`;
+- other durable-storage or internal finalization failures: `500 Internal Server Error`.
+
+The relay MUST log structured underlying storage and finalization failures without capability tokens, capability-bearing paths, envelope contents, or plaintext metadata.
+
 ### 7.5 Poll drop point status
 
 ```http
@@ -346,6 +358,7 @@ A drop point record contains at least:
 | `encrypted_size` | Encrypted payload byte length. |
 | `created_at` | Drop point creation timestamp. |
 | `dropped_at` | Durable drop completion timestamp. |
+| `receiving_started_at` | Internal start timestamp for recovery of interrupted receiving attempts. |
 | `first_picked_up_at` | First successful pickup timestamp. |
 | `closed_at` | Explicit close timestamp. |
 | `expires_at` | TTL expiry timestamp. |
@@ -369,6 +382,7 @@ CREATE TABLE drop_points (
   encrypted_size INTEGER,
   created_at TEXT NOT NULL,
   dropped_at TEXT,
+  receiving_started_at TEXT,
   first_picked_up_at TEXT,
   closed_at TEXT,
   expires_at TEXT NOT NULL,

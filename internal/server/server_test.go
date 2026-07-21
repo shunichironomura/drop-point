@@ -127,6 +127,57 @@ func TestCleanupLoopExpiresAndDeletesPayloads(t *testing.T) {
 	}
 }
 
+func TestNewRecoversInterruptedReceivingBeforeServing(t *testing.T) {
+	cfg := config.Default()
+	cfg.ListenAddr = "127.0.0.1:0"
+	cfg.DataDir = filepath.Join(t.TempDir(), "data")
+	first, err := New(context.Background(), cfg, log.New(&bytes.Buffer{}, "", 0))
+	if err != nil {
+		t.Fatalf("first New: %v", err)
+	}
+	now := time.Now().UTC()
+	dp, err := droppoint.New(droppoint.CreateDropPointRequest{
+		ID:              "dp_server_interrupted",
+		APITokenID:      "desktop-main",
+		DisplayName:     "calm-otter",
+		DropTokenHash:   token.HashSecret("drop_server_interrupted"),
+		PickupTokenHash: token.HashSecret("pick_server_interrupted"),
+		TTL:             10 * time.Minute,
+		MaxBytes:        1024,
+	}, now)
+	if err != nil {
+		t.Fatalf("droppoint.New: %v", err)
+	}
+	if err := first.Repository.CreateDropPointWithinQuota(context.Background(), dp, 1_000_000, now); err != nil {
+		t.Fatalf("CreateDropPointWithinQuota: %v", err)
+	}
+	if err := first.Repository.BeginReceivingDrop(context.Background(), dp.ID, now); err != nil {
+		t.Fatalf("BeginReceivingDrop: %v", err)
+	}
+	if _, err := first.BlobStore.WriteDrop(context.Background(), dp.ID, []byte(`{}`), bytes.NewReader([]byte("interrupted")), 1024); err != nil {
+		t.Fatalf("WriteDrop: %v", err)
+	}
+	if err := first.Close(); err != nil {
+		t.Fatalf("first Close: %v", err)
+	}
+
+	second, err := New(context.Background(), cfg, log.New(&bytes.Buffer{}, "", 0))
+	if err != nil {
+		t.Fatalf("second New: %v", err)
+	}
+	defer second.Close()
+	row, err := second.Repository.FindDropPointByID(context.Background(), dp.ID)
+	if err != nil {
+		t.Fatalf("FindDropPointByID: %v", err)
+	}
+	if row.Status != droppoint.StatusOpen || row.ReceivingStartedAt != nil {
+		t.Fatalf("startup-recovered row = %+v", row)
+	}
+	if _, err := os.Stat(second.BlobStore.DropDir(dp.ID)); !os.IsNotExist(err) {
+		t.Fatalf("interrupted drop dir stat err = %v, want not exist", err)
+	}
+}
+
 func TestNewRejectsInvalidConfig(t *testing.T) {
 	cfg := config.Default()
 	cfg.BaseURL = "not-a-url"

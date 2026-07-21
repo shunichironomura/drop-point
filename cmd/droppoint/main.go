@@ -354,12 +354,17 @@ func runCleanup(args []string, stdout io.Writer, stderr io.Writer) int {
 		return 1
 	}
 	defer db.Close()
-	result, err := (cleanup.Service{Repository: store.NewRepository(db.SQLDB()), BlobStore: blobstore.New(cfg.DataDir), TerminalRetention: time.Duration(cfg.TerminalRetentionSeconds) * time.Second}).Expire(context.Background())
+	result, err := (cleanup.Service{
+		Repository:          store.NewRepository(db.SQLDB()),
+		BlobStore:           blobstore.New(cfg.DataDir),
+		TerminalRetention:   time.Duration(cfg.TerminalRetentionSeconds) * time.Second,
+		ReceivingStaleAfter: time.Duration(max(cfg.ReadTimeoutSeconds, cfg.WriteTimeoutSeconds))*time.Second + 30*time.Second,
+	}).Expire(context.Background())
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "cleanup error: %v\n", err)
 		return 1
 	}
-	_, _ = fmt.Fprintf(stdout, "expired_drop_points=%d deleted_payloads=%d deleted_orphans=%d purged_rows=%d\n", result.ExpiredDropPoints, result.DeletedPayloads, result.DeletedOrphans, result.PurgedRows)
+	_, _ = fmt.Fprintf(stdout, "recovered_receiving=%d expired_drop_points=%d deleted_payloads=%d deleted_orphans=%d purged_rows=%d\n", result.RecoveredReceiving, result.ExpiredDropPoints, result.DeletedPayloads, result.DeletedOrphans, result.PurgedRows)
 	return 0
 }
 

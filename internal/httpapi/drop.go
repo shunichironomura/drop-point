@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/shunichironomura/droppoint/internal/blobstore"
 	"github.com/shunichironomura/droppoint/internal/cryptoenv"
 	"github.com/shunichironomura/droppoint/internal/droppoint"
 	"github.com/shunichironomura/droppoint/internal/token"
@@ -28,6 +29,38 @@ const (
 
 type submitDropResponse struct {
 	Status droppoint.Status `json:"status"`
+}
+
+type dropFailureStage uint8
+
+const (
+	dropFailureMultipart dropFailureStage = iota
+	dropFailureStorage
+	dropFailureCommit
+)
+
+type dropFinalizationState uint8
+
+const (
+	dropFinalizationOpen dropFinalizationState = iota
+	dropFinalizationTerminal
+	dropFinalizationPending
+)
+
+type dropFinalizationResult struct {
+	State     dropFinalizationState
+	DeleteErr error
+	ResetErr  error
+}
+
+func (r dropFinalizationResult) Err() error {
+	return errors.Join(r.DeleteErr, r.ResetErr)
+}
+
+type submitDropFailure struct {
+	Stage        dropFailureStage
+	OperationErr error
+	Finalization dropFinalizationResult
 }
 
 // HandleSubmitDrop handles PUT /api/drops/:drop_token.
@@ -49,40 +82,34 @@ func HandleSubmitDrop(deps Dependencies) http.HandlerFunc {
 			return
 		}
 
-		committed := false
-		defer func() {
-			if !committed {
-				cleanupCtx, cancel := dropFinalizationContext(r.Context())
-				defer cancel()
-				_ = deps.BlobStore.DeleteDropPoint(cleanupCtx, dp.ID)
-				_ = deps.Repository.ResetReceivingDrop(cleanupCtx, dp.ID, deps.Now().UTC())
-			}
-		}()
+		fail := func(stage dropFailureStage, operationErr error) {
+			finalization := finalizeDropAttempt(r.Context(), deps, dp.ID)
+			writeSubmitDropFailure(w, deps, dp.ID, submitDropFailure{Stage: stage, OperationErr: operationErr, Finalization: finalization})
+		}
 
 		r.Body = http.MaxBytesReader(w, r.Body, dp.MaxBytes+maxEnvelopeBytes+multipartOverhead)
 		envelope, payload, err := multipartDropParts(r)
 		if err != nil {
-			writeMultipartDropError(w, err)
+			fail(dropFailureMultipart, err)
 			return
 		}
 		if _, err := cryptoenv.ValidateEnvelopeJSON(envelope); err != nil {
-			writeMultipartDropError(w, err)
+			fail(dropFailureMultipart, err)
 			return
 		}
 
 		result, err := deps.BlobStore.WriteDrop(r.Context(), dp.ID, envelope, payload, dp.MaxBytes)
 		if err != nil {
-			writeMultipartDropError(w, err)
+			fail(dropFailureStorage, err)
 			return
 		}
 		commitCtx, cancel := dropFinalizationContext(r.Context())
 		commitErr := deps.Repository.CommitReceivedDrop(commitCtx, dp.ID, result, deps.Now().UTC())
 		cancel()
 		if commitErr != nil {
-			writeDropAuthError(w, commitErr)
+			fail(dropFailureCommit, commitErr)
 			return
 		}
-		committed = true
 		writeJSON(w, http.StatusOK, submitDropResponse{Status: droppoint.StatusReady})
 	}
 }
@@ -92,6 +119,86 @@ func dropFinalizationContext(parent context.Context) (context.Context, context.C
 		parent = context.Background()
 	}
 	return context.WithTimeout(context.WithoutCancel(parent), dropFinalizationTimeout)
+}
+
+func finalizeDropAttempt(parent context.Context, deps Dependencies, id string) dropFinalizationResult {
+	ctx, cancel := dropFinalizationContext(parent)
+	defer cancel()
+	if err := deps.BlobStore.DeleteDropPoint(ctx, id); err != nil {
+		return dropFinalizationResult{State: dropFinalizationPending, DeleteErr: err}
+	}
+	if err := deps.Repository.ResetReceivingDrop(ctx, id, deps.Now().UTC()); err != nil {
+		if errors.Is(err, droppoint.ErrDropPointExpired) {
+			return dropFinalizationResult{State: dropFinalizationTerminal}
+		}
+		dp, lookupErr := deps.Repository.FindDropPointByID(ctx, id)
+		if lookupErr != nil {
+			return dropFinalizationResult{State: dropFinalizationPending, ResetErr: errors.Join(err, lookupErr)}
+		}
+		switch dp.Status {
+		case droppoint.StatusOpen:
+			return dropFinalizationResult{State: dropFinalizationOpen}
+		case droppoint.StatusClosed, droppoint.StatusExpired, droppoint.StatusFailed:
+			return dropFinalizationResult{State: dropFinalizationTerminal}
+		default:
+			return dropFinalizationResult{State: dropFinalizationPending, ResetErr: err}
+		}
+	}
+	return dropFinalizationResult{State: dropFinalizationOpen}
+}
+
+func writeSubmitDropFailure(w http.ResponseWriter, deps Dependencies, id string, failure submitDropFailure) {
+	finalizationErr := failure.Finalization.Err()
+	if deps.Logger != nil && (failure.Stage != dropFailureMultipart || finalizationErr != nil) {
+		deps.Logger.Printf(
+			"event=drop.failed drop_point_id=%s stage=%d error=%q finalization_state=%d finalization_error=%q",
+			id,
+			failure.Stage,
+			errorMessage(failure.OperationErr),
+			failure.Finalization.State,
+			errorMessage(finalizationErr),
+		)
+	}
+	if finalizationErr != nil {
+		writeStorageFailure(w, finalizationErr)
+		return
+	}
+
+	switch failure.Stage {
+	case dropFailureMultipart:
+		writeMultipartDropError(w, failure.OperationErr)
+	case dropFailureStorage:
+		switch {
+		case errors.Is(failure.OperationErr, droppoint.ErrPayloadTooLarge):
+			writeError(w, http.StatusRequestEntityTooLarge, "payload_too_large", "encrypted payload exceeds the drop point limit")
+		case blobstore.ClassifyFailure(failure.OperationErr) == blobstore.FailureClientInput:
+			writeError(w, http.StatusBadRequest, "drop_multipart_invalid", "could not read the encrypted payload")
+		default:
+			writeStorageFailure(w, failure.OperationErr)
+		}
+	case dropFailureCommit:
+		writeDropAuthError(w, failure.OperationErr)
+	default:
+		writeError(w, http.StatusInternalServerError, "drop_failed", "could not complete drop")
+	}
+}
+
+func errorMessage(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
+}
+
+func writeStorageFailure(w http.ResponseWriter, err error) {
+	switch blobstore.ClassifyFailure(err) {
+	case blobstore.FailureCapacity:
+		writeError(w, http.StatusInsufficientStorage, "storage_full", "drop storage has insufficient capacity")
+	case blobstore.FailureUnavailable:
+		writeError(w, http.StatusServiceUnavailable, "drop_storage_unavailable", "drop storage is temporarily unavailable")
+	default:
+		writeError(w, http.StatusInternalServerError, "drop_storage_failed", "could not durably store the drop")
+	}
 }
 
 func multipartDropParts(r *http.Request) ([]byte, io.Reader, error) {

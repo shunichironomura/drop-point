@@ -1,19 +1,36 @@
 package httpapi
 
 import (
+	"context"
 	"log"
 	"net/http"
 	"time"
 
 	"github.com/shunichironomura/droppoint/internal/config"
+	"github.com/shunichironomura/droppoint/internal/droppoint"
 	"github.com/shunichironomura/droppoint/internal/logutil"
 	"github.com/shunichironomura/droppoint/internal/store"
 )
 
+// Repository is the lifecycle persistence boundary used by HTTP handlers.
+type Repository interface {
+	FindEnabledAPITokenBySecretHash(ctx context.Context, secretHash string) (store.APIToken, error)
+	CreateDropPointWithinQuota(ctx context.Context, dp droppoint.DropPoint, maxActive int, now time.Time) error
+	FindDropPointByID(ctx context.Context, id string) (*droppoint.DropPoint, error)
+	FindOpenDropPointByDropTokenHash(ctx context.Context, dropTokenHash string, now time.Time) (*droppoint.DropPoint, error)
+	BeginReceivingDrop(ctx context.Context, id string, now time.Time) error
+	CommitReceivedDrop(ctx context.Context, id string, result droppoint.CommitDropResult, now time.Time) error
+	ResetReceivingDrop(ctx context.Context, id string, now time.Time) error
+	AuthorizePickupToken(ctx context.Context, id string, pickupTokenHash string, now time.Time) (*droppoint.DropPoint, error)
+	MarkFirstPickedUp(ctx context.Context, id string, now time.Time) error
+	CloseDropPoint(ctx context.Context, id string, now time.Time) error
+	DeleteDropPointFiles(ctx context.Context, id string) error
+}
+
 // Dependencies are the imperative-shell resources used by HTTP handlers.
 type Dependencies struct {
 	Config     config.Config
-	Repository *store.Repository
+	Repository Repository
 	BlobStore  BlobStore
 	Logger     *log.Logger
 	Now        func() time.Time

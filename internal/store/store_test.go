@@ -64,6 +64,7 @@ func TestMigrationCreatesDropPointsSchema(t *testing.T) {
 	}
 
 	assertDropPointsColumnExists(t, db.SQLDB(), "display_name")
+	assertDropPointsColumnExists(t, db.SQLDB(), "receiving_started_at")
 
 	now := formatTime(time.Now().UTC())
 	_, err := db.SQLDB().ExecContext(context.Background(), `
