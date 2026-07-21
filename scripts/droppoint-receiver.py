@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 import time
 from email import policy
@@ -18,6 +17,13 @@ from pathlib import Path
 from urllib import error, parse, request
 
 from drop_point_protocol import b64u_encode, decrypt_bundle, generate_x25519_keypair
+from drop_point_storage import (
+    BundleInstall,
+    atomic_write_private_json,
+    encrypted_bundle_identity,
+    install_bundle,
+    verify_installed_bundle,
+)
 
 # Cloudflare Browser Integrity Check rejects Python urllib's default user
 # agent before API requests reach DropPoint, so use a stable tool-specific
@@ -46,8 +52,7 @@ def main() -> int:
     pickup.add_argument("--wait", action="store_true", help="Poll until ready before pickup")
     pickup.add_argument("--timeout", type=float, default=120.0)
     pickup.add_argument("--interval", type=float, default=1.0)
-    pickup.add_argument("--close", action=argparse.BooleanOptionalAction, default=True, help="Close after successful local write")
-    pickup.add_argument("--overwrite", action="store_true", help="Overwrite output files if they already exist")
+    pickup.add_argument("--close", action=argparse.BooleanOptionalAction, default=True, help="Close after durable bundle installation")
 
     args = parser.parse_args()
     try:
@@ -99,7 +104,7 @@ def create_drop_point(args: argparse.Namespace) -> None:
         "expires_at": created["expires_at"],
         "max_bytes": created["max_bytes"],
     }
-    write_private_state(args.state, state)
+    atomic_write_private_json(args.state, state)
     print(f"State written to: {args.state}")
     print(f"Drop name: {created['display_name']}")
     print("Share this sender link:")
@@ -108,17 +113,29 @@ def create_drop_point(args: argparse.Namespace) -> None:
 
 def pickup_drop(args: argparse.Namespace) -> None:
     state = load_state(args.state)
-    if args.wait:
-        wait_until_ready(state, args.timeout, args.interval)
-    envelope_json, encrypted_payload = pickup_ciphertext(state)
-    files = decrypt_bundle(b64u_decode_from_state(state, "recipient_private_key"), envelope_json, encrypted_payload)
-    args.out_dir.mkdir(parents=True, exist_ok=True)
-    for recovered in files:
-        target = args.out_dir / recovered.name
-        mode = "wb" if args.overwrite else "xb"
-        with target.open(mode) as file:
-            file.write(recovered.data)
-        print(f"wrote {target} ({len(recovered.data)} bytes, {recovered.mime_type})")
+    installed = installed_bundle_from_state(state)
+    if installed is None:
+        if args.wait:
+            wait_until_ready(state, args.timeout, args.interval)
+        envelope_json, encrypted_payload = pickup_ciphertext(state)
+        identity = encrypted_bundle_identity(envelope_json, encrypted_payload)
+        files = decrypt_bundle(b64u_decode_from_state(state, "recipient_private_key"), envelope_json, encrypted_payload)
+        installed = install_bundle(args.out_dir, state["drop_point_id"], identity, files)
+        durable_state = dict(state)
+        durable_state["installed_bundle"] = {
+            "identity": installed.identity,
+            "path": str(installed.path.resolve()),
+        }
+        atomic_write_private_json(args.state, durable_state)
+        state.clear()
+        state.update(durable_state)
+        action = "verified" if installed.already_installed else "installed"
+        print(f"{action} durable bundle: {installed.path}")
+        for name in installed.files:
+            print(f"  {name}")
+    else:
+        print(f"verified previously installed bundle: {installed.path}")
+
     if args.close:
         close_drop_point(state)
         print("closed remote drop point")
@@ -167,10 +184,24 @@ def discard_private_key(path: Path, state: dict) -> bool:
         return False
     scrubbed = dict(state)
     scrubbed.pop("recipient_private_key", None)
-    write_private_state(path, scrubbed)
+    atomic_write_private_json(path, scrubbed)
     state.clear()
     state.update(scrubbed)
     return True
+
+
+def installed_bundle_from_state(state: dict) -> BundleInstall | None:
+    installed = state.get("installed_bundle")
+    if installed is None:
+        return None
+    if not isinstance(installed, dict):
+        raise ValueError("receiver state installed_bundle must be an object")
+    identity = installed.get("identity")
+    path = installed.get("path")
+    drop_point_id = state.get("drop_point_id")
+    if not isinstance(identity, str) or not isinstance(path, str) or not isinstance(drop_point_id, str):
+        raise ValueError("receiver state has an invalid installed_bundle receipt")
+    return verify_installed_bundle(Path(path), drop_point_id, identity)
 
 
 def parse_pickup_multipart(content_type: str, body: bytes) -> tuple[bytes, bytes]:
@@ -218,15 +249,6 @@ def raw_request(
 def api_url(state: dict, path: str) -> str:
     parsed = parse.urlparse(state["base_url"])
     return parse.urlunparse((parsed.scheme, parsed.netloc, path, "", "", ""))
-
-
-def write_private_state(path: Path, state: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
-    fd = os.open(path, flags, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as file:
-        json.dump(state, file, indent=2)
-        file.write("\n")
 
 
 def load_state(path: Path) -> dict:

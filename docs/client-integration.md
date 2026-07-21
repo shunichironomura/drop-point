@@ -30,14 +30,16 @@ A receiver client should run this sequence for each drop point:
     - MIME types are advisory and sanitized;
     - sum of manifest file sizes equals decrypted payload length.
 12. Split plaintext bytes by manifest sizes.
-13. Write plaintext durably into the client-controlled storage system.
-14. Append any client-specific durable record only after plaintext storage succeeds.
-15. Call `DELETE /api/drop-points/:drop_point_id` to close and remove remote ciphertext.
-16. Delete the local recipient private key and any temporary plaintext buffers.
+13. Stage the complete bundle in an owner-only, receiver-controlled directory; write and fsync every file, write a durable bundle identity/receipt, and fsync the staging directory.
+14. Atomically publish the complete bundle directory without merging into or overwriting a different existing bundle, then fsync its parent directory.
+15. Atomically and durably record the installed bundle identity in private receiver state so a retry can verify an already-installed identical bundle.
+16. Append any client-specific durable record only after plaintext storage succeeds.
+17. Call `DELETE /api/drop-points/:drop_point_id` to close and remove remote ciphertext.
+18. Delete the local recipient private key and any temporary plaintext buffers only after close succeeds.
 
 ## Ordering rule
 
-Do not close the remote drop point before the client has durably stored the decrypted files and any local record needed to find them. Pickup is repeatable until close or expiry, so clients can retry local processing without asking the sender to upload again.
+Do not close the remote drop point before the client has durably stored the complete decrypted bundle and any local record needed to find it. Do not merge files one at a time into a pre-existing destination or blindly overwrite an existing bundle. A durable identity receipt must let a retry recognize the same already-installed bundle and resume remote close without rewriting plaintext. Pickup is repeatable until close or expiry, so clients can retry local processing without asking the sender to upload again.
 
 ## Client model boundary
 

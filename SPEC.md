@@ -881,6 +881,9 @@ Client integrations MUST append durable local records only after:
 2. Decryption and authentication succeed.
 3. Manifest validation succeeds.
 4. Filename/MIME sanitization succeeds.
-5. Plaintext is durably stored in the client-controlled system.
+5. The complete bundle is staged in an owner-only receiver-controlled directory and every plaintext file is flushed.
+6. A durable bundle identity/receipt and the staging directory are flushed.
+7. The complete bundle directory is atomically published without merging into or overwriting a different existing bundle, and its parent directory is flushed.
+8. Private receiver state durably records enough identity information for a retry to verify the already-installed identical bundle and resume remote close.
 
-Only after those steps SHOULD the receiver close the remote drop point.
+Only after those steps SHOULD the receiver close the remote drop point. The receiver private key and local recovery state MUST NOT be removed before the bundle and private state are durable and remote close has succeeded.
