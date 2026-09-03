@@ -11,14 +11,17 @@ import (
 )
 
 const (
-	DropPointIDPrefix = "dp_"
-	DropTokenPrefix   = "drop_"
-	PickupTokenPrefix = "pick_"
-	APITokenPrefix    = "api_"
+	DropPointIDPrefix  = "dp_"
+	SubmissionIDPrefix = "sub_"
+	DropTokenPrefix    = "drop_"
+	PickupTokenPrefix  = "pick_"
+	APITokenPrefix     = "api_"
 
 	// entropyBytes gives every generated capability token at least 256 bits of
 	// CSPRNG entropy. Public drop point IDs use the same size for simplicity.
-	entropyBytes = 32
+	entropyBytes              = 32
+	minSubmissionEntropyBytes = 16
+	maxSubmissionEntropyBytes = 32
 
 	hashSchemeSHA256 = "sha256"
 )
@@ -28,6 +31,15 @@ var encoding = base64.RawURLEncoding
 // GenerateDropPointID returns a public drop point identifier with a dp_ prefix.
 func GenerateDropPointID() (string, error) {
 	return generate(DropPointIDPrefix)
+}
+
+func GenerateSubmissionID() (string, error) {
+	return generate(SubmissionIDPrefix)
+}
+
+func ValidSubmissionID(value string) bool {
+	secret, err := decodeSecret(value, SubmissionIDPrefix)
+	return err == nil && len(secret) >= minSubmissionEntropyBytes && len(secret) <= maxSubmissionEntropyBytes
 }
 
 // GenerateDropToken returns a sender capability token with a drop_ prefix.

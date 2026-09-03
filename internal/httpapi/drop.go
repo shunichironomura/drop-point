@@ -29,98 +29,136 @@ const (
 )
 
 type submitDropResponse struct {
-	Status droppoint.Status `json:"status"`
+	SubmissionID string                     `json:"submission_id"`
+	Status       droppoint.SubmissionStatus `json:"status"`
 }
 
-type dropFailureStage uint8
-
-const (
-	dropFailureMultipart dropFailureStage = iota
-	dropFailureStorage
-	dropFailureCommit
-)
-
-type dropFinalizationState uint8
-
-const (
-	dropFinalizationOpen dropFinalizationState = iota
-	dropFinalizationTerminal
-	dropFinalizationPending
-)
-
-type dropFinalizationResult struct {
-	State     dropFinalizationState
-	DeleteErr error
-	ResetErr  error
-}
-
-func (r dropFinalizationResult) Err() error {
-	return errors.Join(r.DeleteErr, r.ResetErr)
-}
-
-type submitDropFailure struct {
-	Stage        dropFailureStage
-	OperationErr error
-	Finalization dropFinalizationResult
-}
-
-// HandleSubmitDrop handles PUT /api/drops/:drop_token.
 func HandleSubmitDrop(deps Dependencies) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if deps.Repository == nil || deps.BlobStore == nil {
 			writeError(w, http.StatusServiceUnavailable, "drop_storage_unavailable", "drop storage is unavailable")
 			return
 		}
-		dropToken := r.PathValue("drop_token")
+		submissionID := r.PathValue("submission_id")
+		if !token.ValidSubmissionID(submissionID) {
+			writeError(w, http.StatusNotFound, "submission_not_found", "submission not found")
+			return
+		}
 		now := deps.Now().UTC()
-		dp, err := deps.Repository.FindOpenDropPointByDropTokenHash(r.Context(), token.HashSecret(dropToken), now)
+		dp, err := deps.Repository.FindOpenDropPointByDropTokenHash(r.Context(), token.HashSecret(r.PathValue("drop_token")), now)
 		if err != nil {
 			writeDropAuthError(w, err)
 			return
 		}
 		requestLimit, err := dropRequestSizeLimit(dp.MaxBytes)
 		if err != nil {
-			if deps.Logger != nil {
-				deps.Logger.Printf("event=drop.invalid_size_limit drop_point_id=%s error=%q", dp.ID, err)
-			}
 			writeError(w, http.StatusInternalServerError, "drop_storage_failed", "drop point has an invalid storage limit")
 			return
 		}
-		if err := deps.Repository.BeginReceivingDrop(r.Context(), dp.ID, now); err != nil {
+		if err := deps.Repository.BeginSubmission(r.Context(), dp.ID, submissionID, now); err != nil {
+			if errors.Is(err, droppoint.ErrSubmissionAlreadyExists) {
+				submitExistingSubmission(w, r, deps, dp.ID, submissionID)
+				return
+			}
 			writeDropAuthError(w, err)
 			return
 		}
 
-		fail := func(stage dropFailureStage, operationErr error) {
-			finalization := finalizeDropAttempt(r.Context(), deps, dp.ID)
-			writeSubmitDropFailure(w, deps, dp.ID, submitDropFailure{Stage: stage, OperationErr: operationErr, Finalization: finalization})
+		fail := func(operationErr error, storage bool) {
+			cleanupErr := finalizeSubmissionAttempt(r.Context(), deps, dp.ID, submissionID)
+			if deps.Logger != nil {
+				deps.Logger.Printf("event=submission.failed drop_point_id=%s submission_id=%s error=%q cleanup_error=%q", dp.ID, submissionID, errorMessage(operationErr), errorMessage(cleanupErr))
+			}
+			if cleanupErr != nil {
+				writeStorageFailure(w, cleanupErr)
+				return
+			}
+			if storage {
+				writeSubmissionStorageFailure(w, operationErr)
+			} else {
+				writeMultipartDropError(w, operationErr)
+			}
 		}
 
 		r.Body = http.MaxBytesReader(w, r.Body, requestLimit)
 		envelope, payload, err := multipartDropParts(r)
 		if err != nil {
-			fail(dropFailureMultipart, err)
+			fail(err, false)
 			return
 		}
 		if _, err := cryptoenv.ValidateEnvelopeJSON(envelope); err != nil {
-			fail(dropFailureMultipart, err)
+			fail(err, false)
+			return
+		}
+		stored, err := deps.BlobStore.WriteSubmission(r.Context(), dp.ID, submissionID, envelope, payload, dp.MaxBytes)
+		if err != nil {
+			fail(err, true)
 			return
 		}
 
-		result, err := deps.BlobStore.WriteDrop(r.Context(), dp.ID, envelope, payload, dp.MaxBytes)
-		if err != nil {
-			fail(dropFailureStorage, err)
-			return
-		}
 		commitCtx, cancel := dropFinalizationContext(r.Context())
-		commitErr := deps.Repository.CommitReceivedDrop(commitCtx, dp.ID, result, deps.Now().UTC())
+		commitErr := deps.Repository.CommitSubmission(commitCtx, dp.ID, submissionID, stored, deps.Now().UTC())
 		cancel()
 		if commitErr != nil {
-			fail(dropFailureCommit, commitErr)
+			verifyCtx, verifyCancel := dropFinalizationContext(r.Context())
+			existing, findErr := deps.Repository.FindSubmission(verifyCtx, dp.ID, submissionID)
+			verifyCancel()
+			if findErr == nil && (existing.Status == droppoint.SubmissionStatusReady || existing.Status == droppoint.SubmissionStatusAcknowledged) {
+				writeJSON(w, http.StatusOK, submitDropResponse{SubmissionID: submissionID, Status: existing.Status})
+				return
+			}
+			if findErr != nil && !errors.Is(findErr, droppoint.ErrSubmissionNotFound) {
+				if deps.Logger != nil {
+					deps.Logger.Printf("event=submission.commit_ambiguous drop_point_id=%s submission_id=%s error=%q verification_error=%q", dp.ID, submissionID, errorMessage(commitErr), errorMessage(findErr))
+				}
+				writeStorageFailure(w, findErr)
+				return
+			}
+			if findErr == nil && existing.Status != droppoint.SubmissionStatusReceiving {
+				writeSubmissionUnavailable(w, submissionStatusError(existing.Status))
+				return
+			}
+			cleanupErr := finalizeSubmissionAttempt(r.Context(), deps, dp.ID, submissionID)
+			if cleanupErr != nil {
+				writeStorageFailure(w, cleanupErr)
+				return
+			}
+			if errors.Is(commitErr, droppoint.ErrPendingBytesQuotaExceeded) {
+				writeError(w, http.StatusTooManyRequests, "submission_queue_full", "drop point submission queue is full")
+				return
+			}
+			writeDropAuthError(w, commitErr)
 			return
 		}
-		writeJSON(w, http.StatusOK, submitDropResponse{Status: droppoint.StatusReady})
+		writeJSON(w, http.StatusOK, submitDropResponse{SubmissionID: submissionID, Status: droppoint.SubmissionStatusReady})
 	}
+}
+
+func submitExistingSubmission(w http.ResponseWriter, r *http.Request, deps Dependencies, dropPointID, submissionID string) {
+	submission, err := deps.Repository.FindSubmission(r.Context(), dropPointID, submissionID)
+	if err != nil {
+		writeSubmissionUnavailable(w, err)
+		return
+	}
+	switch submission.Status {
+	case droppoint.SubmissionStatusReady, droppoint.SubmissionStatusAcknowledged:
+		writeJSON(w, http.StatusOK, submitDropResponse{SubmissionID: submissionID, Status: submission.Status})
+	case droppoint.SubmissionStatusReceiving:
+		writeError(w, http.StatusConflict, "submission_receiving", "submission is already being received")
+	case droppoint.SubmissionStatusFailed:
+		writeError(w, http.StatusGone, "submission_failed", "submission is unavailable")
+	default:
+		writeError(w, http.StatusConflict, "submission_unavailable", "submission is unavailable")
+	}
+}
+
+func finalizeSubmissionAttempt(parent context.Context, deps Dependencies, dropPointID, submissionID string) error {
+	ctx, cancel := dropFinalizationContext(parent)
+	defer cancel()
+	if err := deps.BlobStore.DeleteSubmission(ctx, dropPointID, submissionID); err != nil {
+		return err
+	}
+	return deps.Repository.DeleteReceivingSubmission(ctx, dropPointID, submissionID)
 }
 
 func dropRequestSizeLimit(maxPayloadBytes int64) (int64, error) {
@@ -138,70 +176,14 @@ func dropFinalizationContext(parent context.Context) (context.Context, context.C
 	return context.WithTimeout(context.WithoutCancel(parent), dropFinalizationTimeout)
 }
 
-func finalizeDropAttempt(parent context.Context, deps Dependencies, id string) dropFinalizationResult {
-	ctx, cancel := dropFinalizationContext(parent)
-	defer cancel()
-	if err := deps.BlobStore.DeleteDropPoint(ctx, id); err != nil {
-		return dropFinalizationResult{State: dropFinalizationPending, DeleteErr: err}
-	}
-	if err := deps.Repository.ResetReceivingDrop(ctx, id, deps.Now().UTC()); err != nil {
-		if errors.Is(err, droppoint.ErrDropPointExpired) {
-			return dropFinalizationResult{State: dropFinalizationTerminal}
-		}
-		dp, lookupErr := deps.Repository.FindDropPointByID(ctx, id)
-		if lookupErr != nil {
-			return dropFinalizationResult{State: dropFinalizationPending, ResetErr: errors.Join(err, lookupErr)}
-		}
-		switch dp.Status {
-		case droppoint.StatusOpen:
-			return dropFinalizationResult{State: dropFinalizationOpen}
-		case droppoint.StatusClosed, droppoint.StatusExpired, droppoint.StatusFailed:
-			return dropFinalizationResult{State: dropFinalizationTerminal}
-		case droppoint.StatusReady:
-			if failErr := deps.Repository.FailDropPoint(ctx, id, deps.Now().UTC()); failErr != nil {
-				return dropFinalizationResult{State: dropFinalizationPending, ResetErr: errors.Join(err, failErr)}
-			}
-			return dropFinalizationResult{State: dropFinalizationTerminal}
-		default:
-			return dropFinalizationResult{State: dropFinalizationPending, ResetErr: err}
-		}
-	}
-	return dropFinalizationResult{State: dropFinalizationOpen}
-}
-
-func writeSubmitDropFailure(w http.ResponseWriter, deps Dependencies, id string, failure submitDropFailure) {
-	finalizationErr := failure.Finalization.Err()
-	if deps.Logger != nil && (failure.Stage != dropFailureMultipart || finalizationErr != nil) {
-		deps.Logger.Printf(
-			"event=drop.failed drop_point_id=%s stage=%d error=%q finalization_state=%d finalization_error=%q",
-			id,
-			failure.Stage,
-			errorMessage(failure.OperationErr),
-			failure.Finalization.State,
-			errorMessage(finalizationErr),
-		)
-	}
-	if finalizationErr != nil {
-		writeStorageFailure(w, finalizationErr)
-		return
-	}
-
-	switch failure.Stage {
-	case dropFailureMultipart:
-		writeMultipartDropError(w, failure.OperationErr)
-	case dropFailureStorage:
-		switch {
-		case dropRequestTooLarge(failure.OperationErr):
-			writeError(w, http.StatusRequestEntityTooLarge, "payload_too_large", "encrypted payload exceeds the drop point limit")
-		case blobstore.ClassifyFailure(failure.OperationErr) == blobstore.FailureClientInput:
-			writeError(w, http.StatusBadRequest, "drop_multipart_invalid", "could not read the encrypted payload")
-		default:
-			writeStorageFailure(w, failure.OperationErr)
-		}
-	case dropFailureCommit:
-		writeDropAuthError(w, failure.OperationErr)
+func writeSubmissionStorageFailure(w http.ResponseWriter, err error) {
+	switch {
+	case dropRequestTooLarge(err):
+		writeError(w, http.StatusRequestEntityTooLarge, "payload_too_large", "encrypted payload exceeds the drop point limit")
+	case blobstore.ClassifyFailure(err) == blobstore.FailureClientInput:
+		writeError(w, http.StatusBadRequest, "drop_multipart_invalid", "could not read the encrypted payload")
 	default:
-		writeError(w, http.StatusInternalServerError, "drop_failed", "could not complete drop")
+		writeStorageFailure(w, err)
 	}
 }
 
@@ -260,9 +242,7 @@ func multipartDropParts(r *http.Request) ([]byte, io.Reader, error) {
 		_ = payloadPart.Close()
 		return nil, nil, err
 	}
-
-	payloadReader := &multipartPayloadReader{part: payloadPart, reader: reader}
-	return envelope, payloadReader, nil
+	return envelope, &multipartPayloadReader{part: payloadPart, reader: reader}, nil
 }
 
 func validatePart(part *multipart.Part, wantName string, wantContentType string) error {
@@ -294,8 +274,10 @@ func writeDropAuthError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusNotFound, "drop_point_not_found", "drop point not found")
 	case errors.Is(err, droppoint.ErrDropPointExpired), errors.Is(err, droppoint.ErrDropPointClosed), errors.Is(err, droppoint.ErrDropPointFailed):
 		writeError(w, http.StatusGone, "drop_point_unavailable", "drop point is unavailable")
-	case errors.Is(err, droppoint.ErrDropAlreadyExists), errors.Is(err, droppoint.ErrDropPointNotOpen):
-		writeError(w, http.StatusConflict, "drop_already_exists", "drop point cannot accept another drop")
+	case errors.Is(err, droppoint.ErrPendingSubmissionQuotaExceeded), errors.Is(err, droppoint.ErrPendingBytesQuotaExceeded):
+		writeError(w, http.StatusTooManyRequests, "submission_queue_full", "drop point submission queue is full")
+	case errors.Is(err, droppoint.ErrSubmissionAlreadyExists), errors.Is(err, droppoint.ErrDropPointNotOpen):
+		writeError(w, http.StatusConflict, "submission_unavailable", "submission cannot be accepted")
 	default:
 		writeError(w, http.StatusInternalServerError, "drop_failed", "could not complete drop")
 	}

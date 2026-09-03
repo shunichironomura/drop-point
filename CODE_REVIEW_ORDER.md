@@ -52,7 +52,7 @@ This document lists repository files in dependency-first review order. Local scr
     - Shared discard-default logger helper for optional logging dependencies.
 
 16. `internal/token/token.go`
-    - High-entropy token generation, hashing, and constant-time hash comparison helpers.
+    - High-entropy token and submission-ID generation, hashing, validation, and constant-time hash comparison helpers.
 
 17. `internal/token/token_test.go`
     - Token prefix, entropy, base64url, uniqueness-shape, and hash-format tests.
@@ -64,19 +64,19 @@ This document lists repository files in dependency-first review order. Local scr
     - Drop display-name generation and validation tests.
 
 20. `internal/droppoint/droppoint.go`
-    - Functional drop point domain entity, display name, lifecycle statuses, errors, request/result types, and pure transition rules.
+    - Functional parent-session and child-submission domain entities, lifecycle statuses, errors, request/result types, and pure transition rules.
 
 21. `internal/droppoint/droppoint_test.go`
     - Domain lifecycle transition acceptance and rejection tests.
 
 22. `internal/store/migrate.go`
-    - Idempotent SQLite schema migration for drop points and API tokens.
+    - Idempotent SQLite schema migration for reusable drop points, child submissions, and API tokens.
 
 23. `internal/store/store.go`
     - SQLite opening, runtime PRAGMA configuration, and database handle ownership.
 
 24. `internal/store/repository.go`
-    - SQLite drop point repository methods for lifecycle, token authorization, quota counting, display-name persistence, and file-pointer cleanup.
+    - SQLite repository methods for parent and child lifecycles, token authorization, atomic queue limits, listing, acknowledgement, and file-pointer cleanup.
 
 25. `internal/store/api_tokens.go`
     - SQLite API token lookup and add/list/disable/remove operations.
@@ -85,7 +85,7 @@ This document lists repository files in dependency-first review order. Local scr
     - SQLite initialization, schema, and migration tests.
 
 27. `internal/store/repository_test.go`
-    - Repository create, lookup, token mismatch, quota, close, expiry, pickup timestamp, and receiving-reset tests.
+    - Repository parent creation, authorization, concurrent quota, child queue, acknowledgement, close, expiry, and recovery tests.
 
 28. `internal/store/api_tokens_test.go`
     - API token table management tests.
@@ -94,13 +94,13 @@ This document lists repository files in dependency-first review order. Local scr
     - Parity tests keeping SQLite lifecycle mutations aligned with the pure drop point state machine.
 
 30. `internal/blobstore/blobstore.go`
-    - Filesystem encrypted payload/envelope storage with atomic writes, exact-byte reads, fsync, rename, and idempotent deletion.
+    - Per-submission filesystem ciphertext storage with atomic writes, exact-byte reads, fsync, rename, and idempotent child/parent deletion.
 
 31. `internal/blobstore/blobstore_test.go`
     - Blob storage exact-byte write/read, oversize, and idempotent deletion tests.
 
 32. `internal/cleanup/cleanup.go`
-    - Expiry cleanup service that marks expired drop points and deletes payload directories idempotently.
+    - Reconciliation service for interrupted submissions, acknowledged/failed child cleanup, parent expiry, and orphan deletion.
 
 33. `internal/cleanup/cleanup_test.go`
     - Cleanup tests for expired ready/open drop points and repeated runs.
@@ -139,7 +139,7 @@ This document lists repository files in dependency-first review order. Local scr
     - Sender-facing drop page styles.
 
 45. `web/drop-page/app.js`
-    - Browser WebCrypto bundle encryption, canonical filename disambiguation, sender metadata lookup, and multipart encrypted drop submission.
+    - Browser WebCrypto bundle encryption, canonical filename disambiguation, sender metadata lookup, random submission IDs, and reusable encrypted submission flow.
 
 46. `web/drop-page/assets.go`
     - Embedded static asset filesystem for the drop page.
@@ -157,16 +157,16 @@ This document lists repository files in dependency-first review order. Local scr
     - Authenticated drop point creation handler, request validation, display-name generation, quota enforcement, and drop-link construction.
 
 51. `internal/httpapi/receiver.go`
-    - Pickup-token authorization, receiver status, close API handlers, and blob-store interface.
+    - Pickup-token authorization plus parent status, child listing/acknowledgement, close handlers, and blob-store interface.
 
 52. `internal/httpapi/drop_metadata.go`
-    - Sender drop-token metadata handler for server-bound display names and upload limits.
+    - Sender drop-token metadata handler for server-bound display names, upload limits, and queue limits.
 
 53. `internal/httpapi/drop.go`
-    - Encrypted multipart drop endpoint, envelope validation, streaming size enforcement, and ready-state commit handling.
+    - Immutable child-submission endpoint with envelope validation, streaming size enforcement, retry semantics, and queue-bound commits.
 
 54. `internal/httpapi/pickup.go`
-    - Multipart encrypted pickup endpoint and first-pickup timestamp recording.
+    - Child-specific multipart encrypted pickup endpoint, corruption isolation, and first-pickup timestamp recording.
 
 55. `internal/httpapi/drop_page.go`
     - Sender-facing drop page and same-origin asset HTTP handlers with strict security headers.
@@ -187,22 +187,22 @@ This document lists repository files in dependency-first review order. Local scr
     - Authenticated create API tests for valid, invalid, disabled, quota, and limit cases.
 
 61. `internal/httpapi/receiver_test.go`
-    - Receiver status and close API tests for pickup-token scoping, expiry reporting, retry safety, and file-pointer cleanup.
+    - Receiver status, list, acknowledgement, and close tests for token scoping, queue accounting, retry safety, and file cleanup.
 
 62. `internal/httpapi/drop_metadata_test.go`
     - Sender metadata API tests for server-bound display names and unavailable drops.
 
 63. `internal/httpapi/drop_test.go`
-    - Drop endpoint tests for valid encrypted storage, second-drop rejection, oversize reset, malformed reset, authorization scoping, and concurrency.
+    - Submission tests for reusable uploads, immutable retries, count/byte queue limits, malformed reset, authorization scoping, and concurrency.
 
 64. `internal/httpapi/pickup_test.go`
-    - Pickup tests for ready retrieval, repeatability, first-pickup timestamps, and rejection cases.
+    - Child-pickup tests for ready retrieval, repeatability, timestamps, corruption isolation, and rejection cases.
 
 65. `internal/httpapi/drop_page_test.go`
     - Drop page security header, copy, asset, metadata lookup, and token-redaction tests.
 
 66. `internal/httpapi/integration_test.go`
-    - End-to-end create/drop/status/pickup/close, failure, concurrency, cleanup, CORS, redaction, and disk-write failure tests.
+    - End-to-end create/submit/list/pickup/acknowledge/reuse/close plus failure, CORS, redaction, and storage tests.
 
 67. `internal/server/server.go`
     - Imperative shell wiring config, data directory, SQLite repository, blob store, and HTTP server.
@@ -229,16 +229,16 @@ This document lists repository files in dependency-first review order. Local scr
     - Shared typed Python HTTP boundary with bearer headers, response metadata, and capability-safe error reporting.
 
 75. `scripts/drop_point_storage.py`
-    - Shared owner-only atomic state writer and all-or-nothing durable receiver bundle installer with identity receipts.
+    - Shared owner-only atomic state writer and all-or-nothing per-submission bundle installer with identity receipts.
 
 76. `scripts/droppoint-receiver.py`
-    - Python receiver simulation for create, status, durable bundle pickup/decrypt/install, retry-safe close, and private-key removal.
+    - Python receiver simulation for create, status/list, durable child pickup/decrypt/install/acknowledgement, explicit close, and private-key removal.
 
 77. `scripts/droppoint-qr.py`
     - Python public-endpoint mobile test helper for creating a drop point, durably saving receiver state, and rendering the sender link as a QR code.
 
 78. `scripts/droppoint-sender.py`
-    - Python sender simulation for fragment parsing, browser-equivalent encryption, and encrypted drop upload.
+    - Python sender simulation for fragment parsing, browser-equivalent encryption, random submission IDs, and encrypted child upload.
 
 79. `docs/configuration.md`
     - Operator configuration reference and SQLite token CLI guidance.

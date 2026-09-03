@@ -49,6 +49,9 @@ func TestMigrationCreatesDropPointsSchema(t *testing.T) {
 		"drop_points",
 		"idx_drop_points_status_expires_at",
 		"idx_drop_points_api_token_status",
+		"submissions",
+		"idx_submissions_drop_point_status_dropped",
+		"idx_submissions_status_receiving_started",
 		"api_tokens",
 	} {
 		var count int
@@ -65,8 +68,11 @@ func TestMigrationCreatesDropPointsSchema(t *testing.T) {
 	}
 
 	assertDropPointsColumnExists(t, db.SQLDB(), "display_name")
-	assertDropPointsColumnExists(t, db.SQLDB(), "receiving_started_at")
 	assertDropPointsColumnExists(t, db.SQLDB(), "failed_at")
+	assertDropPointsColumnExists(t, db.SQLDB(), "max_pending_submissions")
+	assertDropPointsColumnExists(t, db.SQLDB(), "max_pending_bytes")
+	assertTableColumnExists(t, db.SQLDB(), "submissions", "drop_point_id")
+	assertTableColumnExists(t, db.SQLDB(), "submissions", "acknowledged_at")
 	var version int
 	if err := db.SQLDB().QueryRowContext(context.Background(), "PRAGMA user_version").Scan(&version); err != nil {
 		t.Fatalf("query user_version: %v", err)
@@ -82,9 +88,9 @@ func TestMigrationCreatesDropPointsSchema(t *testing.T) {
 	_, err := db.SQLDB().ExecContext(context.Background(), `
 INSERT INTO drop_points (
   id, api_token_id, client_name, display_name, drop_token_hash, pickup_token_hash, status,
-  created_at, expires_at, max_bytes
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		"dp_test", "desktop-main", "test-client", "calm-otter", "sha256:drop", "sha256:pick", "open", now, now, 1024,
+	  created_at, expires_at, max_bytes, max_pending_submissions, max_pending_bytes
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		"dp_test", "desktop-main", "test-client", "calm-otter", "sha256:drop", "sha256:pick", "open", now, now, 1024, 8, 8192,
 	)
 	if err != nil {
 		t.Fatalf("insert drop point row: %v", err)
@@ -92,8 +98,8 @@ INSERT INTO drop_points (
 	_, err = db.SQLDB().ExecContext(context.Background(), `
 INSERT INTO drop_points (
   id, api_token_id, display_name, drop_token_hash, pickup_token_hash, status,
-  created_at, expires_at, max_bytes
-) VALUES ('dp_empty_name', 'desktop-main', '', 'sha256:drop-empty', 'sha256:pick-empty', 'open', ?, ?, 1024)`, now, now)
+	  created_at, expires_at, max_bytes, max_pending_submissions, max_pending_bytes
+) VALUES ('dp_empty_name', 'desktop-main', '', 'sha256:drop-empty', 'sha256:pick-empty', 'open', ?, ?, 1024, 8, 8192)`, now, now)
 	if err == nil {
 		t.Fatal("schema accepted an empty display_name")
 	}
@@ -204,7 +210,12 @@ func TestOpenTreatsQuestionMarkAsPathLiteral(t *testing.T) {
 
 func assertDropPointsColumnExists(t *testing.T, db *sql.DB, name string) {
 	t.Helper()
-	rows, err := db.QueryContext(context.Background(), "PRAGMA table_info(drop_points)")
+	assertTableColumnExists(t, db, "drop_points", name)
+}
+
+func assertTableColumnExists(t *testing.T, db *sql.DB, table, name string) {
+	t.Helper()
+	rows, err := db.QueryContext(context.Background(), "PRAGMA table_info("+table+")")
 	if err != nil {
 		t.Fatalf("PRAGMA table_info: %v", err)
 	}
@@ -228,7 +239,7 @@ func assertDropPointsColumnExists(t *testing.T, db *sql.DB, name string) {
 	if err := rows.Err(); err != nil {
 		t.Fatalf("scan table_info: %v", err)
 	}
-	t.Fatalf("drop_points.%s column not found", name)
+	t.Fatalf("%s.%s column not found", table, name)
 }
 
 func openTestDB(t *testing.T) *DB {

@@ -27,14 +27,20 @@ const state = {
   maxBytes: null,
   countdownTimer: null,
   selectedFiles: [],
+  pendingSubmissionID: null,
   thumbnailURLs: new Map(),
   dropToken: location.pathname.split('/').pop(),
 };
 
 class DropPointUserError extends Error {}
+class DropPointTerminalError extends DropPointUserError {}
 
 function userError(message) {
   return new DropPointUserError(message);
+}
+
+function terminalError(message) {
+  return new DropPointTerminalError(message);
 }
 
 function userErrorMessage(error, fallback) {
@@ -67,7 +73,14 @@ window.addEventListener('drop', preventFileNavigation);
 window.addEventListener('pagehide', revokeAllThumbnailURLs);
 
 submitButton.addEventListener('click', () => {
-  dropSelectedFiles().catch((error) => showError(userErrorMessage(error, 'Dropping files failed.')));
+  dropSelectedFiles().catch((error) => {
+    const message = userErrorMessage(error, 'Dropping files failed.');
+    if (error instanceof DropPointTerminalError) {
+      showError(message);
+      return;
+    }
+    showSelectionError(message);
+  });
 });
 
 async function init() {
@@ -116,6 +129,7 @@ function handleDroppedFiles(event) {
 
 function setSelectedFiles(files) {
   state.selectedFiles = files;
+  state.pendingSubmissionID = null;
   filesInput.value = '';
   updateSelectedFiles();
 }
@@ -231,6 +245,7 @@ function removeSelectedFile(index) {
     return;
   }
   state.selectedFiles = state.selectedFiles.filter((_file, fileIndex) => fileIndex !== index);
+  state.pendingSubmissionID = null;
   filesInput.value = '';
   updateSelectedFiles();
 }
@@ -249,32 +264,55 @@ async function dropSelectedFiles() {
   submitButton.disabled = true;
   dropZone.classList.add('disabled');
   renderSelectedFiles(files);
-  showStatus(`Encrypting and dropping files for ${state.displayName}...`);
-  const bundle = await buildEncryptedBundle(files, state.recipientPublicKey);
-  showStatus(`Dropping encrypted files for ${state.displayName}...`);
-  const form = new FormData();
-  form.append('envelope', new Blob([JSON.stringify(bundle.envelope)], { type: 'application/json' }));
-  form.append('payload', new Blob([bundle.encryptedPayload], { type: 'application/octet-stream' }));
-  const response = await fetch(`/api/drops/${encodeURIComponent(state.dropToken)}`, {
-    method: 'PUT',
-    body: form,
-    credentials: 'omit',
-    cache: 'no-store',
-  });
-  if (!response.ok) {
-    if (response.status === 404 || response.status === 410) {
-      throw userError('This drop point has expired.');
+  try {
+    showStatus(`Encrypting and dropping files for ${state.displayName}...`);
+    const bundle = await buildEncryptedBundle(files, state.recipientPublicKey);
+    showStatus(`Dropping encrypted files for ${state.displayName}...`);
+    const form = new FormData();
+    form.append('envelope', new Blob([JSON.stringify(bundle.envelope)], { type: 'application/json' }));
+    form.append('payload', new Blob([bundle.encryptedPayload], { type: 'application/octet-stream' }));
+    state.pendingSubmissionID ??= `sub_${encodeBase64URL(crypto.getRandomValues(new Uint8Array(16)))}`;
+    const submissionID = state.pendingSubmissionID;
+    const response = await fetch(`/api/drops/${encodeURIComponent(state.dropToken)}/submissions/${submissionID}`, {
+      method: 'PUT',
+      body: form,
+      credentials: 'omit',
+      cache: 'no-store',
+    });
+    if (!response.ok) {
+      if (response.status === 404 || response.status === 410) {
+        throw terminalError('This drop point has expired.');
+      }
+      if (response.status === 409) {
+        throw userError('This submission is already being received. Try again.');
+      }
+      if (response.status === 429) {
+        throw userError('This drop point is temporarily full. Try again after the receiver processes pending files.');
+      }
+      if (response.status === 413) {
+        throw userError(`Encrypted files exceeded the ${formatBytes(state.maxBytes)} drop point limit.`);
+      }
+      throw userError('Network failure or drop point rejected the encrypted files.');
     }
-    if (response.status === 409) {
-      throw userError('This drop point cannot accept more files.');
+    state.selectedFiles = [];
+    state.pendingSubmissionID = null;
+    filesInput.value = '';
+    filesInput.disabled = false;
+    dropZone.classList.remove('disabled');
+    updateSelectedFiles();
+    showSuccess(`Files dropped successfully for ${state.displayName}. You can send more files.`);
+  } catch (error) {
+    if (error instanceof DropPointTerminalError) {
+      throw error;
     }
-    if (response.status === 413) {
-      throw userError(`Encrypted files exceeded the ${formatBytes(state.maxBytes)} drop point limit.`);
+    if (isExpired(state.expiresAt)) {
+      throw terminalError('This drop point has expired.');
     }
-    throw userError('Network failure or drop point rejected the encrypted files.');
+    filesInput.disabled = false;
+    dropZone.classList.remove('disabled');
+    updateSelectedFiles();
+    throw error;
   }
-  stopExpiryCountdown();
-  showSuccess(`Files dropped successfully for ${state.displayName}. Ready for pickup`);
 }
 
 function selectedFilesLimitMessage(files) {

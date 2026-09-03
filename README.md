@@ -1,6 +1,6 @@
 # DropPoint
 
-DropPoint is a temporary encrypted file handoff relay. A receiver creates a short-lived drop point, shares a drop link, and later picks up one encrypted bundle. The relay stores ciphertext only and is not a system of record.
+DropPoint is a temporary encrypted file handoff relay. A receiver creates a short-lived reusable drop point, shares one link, and picks up multiple encrypted submissions over the session's lifetime. The relay stores ciphertext only and is not a system of record.
 
 DropPoint is a Go single-binary service with SQLite metadata and local filesystem ciphertext storage.
 
@@ -33,9 +33,11 @@ For Docker Compose, copy `.env.example` to ignored `.env` before adding deployme
 3. Show the returned human-readable drop name to the receiver.
 4. Append `#v=2&pk=<base64url(raw-32-byte-public-key)>` to the returned drop link.
 5. Share the full drop link with the sender and ask them to compare the drop name shown on the page.
-6. Poll status until `ready`.
-7. Pick up the encrypted envelope and payload.
-8. Decrypt locally, validate the manifest, durably store plaintext if desired, then close the drop point.
+6. Poll status and list ready submissions.
+7. Pick up one submission's encrypted envelope and payload.
+8. Decrypt locally, validate the manifest, and durably store plaintext if desired.
+9. Acknowledge that submission, then repeat while the session is active.
+10. Close the drop point when it should no longer accept submissions.
 
 See `docs/local-testing.md` for a Python receiver/sender simulation, `docs/api.md` for curl examples, `docs/protocol-reference.md` for protocol vectors, and `docs/client-integration.md` for generic receiver/client integration guidance.
 
@@ -44,7 +46,7 @@ See `docs/local-testing.md` for a Python receiver/sender simulation, `docs/api.m
 - Default local data directory: `.data/droppoint`.
 - Canonical system data directory: `/var/lib/droppoint`.
 - SQLite database: `relay.db`.
-- Ciphertext blobs: `drop-points/<drop-point-id>/envelope.json` and `payload.bin`.
+- Ciphertext blobs: `drop-points/<drop-point-id>/<submission-id>/envelope.json` and `payload.bin`.
 - Receiver API tokens live in SQLite and are managed with `droppoint token add/list/disable/remove` without restarting the relay.
 - The running relay periodically expires old drop points and deletes expired ciphertext; `droppoint cleanup expired --config ./config.json` is available as an operational backstop.
 

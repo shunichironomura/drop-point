@@ -45,16 +45,17 @@ type createDropPointRequest struct {
 	ClientName presentValue[string] `json:"client_name"`
 	TTLSeconds presentValue[int]    `json:"ttl_seconds"`
 	MaxBytes   presentValue[int64]  `json:"max_bytes"`
-	SingleUse  presentValue[bool]   `json:"single_use"`
 }
 
 type createDropPointResponse struct {
-	DropPointID string    `json:"drop_point_id"`
-	DisplayName string    `json:"display_name"`
-	DropLink    string    `json:"drop_link"`
-	PickupToken string    `json:"pickup_token"`
-	ExpiresAt   time.Time `json:"expires_at"`
-	MaxBytes    int64     `json:"max_bytes"`
+	DropPointID           string    `json:"drop_point_id"`
+	DisplayName           string    `json:"display_name"`
+	DropLink              string    `json:"drop_link"`
+	PickupToken           string    `json:"pickup_token"`
+	ExpiresAt             time.Time `json:"expires_at"`
+	MaxBytes              int64     `json:"max_bytes"`
+	MaxPendingSubmissions int       `json:"max_pending_submissions"`
+	MaxPendingBytes       int64     `json:"max_pending_bytes"`
 }
 
 // HandleCreateDropPoint handles POST /api/drop-points.
@@ -101,12 +102,14 @@ func HandleCreateDropPoint(deps Dependencies) http.HandlerFunc {
 		}
 
 		writeJSON(w, http.StatusCreated, createDropPointResponse{
-			DropPointID: created.DropPointID,
-			DisplayName: created.DisplayName,
-			DropLink:    dropLink(deps.Config.BaseURL, created.DropToken),
-			PickupToken: created.PickupToken,
-			ExpiresAt:   created.ExpiresAt,
-			MaxBytes:    created.MaxBytes,
+			DropPointID:           created.DropPointID,
+			DisplayName:           created.DisplayName,
+			DropLink:              dropLink(deps.Config.BaseURL, created.DropToken),
+			PickupToken:           created.PickupToken,
+			ExpiresAt:             created.ExpiresAt,
+			MaxBytes:              created.MaxBytes,
+			MaxPendingSubmissions: created.MaxPendingSubmissions,
+			MaxPendingBytes:       created.MaxPendingBytes,
 		})
 	}
 }
@@ -151,10 +154,6 @@ func decodeCreateRequest(w http.ResponseWriter, r *http.Request) (createDropPoin
 func validateCreateRequest(w http.ResponseWriter, deps Dependencies, req createDropPointRequest) (int, int64, bool) {
 	if req.ClientName.Null || (req.ClientName.Present && !validClientName(req.ClientName.Value)) {
 		writeError(w, http.StatusBadRequest, "client_name_invalid", "client_name must be a non-blank string of at most 128 UTF-8 bytes without control characters")
-		return 0, 0, false
-	}
-	if req.SingleUse.Null || (req.SingleUse.Present && !req.SingleUse.Value) {
-		writeError(w, http.StatusBadRequest, "single_use_required", "single_use must be true when present")
 		return 0, 0, false
 	}
 	if req.TTLSeconds.Null {
@@ -205,6 +204,8 @@ func validClientName(value string) bool {
 }
 
 func createDropPoint(ctx context.Context, deps Dependencies, apiTokenID string, maxActive int, clientName string, ttl time.Duration, maxBytes int64, now time.Time) (droppoint.CreateDropPointResponse, error) {
+	const maxPendingSubmissions = 10
+	maxPendingBytes := maxBytes * maxPendingSubmissions
 	for attempts := 0; attempts < 3; attempts++ {
 		id, dropToken, pickupToken, err := generateDropPointSecrets()
 		if err != nil {
@@ -215,14 +216,16 @@ func createDropPoint(ctx context.Context, deps Dependencies, apiTokenID string, 
 			return droppoint.CreateDropPointResponse{}, err
 		}
 		dp, err := droppoint.New(droppoint.CreateDropPointRequest{
-			ID:              id,
-			APITokenID:      apiTokenID,
-			ClientName:      clientName,
-			DisplayName:     displayName,
-			DropTokenHash:   token.HashSecret(dropToken),
-			PickupTokenHash: token.HashSecret(pickupToken),
-			TTL:             ttl,
-			MaxBytes:        maxBytes,
+			ID:                    id,
+			APITokenID:            apiTokenID,
+			ClientName:            clientName,
+			DisplayName:           displayName,
+			DropTokenHash:         token.HashSecret(dropToken),
+			PickupTokenHash:       token.HashSecret(pickupToken),
+			TTL:                   ttl,
+			MaxBytes:              maxBytes,
+			MaxPendingSubmissions: maxPendingSubmissions,
+			MaxPendingBytes:       maxPendingBytes,
 		}, now)
 		if err != nil {
 			return droppoint.CreateDropPointResponse{}, err
@@ -234,12 +237,14 @@ func createDropPoint(ctx context.Context, deps Dependencies, apiTokenID string, 
 			return droppoint.CreateDropPointResponse{}, err
 		}
 		return droppoint.CreateDropPointResponse{
-			DropPointID: id,
-			DisplayName: displayName,
-			DropToken:   dropToken,
-			PickupToken: pickupToken,
-			ExpiresAt:   dp.ExpiresAt,
-			MaxBytes:    maxBytes,
+			DropPointID:           id,
+			DisplayName:           displayName,
+			DropToken:             dropToken,
+			PickupToken:           pickupToken,
+			ExpiresAt:             dp.ExpiresAt,
+			MaxBytes:              maxBytes,
+			MaxPendingSubmissions: maxPendingSubmissions,
+			MaxPendingBytes:       maxPendingBytes,
 		}, nil
 	}
 	return droppoint.CreateDropPointResponse{}, errors.New("could not allocate unique drop point identifiers")
