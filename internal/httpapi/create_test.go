@@ -26,7 +26,7 @@ func TestCreateDropPointWithValidAPIToken(t *testing.T) {
 	repo, handler := newCreateTestHandler(t, apiTokenSeed{ID: "desktop-main", SecretHash: token.HashSecret(apiPlain), Enabled: true, MaxActiveDropPoints: intPtr(3)})
 
 	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodPost, "/api/drop-points", strings.NewReader(`{"client_name":"test-client","ttl_seconds":120,"max_bytes":2048,"single_use":true}`))
+	request := httptest.NewRequest(http.MethodPost, "/api/drop-points", strings.NewReader(`{"client_name":"test-client","ttl_seconds":120,"max_bytes":2048}`))
 	request.Header.Set("Authorization", "Bearer "+apiPlain)
 	request.Header.Set("Content-Type", "application/json")
 	handler.ServeHTTP(recorder, request)
@@ -77,6 +77,9 @@ func TestCreateDropPointWithValidAPIToken(t *testing.T) {
 	if !token.EqualHash(token.HashSecret(response.PickupToken), dp.PickupTokenHash) {
 		t.Fatal("stored pickup token hash does not verify pickup token")
 	}
+	if response.MaxPendingSubmissions != 10 || response.MaxPendingBytes != 20_480 || dp.MaxPendingSubmissions != 10 || dp.MaxPendingBytes != 20_480 {
+		t.Fatalf("queue limits response=%+v stored=%+v", response, dp)
+	}
 }
 
 func TestCreateDropPointRejectsInvalidAPITokens(t *testing.T) {
@@ -115,7 +118,7 @@ func TestCreateDropPointValidatesLimitsAndQuota(t *testing.T) {
 	badRequests := map[string]string{
 		"ttl too large":       `{"ttl_seconds":901}`,
 		"max bytes too large": `{"max_bytes":52428801}`,
-		"single use false":    `{"single_use":false}`,
+		"unknown field":       `{"single_use":false}`,
 	}
 	for name, body := range badRequests {
 		t.Run(name, func(t *testing.T) {
@@ -160,15 +163,13 @@ func TestCreateDropPointRequiresPresenceAwareJSONObject(t *testing.T) {
 		wantStatus  int
 	}{
 		{name: "omitted optionals use defaults", body: `{}`, contentType: "application/json", wantStatus: http.StatusCreated},
-		{name: "JSON charset parameter accepted", body: `{"single_use":true}`, contentType: "application/json; charset=utf-8", wantStatus: http.StatusCreated},
+		{name: "JSON charset parameter accepted", body: `{}`, contentType: "application/json; charset=utf-8", wantStatus: http.StatusCreated},
 		{name: "null root", body: `null`, contentType: "application/json", wantStatus: http.StatusBadRequest},
 		{name: "array root", body: `[]`, contentType: "application/json", wantStatus: http.StatusBadRequest},
 		{name: "zero TTL", body: `{"ttl_seconds":0}`, contentType: "application/json", wantStatus: http.StatusBadRequest},
 		{name: "null TTL", body: `{"ttl_seconds":null}`, contentType: "application/json", wantStatus: http.StatusBadRequest},
 		{name: "zero max bytes", body: `{"max_bytes":0}`, contentType: "application/json", wantStatus: http.StatusBadRequest},
 		{name: "null max bytes", body: `{"max_bytes":null}`, contentType: "application/json", wantStatus: http.StatusBadRequest},
-		{name: "false single use", body: `{"single_use":false}`, contentType: "application/json", wantStatus: http.StatusBadRequest},
-		{name: "null single use", body: `{"single_use":null}`, contentType: "application/json", wantStatus: http.StatusBadRequest},
 		{name: "null client name", body: `{"client_name":null}`, contentType: "application/json", wantStatus: http.StatusBadRequest},
 		{name: "non-string client name", body: `{"client_name":42}`, contentType: "application/json", wantStatus: http.StatusBadRequest},
 		{name: "blank client name", body: `{"client_name":"  "}`, contentType: "application/json", wantStatus: http.StatusBadRequest},

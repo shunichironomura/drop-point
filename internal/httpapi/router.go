@@ -18,14 +18,20 @@ type Repository interface {
 	CreateDropPointWithinQuota(ctx context.Context, dp droppoint.DropPoint, maxActive int, now time.Time) error
 	FindDropPointByID(ctx context.Context, id string) (*droppoint.DropPoint, error)
 	FindOpenDropPointByDropTokenHash(ctx context.Context, dropTokenHash string, now time.Time) (*droppoint.DropPoint, error)
-	BeginReceivingDrop(ctx context.Context, id string, now time.Time) error
-	CommitReceivedDrop(ctx context.Context, id string, result droppoint.CommitDropResult, now time.Time) error
-	ResetReceivingDrop(ctx context.Context, id string, now time.Time) error
+	BeginSubmission(ctx context.Context, dropPointID, submissionID string, now time.Time) error
+	CommitSubmission(ctx context.Context, dropPointID, submissionID string, result droppoint.CommitSubmissionResult, now time.Time) error
+	DeleteReceivingSubmission(ctx context.Context, dropPointID, submissionID string) error
+	FindSubmission(ctx context.Context, dropPointID, submissionID string) (*droppoint.Submission, error)
+	ListReadySubmissions(ctx context.Context, dropPointID string) ([]droppoint.Submission, error)
+	PendingStats(ctx context.Context, dropPointID string) (store.PendingStats, error)
+	MarkSubmissionPickedUp(ctx context.Context, dropPointID, submissionID string, now time.Time) error
+	AcknowledgeSubmission(ctx context.Context, dropPointID, submissionID string, now time.Time) error
+	FailSubmission(ctx context.Context, dropPointID, submissionID string, now time.Time) error
+	ClearSubmissionFiles(ctx context.Context, dropPointID, submissionID string) error
+	ClearDropPointFiles(ctx context.Context, id string) error
 	FailDropPoint(ctx context.Context, id string, now time.Time) error
 	AuthorizePickupToken(ctx context.Context, id string, pickupTokenHash string, now time.Time) (*droppoint.DropPoint, error)
-	MarkFirstPickedUp(ctx context.Context, id string, now time.Time) error
 	CloseDropPoint(ctx context.Context, id string, now time.Time) error
-	DeleteDropPointFiles(ctx context.Context, id string) error
 }
 
 // Dependencies are the imperative-shell resources used by HTTP handlers.
@@ -57,13 +63,18 @@ func NewRouterWithDependencies(deps Dependencies) http.Handler {
 	mux.HandleFunc("/api/drop-points", methodNotAllowed("POST"))
 	mux.HandleFunc("GET /api/drop-points/{drop_point_id}/status", getOrHead(HandleGetDropPointStatus(deps)))
 	mux.HandleFunc("/api/drop-points/{drop_point_id}/status", methodNotAllowed("GET, HEAD"))
-	mux.HandleFunc("GET /api/drop-points/{drop_point_id}/pickup", getOrHead(HandlePickupPayload(deps)))
-	mux.HandleFunc("/api/drop-points/{drop_point_id}/pickup", methodNotAllowed("GET, HEAD"))
+	mux.HandleFunc("GET /api/drop-points/{drop_point_id}/submissions", getOrHead(HandleListSubmissions(deps)))
+	mux.HandleFunc("/api/drop-points/{drop_point_id}/submissions", methodNotAllowed("GET, HEAD"))
+	mux.HandleFunc("GET /api/drop-points/{drop_point_id}/submissions/{submission_id}/pickup", getOrHead(HandlePickupSubmission(deps)))
+	mux.HandleFunc("/api/drop-points/{drop_point_id}/submissions/{submission_id}/pickup", methodNotAllowed("GET, HEAD"))
+	mux.HandleFunc("DELETE /api/drop-points/{drop_point_id}/submissions/{submission_id}", HandleAcknowledgeSubmission(deps))
+	mux.HandleFunc("/api/drop-points/{drop_point_id}/submissions/{submission_id}", methodNotAllowed("DELETE"))
 	mux.HandleFunc("DELETE /api/drop-points/{drop_point_id}", HandleCloseDropPoint(deps))
 	mux.HandleFunc("/api/drop-points/{drop_point_id}", methodNotAllowed("DELETE"))
 	mux.HandleFunc("GET /api/drops/{drop_token}", getOrHead(HandleGetDropMetadata(deps)))
-	mux.HandleFunc("PUT /api/drops/{drop_token}", HandleSubmitDrop(deps))
-	mux.HandleFunc("/api/drops/{drop_token}", methodNotAllowed("GET, HEAD, PUT"))
+	mux.HandleFunc("/api/drops/{drop_token}", methodNotAllowed("GET, HEAD"))
+	mux.HandleFunc("PUT /api/drops/{drop_token}/submissions/{submission_id}", HandleSubmitDrop(deps))
+	mux.HandleFunc("/api/drops/{drop_token}/submissions/{submission_id}", methodNotAllowed("PUT"))
 	mux.HandleFunc("GET /drop/{drop_token}", getOrHead(HandleServeDropPage))
 	mux.HandleFunc("/drop/{drop_token}", methodNotAllowed("GET, HEAD"))
 	mux.HandleFunc("GET /drop-assets/{asset}", getOrHead(HandleDropPageAsset))

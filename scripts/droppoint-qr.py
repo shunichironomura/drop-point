@@ -55,12 +55,6 @@ def main() -> int:
     parser.add_argument("--client-name", default="python-mobile-qr", help="client_name sent to the receiver API")
     parser.add_argument("--ttl-seconds", type=int, default=600, help="Drop point TTL in seconds")
     parser.add_argument("--max-bytes", type=int, default=52_428_800, help="Maximum encrypted upload size")
-    parser.add_argument(
-        "--single-use",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Request a single-use drop point",
-    )
     parser.add_argument("--png", type=Path, help="Also write the QR code as a PNG image")
     parser.add_argument("--no-terminal-qr", action="store_true", help="Do not print the QR code to the terminal")
     args = parser.parse_args()
@@ -89,9 +83,10 @@ def main() -> int:
             print("Scan this QR code with the mobile phone:")
             print_terminal_qr(drop_link_with_fragment)
 
-        print("After uploading from the phone, receive with:")
+        print("After uploading from the phone, receive and acknowledge ready submissions with:")
         print(f"  ./scripts/droppoint-receiver.py pickup --state {args.state} --wait")
-        print("The receiver helper removes recipient_private_key from the state file after pickup and close.")
+        print("The drop point remains open for more uploads. Close it explicitly when finished:")
+        print(f"  ./scripts/droppoint-receiver.py close --state {args.state}")
         return 0
     except Exception as exc:  # noqa: BLE001 - CLI should report any failure clearly.
         print(f"qr setup error: {exc}", file=sys.stderr)
@@ -118,7 +113,6 @@ def create_drop_point(args: argparse.Namespace, base_url: str, api_token: str) -
             "client_name": args.client_name,
             "ttl_seconds": args.ttl_seconds,
             "max_bytes": args.max_bytes,
-            "single_use": args.single_use,
         }
     ).encode("utf-8")
     return json_request(
@@ -153,6 +147,9 @@ def receiver_state(
         "drop_link_with_fragment": drop_link_with_fragment,
         "expires_at": created["expires_at"],
         "max_bytes": created["max_bytes"],
+        "max_pending_submissions": created["max_pending_submissions"],
+        "max_pending_bytes": created["max_pending_bytes"],
+        "installed_submissions": {},
     }
 
 

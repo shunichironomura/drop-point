@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"context"
+	"errors"
 	"log"
 	"net/http"
 	"net/http/httptest"
@@ -15,6 +16,8 @@ import (
 	"github.com/shunichironomura/droppoint/internal/droppoint"
 	"github.com/shunichironomura/droppoint/internal/token"
 )
+
+const serverTestSubmissionID = "sub_AAAAAAAAAAAAAAAAAAAAAA"
 
 func TestNewInitializesDataDirStoreAndHealth(t *testing.T) {
 	cfg := config.Default()
@@ -80,13 +83,15 @@ func TestCleanupLoopExpiresAndDeletesPayloads(t *testing.T) {
 
 	createdAt := time.Now().UTC().Add(-20 * time.Minute)
 	dp, err := droppoint.New(droppoint.CreateDropPointRequest{
-		ID:              "dp_server_cleanup",
-		APITokenID:      "desktop-main",
-		DisplayName:     "calm-otter",
-		DropTokenHash:   token.HashSecret("drop_server_cleanup"),
-		PickupTokenHash: token.HashSecret("pick_server_cleanup"),
-		TTL:             10 * time.Minute,
-		MaxBytes:        1024,
+		ID:                    "dp_server_cleanup",
+		APITokenID:            "desktop-main",
+		DisplayName:           "calm-otter",
+		DropTokenHash:         token.HashSecret("drop_server_cleanup"),
+		PickupTokenHash:       token.HashSecret("pick_server_cleanup"),
+		TTL:                   10 * time.Minute,
+		MaxBytes:              1024,
+		MaxPendingSubmissions: 10,
+		MaxPendingBytes:       10 * 1024,
 	}, createdAt)
 	if err != nil {
 		t.Fatalf("droppoint.New: %v", err)
@@ -94,15 +99,15 @@ func TestCleanupLoopExpiresAndDeletesPayloads(t *testing.T) {
 	if err := srv.Repository.CreateDropPointWithinQuota(context.Background(), dp, 1_000_000, dp.CreatedAt); err != nil {
 		t.Fatalf("CreateDropPointWithinQuota: %v", err)
 	}
-	if err := srv.Repository.BeginReceivingDrop(context.Background(), dp.ID, createdAt.Add(time.Minute)); err != nil {
-		t.Fatalf("BeginReceivingDrop: %v", err)
+	if err := srv.Repository.BeginSubmission(context.Background(), dp.ID, serverTestSubmissionID, createdAt.Add(time.Minute)); err != nil {
+		t.Fatalf("BeginSubmission: %v", err)
 	}
-	result, err := srv.BlobStore.WriteDrop(context.Background(), dp.ID, []byte(`{}`), bytes.NewReader([]byte("payload")), 1024)
+	result, err := srv.BlobStore.WriteSubmission(context.Background(), dp.ID, serverTestSubmissionID, []byte(`{}`), bytes.NewReader([]byte("payload")), 1024)
 	if err != nil {
-		t.Fatalf("WriteDrop: %v", err)
+		t.Fatalf("WriteSubmission: %v", err)
 	}
-	if err := srv.Repository.CommitReceivedDrop(context.Background(), dp.ID, result, createdAt.Add(2*time.Minute)); err != nil {
-		t.Fatalf("CommitReceivedDrop: %v", err)
+	if err := srv.Repository.CommitSubmission(context.Background(), dp.ID, serverTestSubmissionID, result, createdAt.Add(2*time.Minute)); err != nil {
+		t.Fatalf("CommitSubmission: %v", err)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -115,7 +120,8 @@ func TestCleanupLoopExpiresAndDeletesPayloads(t *testing.T) {
 	deadline := time.Now().Add(2 * time.Second)
 	for {
 		got, err := srv.Repository.FindDropPointByID(context.Background(), dp.ID)
-		if err == nil && got.Status == droppoint.StatusExpired && got.PayloadPath == "" && got.EnvelopePath == "" {
+		submission, submissionErr := srv.Repository.FindSubmission(context.Background(), dp.ID, serverTestSubmissionID)
+		if err == nil && submissionErr == nil && got.Status == droppoint.StatusExpired && submission.PayloadPath == "" && submission.EnvelopePath == "" {
 			if _, statErr := os.Stat(srv.BlobStore.DropDir(dp.ID)); os.IsNotExist(statErr) {
 				return
 			}
@@ -137,13 +143,15 @@ func TestNewRecoversInterruptedReceivingBeforeServing(t *testing.T) {
 	}
 	now := time.Now().UTC()
 	dp, err := droppoint.New(droppoint.CreateDropPointRequest{
-		ID:              "dp_server_interrupted",
-		APITokenID:      "desktop-main",
-		DisplayName:     "calm-otter",
-		DropTokenHash:   token.HashSecret("drop_server_interrupted"),
-		PickupTokenHash: token.HashSecret("pick_server_interrupted"),
-		TTL:             10 * time.Minute,
-		MaxBytes:        1024,
+		ID:                    "dp_server_interrupted",
+		APITokenID:            "desktop-main",
+		DisplayName:           "calm-otter",
+		DropTokenHash:         token.HashSecret("drop_server_interrupted"),
+		PickupTokenHash:       token.HashSecret("pick_server_interrupted"),
+		TTL:                   10 * time.Minute,
+		MaxBytes:              1024,
+		MaxPendingSubmissions: 10,
+		MaxPendingBytes:       10 * 1024,
 	}, now)
 	if err != nil {
 		t.Fatalf("droppoint.New: %v", err)
@@ -151,11 +159,11 @@ func TestNewRecoversInterruptedReceivingBeforeServing(t *testing.T) {
 	if err := first.Repository.CreateDropPointWithinQuota(context.Background(), dp, 1_000_000, now); err != nil {
 		t.Fatalf("CreateDropPointWithinQuota: %v", err)
 	}
-	if err := first.Repository.BeginReceivingDrop(context.Background(), dp.ID, now); err != nil {
-		t.Fatalf("BeginReceivingDrop: %v", err)
+	if err := first.Repository.BeginSubmission(context.Background(), dp.ID, serverTestSubmissionID, now); err != nil {
+		t.Fatalf("BeginSubmission: %v", err)
 	}
-	if _, err := first.BlobStore.WriteDrop(context.Background(), dp.ID, []byte(`{}`), bytes.NewReader([]byte("interrupted")), 1024); err != nil {
-		t.Fatalf("WriteDrop: %v", err)
+	if _, err := first.BlobStore.WriteSubmission(context.Background(), dp.ID, serverTestSubmissionID, []byte(`{}`), bytes.NewReader([]byte("interrupted")), 1024); err != nil {
+		t.Fatalf("WriteSubmission: %v", err)
 	}
 	if err := first.Close(); err != nil {
 		t.Fatalf("first Close: %v", err)
@@ -170,11 +178,14 @@ func TestNewRecoversInterruptedReceivingBeforeServing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FindDropPointByID: %v", err)
 	}
-	if row.Status != droppoint.StatusOpen || row.ReceivingStartedAt != nil {
+	if row.Status != droppoint.StatusOpen {
 		t.Fatalf("startup-recovered row = %+v", row)
 	}
-	if _, err := os.Stat(second.BlobStore.DropDir(dp.ID)); !os.IsNotExist(err) {
-		t.Fatalf("interrupted drop dir stat err = %v, want not exist", err)
+	if _, err := second.Repository.FindSubmission(context.Background(), dp.ID, serverTestSubmissionID); !errors.Is(err, droppoint.ErrSubmissionNotFound) {
+		t.Fatalf("FindSubmission after startup recovery error = %v, want submission not found", err)
+	}
+	if _, err := os.Stat(second.BlobStore.SubmissionDir(dp.ID, serverTestSubmissionID)); !os.IsNotExist(err) {
+		t.Fatalf("interrupted submission dir stat err = %v, want not exist", err)
 	}
 }
 
