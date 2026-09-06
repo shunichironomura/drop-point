@@ -7,6 +7,14 @@ The `scripts/` directory contains two small Python clients that exercise the rea
 
 They are `uv` scripts, so dependencies are installed automatically from their inline metadata.
 
+## Camera mode checks
+
+On a reachable HTTPS sender link, choose **Camera mode**, then **Take photo & send**. Confirming a photo in the native picker sends it immediately; cancelling sends nothing. Take a second photo after success without rescanning. The rear-camera hint is browser-dependent: desktop browsers and some mobile browsers may show a file/photo picker instead. Camera mode intentionally has no live video stream or automatic camera reopening.
+
+Test on physical iOS Safari and Android Chrome before rollout. Check cancellation, repeated capture, queue-full retry, removing an oversized photo, and expiry while the native picker is open. Desktop automation can verify the returned-file flow, but not the native camera experience. Pending photos/files must be sent or removed before switching modes.
+
+Run the sender's dependency-free regression tests with `node --test web/drop-page/app.test.cjs` (Node 22 or later).
+
 ## 1. Create a local config and API token
 
 ```sh

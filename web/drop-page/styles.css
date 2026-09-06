@@ -238,6 +238,29 @@ button:disabled,
   outline-offset: 3px;
 }
 
+.mode-switch {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.mode-switch button {
+  margin-top: 0;
+  background: #1e293b;
+  color: #e2e8f0;
+  border: 1px solid #64748b;
+}
+
+.mode-switch button[aria-pressed="true"] {
+  background: #38bdf8;
+  color: #082f49;
+  border-color: #38bdf8;
+}
+
+.picker[hidden],
+button[hidden] {
+  display: none;
+}
+
 @media (max-width: 480px) {
   .card { padding: 1.25rem; }
   .drop-zone { padding: 1.5rem 1rem; }

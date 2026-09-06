@@ -957,6 +957,14 @@ The drop page MUST:
 - Use no third-party scripts.
 - Avoid leaking plaintext metadata into URLs, logs, local storage, analytics, or error reporting.
 
+### Camera mode
+
+The page defaults to Files mode (explicit Send). Senders MAY opt into Camera mode, which uses a single-file native picker with `accept="image/*"` and `capture="environment"`. This requests the rear camera where supported; browsers MAY instead show a photo/file picker. Do not use `getUserMedia`, live video streams, browser detection, or automatically reopen the camera.
+
+Before capture, the page MUST explain that confirming a photo sends it immediately. Selecting one photo MUST use the existing encryption and immutable-submission path without another Send click. Cancelling the native picker MUST send nothing. After success, retain Camera mode and enable the next capture on the same session.
+
+Capture and mode switching MUST be disabled while a submission is in flight or a selection is pending. Failed sends retain the photo for explicit Retry send with the same submission ID and ciphertext. Senders can remove a pending photo before taking another; oversized photos are not sent. Mode switching MUST NOT silently discard ordinary file selections. Terminal sessions disable capture as well as ordinary uploads. The relay's restrictive camera Permissions-Policy remains unchanged: native HTML capture does not require web-page camera streaming access.
+
 Recommended English UI copy:
 
 | UI element | Copy |

@@ -14,7 +14,16 @@
       <p id="drop-name" class="drop-name" hidden>Drop name: <strong id="drop-name-text"></strong></p>
       <div id="status" class="status" role="status" aria-live="polite">Checking drop link...</div>
       <div id="expiry" class="expiry" aria-live="polite" hidden>Expires in <span id="countdown"></span></div>
-      <label class="picker">
+      <div class="mode-switch" role="group" aria-label="Sending mode">
+        <button id="files-mode" type="button" aria-pressed="true" disabled>Files</button>
+        <button id="camera-mode" type="button" aria-pressed="false" disabled>Camera mode</button>
+      </div>
+      <p id="camera-help" class="small" hidden>Confirming a photo in the camera sends it immediately, encrypted, to this drop point. Cancel to send nothing. Your device may show a photo picker instead.</p>
+      <label id="camera-picker" class="picker" hidden>
+        <span>Take photo &amp; send</span>
+        <input id="camera" type="file" accept="image/*" capture="environment" aria-describedby="camera-help" disabled>
+      </label>
+      <label id="files-picker" class="picker">
         <span>Choose files</span>
         <input id="files" type="file" multiple disabled>
       </label>
