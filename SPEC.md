@@ -949,6 +949,10 @@ The drop page MUST:
 - Submit a single envelope and a single encrypted payload.
 - Generate a fresh submission ID and clear the current selection after each successful submission.
 - Remain usable for additional submissions while the parent drop point is open.
+- Allow only one send in flight. Retain the submission ID and encrypted bundle in page memory for manual retries of an unchanged selection, including queue-full and ambiguous network failures.
+- Clear retry state when the selection changes; warn after ambiguous failures that changing it starts a new submission. Do not persist file selection, ciphertext, or history in browser storage.
+- Show a page-local sent count and the most recent 20 accepted submissions (filenames and send time). Label this as relay acceptance, not receiver acknowledgement. The history resets on navigation or reload.
+- Keep terminal sessions disabled even if an in-flight response arrives after expiry. Keep successful history visible when the session ends.
 - Display clear states for missing key, unsupported browser, encrypting, dropping, success, expiry, and failure.
 - Use no third-party scripts.
 - Avoid leaking plaintext metadata into URLs, logs, local storage, analytics, or error reporting.
@@ -958,11 +962,12 @@ Recommended English UI copy:
 | UI element | Copy |
 | --- | --- |
 | Page title | `Drop files` |
-| Intro | `Send encrypted file bundles through this drop point while it remains open.` |
+| Intro | `Keep this page open. Send files whenever you’re ready—no need to scan again.` |
 | File picker | `Choose files` |
-| Submit | `Drop encrypted files` |
-| In progress | `Encrypting and dropping files...` |
-| Success | `Files dropped successfully.` |
+| Submit | `Send files` |
+| Retry | `Retry send` |
+| In progress | `Sending…` |
+| Success | `Sent. You can send more files from this page.` |
 | Expired | `This drop point has expired.` |
 | Missing key | `This drop link is missing its public key.` |
 | Insecure context | `This page must be opened over HTTPS or localhost to encrypt files.` |

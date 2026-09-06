@@ -19,6 +19,7 @@ body {
 
 .shell {
   width: min(92vw, 34rem);
+  margin-block: 1.5rem;
 }
 
 .card {
@@ -201,4 +202,43 @@ button:disabled,
 .small {
   font-size: 0.9rem;
   line-height: 1.4;
+}
+
+.history {
+  margin-top: 1.5rem;
+  border-top: 1px solid #334155;
+  padding-top: 1rem;
+}
+
+.history h2 {
+  font-size: 1.1rem;
+}
+
+.history ol {
+  list-style: none;
+  padding: 0;
+  max-height: 16rem;
+  overflow-y: auto;
+}
+
+.history li {
+  padding-block: 0.75rem;
+  border-bottom: 1px solid #334155;
+  overflow-wrap: anywhere;
+}
+
+.history li span {
+  display: block;
+  color: #cbd5e1;
+  margin-top: 0.25rem;
+}
+
+.picker:focus-within {
+  outline: 3px solid #38bdf8;
+  outline-offset: 3px;
+}
+
+@media (max-width: 480px) {
+  .card { padding: 1.25rem; }
+  .drop-zone { padding: 1.5rem 1rem; }
 }
