@@ -6,188 +6,137 @@ import (
 	"time"
 )
 
-func TestNewDropPoint(t *testing.T) {
-	now := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
-	dp, err := New(CreateDropPointRequest{
-		ID:              "dp_test",
-		APITokenID:      "desktop-main",
-		ClientName:      "client",
-		DisplayName:     "calm-otter",
-		DropTokenHash:   "sha256:drop",
-		PickupTokenHash: "sha256:pick",
-		TTL:             10 * time.Minute,
-		MaxBytes:        1024,
-	}, now)
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	if dp.Status != StatusOpen {
-		t.Fatalf("Status = %q, want open", dp.Status)
+func TestNewDropPointCreatesReusableOpenSession(t *testing.T) {
+	now := testNow()
+	dp := mustDropPoint(t, now)
+	if dp.Status != StatusOpen || dp.MaxPendingSubmissions != 10 || dp.MaxPendingBytes != 10_240 {
+		t.Fatalf("new drop point = %+v", dp)
 	}
 	if !dp.ExpiresAt.Equal(now.Add(10 * time.Minute)) {
-		t.Fatalf("ExpiresAt = %s", dp.ExpiresAt)
+		t.Fatalf("expires_at = %s", dp.ExpiresAt)
 	}
 }
 
-func TestStatusTransitions(t *testing.T) {
-	now := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
+func TestSubmissionLifecycle(t *testing.T) {
+	now := testNow()
+	submission, err := NewSubmission(mustDropPoint(t, now), "sub_test", now)
+	if err != nil {
+		t.Fatalf("NewSubmission: %v", err)
+	}
+	if submission.Status != SubmissionStatusReceiving {
+		t.Fatalf("status = %q", submission.Status)
+	}
+
+	ready, err := CommitSubmission(submission, CommitSubmissionResult{EnvelopePath: "envelope", PayloadPath: "payload", EncryptedSize: 9}, now.Add(time.Second))
+	if err != nil {
+		t.Fatalf("CommitSubmission: %v", err)
+	}
+	if ready.Status != SubmissionStatusReady || ready.DroppedAt == nil {
+		t.Fatalf("ready submission = %+v", ready)
+	}
+
+	picked, err := MarkSubmissionPickedUp(ready, now.Add(2*time.Second))
+	if err != nil {
+		t.Fatalf("MarkSubmissionPickedUp: %v", err)
+	}
+	first := *picked.FirstPickedUpAt
+	picked, err = MarkSubmissionPickedUp(picked, now.Add(3*time.Second))
+	if err != nil || !picked.FirstPickedUpAt.Equal(first) {
+		t.Fatalf("idempotent pickup = %+v err=%v", picked, err)
+	}
+
+	acknowledged, err := AcknowledgeSubmission(picked, now.Add(4*time.Second))
+	if err != nil {
+		t.Fatalf("AcknowledgeSubmission: %v", err)
+	}
+	if acknowledged.Status != SubmissionStatusAcknowledged || acknowledged.AcknowledgedAt == nil {
+		t.Fatalf("acknowledged submission = %+v", acknowledged)
+	}
+	if _, err := AcknowledgeSubmission(acknowledged, now.Add(5*time.Second)); err != nil {
+		t.Fatalf("idempotent acknowledge: %v", err)
+	}
+}
+
+func TestNewSubmissionRequiresOpenUnexpiredSession(t *testing.T) {
+	now := testNow()
+	for _, tt := range []struct {
+		name   string
+		status Status
+		expiry time.Time
+		want   error
+	}{
+		{name: "closed", status: StatusClosed, expiry: now.Add(time.Minute), want: ErrDropPointClosed},
+		{name: "expired status", status: StatusExpired, expiry: now.Add(time.Minute), want: ErrDropPointExpired},
+		{name: "elapsed", status: StatusOpen, expiry: now, want: ErrDropPointExpired},
+		{name: "failed", status: StatusFailed, expiry: now.Add(time.Minute), want: ErrDropPointFailed},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			dp := mustDropPoint(t, now)
+			dp.Status = tt.status
+			dp.ExpiresAt = tt.expiry
+			if _, err := NewSubmission(dp, "sub_test", now); !errors.Is(err, tt.want) {
+				t.Fatalf("error = %v, want %v", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestFailedSubmissionDoesNotFailDropPoint(t *testing.T) {
+	now := testNow()
 	dp := mustDropPoint(t, now)
-
-	receiving, err := BeginReceiving(dp, now)
+	submission, err := NewSubmission(dp, "sub_test", now)
 	if err != nil {
-		t.Fatalf("BeginReceiving: %v", err)
+		t.Fatal(err)
 	}
-	if receiving.Status != StatusReceiving {
-		t.Fatalf("Status = %q, want receiving", receiving.Status)
+	failed := FailSubmission(submission, now.Add(time.Second))
+	if failed.Status != SubmissionStatusFailed || failed.FailedAt == nil {
+		t.Fatalf("failed submission = %+v", failed)
 	}
-
-	ready, err := CommitReceived(receiving, CommitDropResult{EnvelopePath: "envelope.json", PayloadPath: "payload.bin", EncryptedSize: 9}, now.Add(time.Second))
-	if err != nil {
-		t.Fatalf("CommitReceived: %v", err)
-	}
-	if ready.Status != StatusReady || ready.DroppedAt == nil {
-		t.Fatalf("ready transition did not record ready state: %+v", ready)
-	}
-
-	picked, err := MarkPickedUp(ready, now.Add(2*time.Second))
-	if err != nil {
-		t.Fatalf("MarkPickedUp: %v", err)
-	}
-	if picked.Status != StatusReady || picked.FirstPickedUpAt == nil {
-		t.Fatalf("pickup should be non-terminal and record timestamp: %+v", picked)
-	}
-
-	pickedAgain, err := MarkPickedUp(picked, now.Add(3*time.Second))
-	if err != nil {
-		t.Fatalf("MarkPickedUp again: %v", err)
-	}
-	if !pickedAgain.FirstPickedUpAt.Equal(*picked.FirstPickedUpAt) {
-		t.Fatalf("first pickup changed: %s -> %s", picked.FirstPickedUpAt, pickedAgain.FirstPickedUpAt)
-	}
-
-	closed, err := Close(pickedAgain, now.Add(4*time.Second))
-	if err != nil {
-		t.Fatalf("Close: %v", err)
-	}
-	if closed.Status != StatusClosed || closed.ClosedAt == nil {
-		t.Fatalf("close did not record terminal state: %+v", closed)
-	}
-	if _, err := Close(closed, now.Add(5*time.Second)); err != nil {
-		t.Fatalf("Close should be idempotent: %v", err)
+	if err := RequireOpen(dp, now.Add(2*time.Second)); err != nil {
+		t.Fatalf("parent session was affected: %v", err)
 	}
 }
 
-func TestMarkPickedUpSurvivesTerminalRace(t *testing.T) {
-	now := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
-	for _, status := range []Status{StatusClosed, StatusExpired} {
-		dp := mustDropPoint(t, now)
-		dp.Status = status
-		picked, err := MarkPickedUp(dp, now)
-		if err != nil {
-			t.Fatalf("MarkPickedUp(%s): %v", status, err)
-		}
-		if picked.Status != status || picked.FirstPickedUpAt == nil {
-			t.Fatalf("MarkPickedUp(%s) = %+v", status, picked)
-		}
-	}
-}
-
-func TestRejectedTransitions(t *testing.T) {
-	now := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
+func TestCloseAndExpireSession(t *testing.T) {
+	now := testNow()
 	dp := mustDropPoint(t, now)
-
-	ready := dp
-	ready.Status = StatusReady
-	if _, err := BeginReceiving(ready, now); !errors.Is(err, ErrDropAlreadyExists) {
-		t.Fatalf("BeginReceiving ready err = %v, want ErrDropAlreadyExists", err)
-	}
-	if _, err := CommitReceived(dp, CommitDropResult{EnvelopePath: "e", PayloadPath: "p"}, now); !errors.Is(err, ErrDropPointNotOpen) {
-		t.Fatalf("CommitReceived open err = %v, want ErrDropPointNotOpen", err)
-	}
-	if _, err := MarkPickedUp(dp, now); !errors.Is(err, ErrDropPointNotOpen) {
-		t.Fatalf("MarkPickedUp open err = %v, want ErrDropPointNotOpen", err)
+	elapsed, err := Close(dp, dp.ExpiresAt)
+	if !errors.Is(err, ErrDropPointExpired) || elapsed.Status != StatusExpired {
+		t.Fatalf("Close elapsed session = %+v, %v", elapsed, err)
 	}
 
-	expired := dp
-	expired.ExpiresAt = now.Add(-time.Second)
-	if _, err := BeginReceiving(expired, now); !errors.Is(err, ErrDropPointExpired) {
-		t.Fatalf("BeginReceiving expired err = %v, want ErrDropPointExpired", err)
-	}
 	closed, err := Close(dp, now)
-	if err != nil {
-		t.Fatalf("Close: %v", err)
+	if err != nil || closed.Status != StatusClosed || closed.ClosedAt == nil {
+		t.Fatalf("Close = %+v, %v", closed, err)
 	}
-	if _, err := BeginReceiving(closed, now); !errors.Is(err, ErrDropPointClosed) {
-		t.Fatalf("BeginReceiving closed err = %v, want ErrDropPointClosed", err)
+	if _, err := Close(closed, now.Add(time.Second)); err != nil {
+		t.Fatalf("Close retry: %v", err)
 	}
-}
-
-func TestAbortReceivingReturnsToOpen(t *testing.T) {
-	now := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
-	dp := mustDropPoint(t, now)
-	receiving, err := BeginReceiving(dp, now)
-	if err != nil {
-		t.Fatalf("BeginReceiving: %v", err)
-	}
-	open, err := AbortReceiving(receiving, now.Add(time.Second))
-	if err != nil {
-		t.Fatalf("AbortReceiving: %v", err)
-	}
-	if open.Status != StatusOpen {
-		t.Fatalf("Status = %q, want open", open.Status)
-	}
-}
-
-func TestFailRecordsTerminalTimestamp(t *testing.T) {
-	now := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
-	dp := mustDropPoint(t, now)
-	failed, err := Fail(dp, now.Add(time.Second))
-	if err != nil {
-		t.Fatalf("Fail: %v", err)
-	}
-	if failed.Status != StatusFailed || failed.FailedAt == nil || !failed.FailedAt.Equal(now.Add(time.Second)) {
-		t.Fatalf("failed drop point = %+v", failed)
-	}
-	failedAgain, err := Fail(failed, now.Add(2*time.Second))
-	if err != nil {
-		t.Fatalf("Fail retry: %v", err)
-	}
-	if !failedAgain.FailedAt.Equal(*failed.FailedAt) {
-		t.Fatalf("failed_at changed: %v -> %v", failed.FailedAt, failedAgain.FailedAt)
-	}
-}
-
-func TestExpireNonTerminal(t *testing.T) {
-	now := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
-	dp := mustDropPoint(t, now)
 	expired, changed := Expire(dp, now.Add(11*time.Minute))
 	if !changed || expired.Status != StatusExpired {
-		t.Fatalf("Expire() = (%q, %v), want expired true", expired.Status, changed)
-	}
-
-	closed, err := Close(dp, now)
-	if err != nil {
-		t.Fatalf("Close: %v", err)
-	}
-	stillClosed, changed := Expire(closed, now.Add(11*time.Minute))
-	if changed || stillClosed.Status != StatusClosed {
-		t.Fatalf("closed drop point should not expire: (%q, %v)", stillClosed.Status, changed)
+		t.Fatalf("Expire = %+v, %v", expired, changed)
 	}
 }
 
 func mustDropPoint(t *testing.T, now time.Time) DropPoint {
 	t.Helper()
 	dp, err := New(CreateDropPointRequest{
-		ID:              "dp_test",
-		APITokenID:      "desktop-main",
-		DisplayName:     "calm-otter",
-		DropTokenHash:   "sha256:drop",
-		PickupTokenHash: "sha256:pick",
-		TTL:             10 * time.Minute,
-		MaxBytes:        1024,
+		ID:                    "dp_test",
+		APITokenID:            "desktop-main",
+		DisplayName:           "calm-otter",
+		DropTokenHash:         "sha256:drop",
+		PickupTokenHash:       "sha256:pick",
+		TTL:                   10 * time.Minute,
+		MaxBytes:              1024,
+		MaxPendingSubmissions: 10,
+		MaxPendingBytes:       10_240,
 	}, now)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
 	return dp
+}
+
+func testNow() time.Time {
+	return time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
 }

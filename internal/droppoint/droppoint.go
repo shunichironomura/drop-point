@@ -2,292 +2,265 @@ package droppoint
 
 import (
 	"errors"
-	"fmt"
+	"strings"
 	"time"
 )
 
-// Status is the persisted drop point lifecycle state.
 type Status string
 
 const (
-	StatusOpen      Status = "open"
-	StatusReceiving Status = "receiving"
-	StatusReady     Status = "ready"
-	StatusClosed    Status = "closed"
-	StatusExpired   Status = "expired"
-	StatusFailed    Status = "failed"
+	StatusOpen    Status = "open"
+	StatusClosed  Status = "closed"
+	StatusExpired Status = "expired"
+	StatusFailed  Status = "failed"
+)
+
+type SubmissionStatus string
+
+const (
+	SubmissionStatusReceiving    SubmissionStatus = "receiving"
+	SubmissionStatusReady        SubmissionStatus = "ready"
+	SubmissionStatusAcknowledged SubmissionStatus = "acknowledged"
+	SubmissionStatusFailed       SubmissionStatus = "failed"
 )
 
 var (
-	ErrDropPointNotFound            = errors.New("drop point not found")
-	ErrDropPointExpired             = errors.New("drop point expired")
-	ErrDropPointClosed              = errors.New("drop point closed")
-	ErrDropPointFailed              = errors.New("drop point failed")
-	ErrDropPointNotOpen             = errors.New("drop point is not open")
-	ErrDropAlreadyExists            = errors.New("drop already exists")
-	ErrActiveDropPointQuotaExceeded = errors.New("active drop point quota exceeded")
-	ErrDropTokenInvalid             = errors.New("drop token invalid")
-	ErrPickupTokenInvalid           = errors.New("pickup token invalid")
-	ErrPayloadTooLarge              = errors.New("payload too large")
-	ErrEnvelopeInvalid              = errors.New("envelope invalid")
+	ErrDropPointNotFound              = errors.New("drop point not found")
+	ErrDropTokenInvalid               = errors.New("invalid drop token")
+	ErrPickupTokenInvalid             = errors.New("invalid pickup token")
+	ErrDropPointNotOpen               = errors.New("drop point is not open")
+	ErrDropPointExpired               = errors.New("drop point expired")
+	ErrDropPointClosed                = errors.New("drop point closed")
+	ErrDropPointFailed                = errors.New("drop point failed")
+	ErrSubmissionNotFound             = errors.New("submission not found")
+	ErrSubmissionAlreadyExists        = errors.New("submission already exists")
+	ErrSubmissionNotReady             = errors.New("submission is not ready")
+	ErrSubmissionAcknowledged         = errors.New("submission acknowledged")
+	ErrSubmissionFailed               = errors.New("submission failed")
+	ErrPendingSubmissionQuotaExceeded = errors.New("pending submission quota exceeded")
+	ErrPendingBytesQuotaExceeded      = errors.New("pending byte quota exceeded")
+	ErrPayloadTooLarge                = errors.New("encrypted payload exceeds max_bytes")
+	ErrEnvelopeInvalid                = errors.New("envelope invalid")
+	ErrInvalidTransition              = errors.New("invalid drop point transition")
+	ErrInvalidDropPoint               = errors.New("invalid drop point")
+	ErrInvalidSubmission              = errors.New("invalid submission")
+	ErrAPITokenInvalid                = errors.New("invalid api token")
+	ErrAPITokenDisabled               = errors.New("api token disabled")
+	ErrActiveDropPointQuotaExceeded   = errors.New("active drop point quota exceeded")
+	ErrAPITokenNotFound               = errors.New("api token not found")
+	ErrAPITokenHasActiveDropPoints    = errors.New("api token has active drop points")
 )
 
-// DropPoint is the domain entity. Token fields contain hashes only; raw
-// capability tokens never belong in this structure.
 type DropPoint struct {
+	ID                    string
+	APITokenID            string
+	ClientName            string
+	DisplayName           string
+	DropTokenHash         string
+	PickupTokenHash       string
+	Status                Status
+	CreatedAt             time.Time
+	ClosedAt              *time.Time
+	FailedAt              *time.Time
+	ExpiresAt             time.Time
+	MaxBytes              int64
+	MaxPendingSubmissions int
+	MaxPendingBytes       int64
+}
+
+type Submission struct {
 	ID                 string
-	APITokenID         string
-	ClientName         string
-	DisplayName        string
-	DropTokenHash      string
-	PickupTokenHash    string
-	Status             Status
-	PayloadPath        string
+	DropPointID        string
+	Status             SubmissionStatus
 	EnvelopePath       string
+	PayloadPath        string
 	EncryptedSize      int64
 	CreatedAt          time.Time
+	ReceivingStartedAt time.Time
 	DroppedAt          *time.Time
-	ReceivingStartedAt *time.Time
 	FirstPickedUpAt    *time.Time
-	ClosedAt           *time.Time
+	AcknowledgedAt     *time.Time
 	FailedAt           *time.Time
-	ExpiresAt          time.Time
-	MaxBytes           int64
 }
 
-// CreateDropPointRequest contains validated token hashes and lifecycle limits
-// used to construct a new drop point.
 type CreateDropPointRequest struct {
-	ID              string
-	APITokenID      string
-	ClientName      string
-	DisplayName     string
-	DropTokenHash   string
-	PickupTokenHash string
-	TTL             time.Duration
-	MaxBytes        int64
+	ID                    string
+	APITokenID            string
+	ClientName            string
+	DisplayName           string
+	DropTokenHash         string
+	PickupTokenHash       string
+	TTL                   time.Duration
+	MaxBytes              int64
+	MaxPendingSubmissions int
+	MaxPendingBytes       int64
 }
 
-// CreateDropPointResponse is the receiver-facing creation result. Raw tokens
-// are included only in the response boundary, never in persisted rows.
-type CreateDropPointResponse struct {
-	DropPointID string
-	DisplayName string
-	DropToken   string
-	PickupToken string
-	ExpiresAt   time.Time
-	MaxBytes    int64
-}
-
-// CommitDropResult is the durable storage result used to mark a drop ready.
-type CommitDropResult struct {
+type CommitSubmissionResult struct {
 	EnvelopePath  string
 	PayloadPath   string
 	EncryptedSize int64
 }
 
-// New constructs a new open drop point from validated inputs.
+type CreateDropPointResponse struct {
+	DropPointID           string
+	DisplayName           string
+	DropToken             string
+	PickupToken           string
+	ExpiresAt             time.Time
+	MaxBytes              int64
+	MaxPendingSubmissions int
+	MaxPendingBytes       int64
+}
+
 func New(req CreateDropPointRequest, now time.Time) (DropPoint, error) {
-	if req.ID == "" {
-		return DropPoint{}, fmt.Errorf("drop point id must not be empty")
-	}
-	if req.APITokenID == "" {
-		return DropPoint{}, fmt.Errorf("api token id must not be empty")
-	}
-	if req.DisplayName == "" {
-		return DropPoint{}, fmt.Errorf("display name must not be empty")
-	}
-	if req.DropTokenHash == "" || req.PickupTokenHash == "" {
-		return DropPoint{}, fmt.Errorf("token hashes must not be empty")
-	}
-	if req.TTL <= 0 {
-		return DropPoint{}, fmt.Errorf("ttl must be positive")
-	}
-	if req.MaxBytes <= 0 {
-		return DropPoint{}, fmt.Errorf("max bytes must be positive")
+	if strings.TrimSpace(req.ID) == "" || strings.TrimSpace(req.APITokenID) == "" || strings.TrimSpace(req.DisplayName) == "" || strings.TrimSpace(req.DropTokenHash) == "" || strings.TrimSpace(req.PickupTokenHash) == "" || req.TTL <= 0 || req.MaxBytes <= 0 || req.MaxPendingSubmissions <= 0 || req.MaxPendingBytes < req.MaxBytes {
+		return DropPoint{}, ErrInvalidDropPoint
 	}
 	now = now.UTC()
 	return DropPoint{
-		ID:              req.ID,
-		APITokenID:      req.APITokenID,
-		ClientName:      req.ClientName,
-		DisplayName:     req.DisplayName,
-		DropTokenHash:   req.DropTokenHash,
-		PickupTokenHash: req.PickupTokenHash,
-		Status:          StatusOpen,
-		CreatedAt:       now,
-		ExpiresAt:       now.Add(req.TTL),
-		MaxBytes:        req.MaxBytes,
+		ID:                    req.ID,
+		APITokenID:            req.APITokenID,
+		ClientName:            req.ClientName,
+		DisplayName:           req.DisplayName,
+		DropTokenHash:         req.DropTokenHash,
+		PickupTokenHash:       req.PickupTokenHash,
+		Status:                StatusOpen,
+		CreatedAt:             now,
+		ExpiresAt:             now.Add(req.TTL),
+		MaxBytes:              req.MaxBytes,
+		MaxPendingSubmissions: req.MaxPendingSubmissions,
+		MaxPendingBytes:       req.MaxPendingBytes,
 	}, nil
 }
 
-// Terminal reports whether the status cannot transition back to a usable state.
-func (s Status) Terminal() bool {
-	switch s {
-	case StatusClosed, StatusExpired, StatusFailed:
-		return true
-	default:
-		return false
+func NewSubmission(dropPoint DropPoint, id string, now time.Time) (Submission, error) {
+	if strings.TrimSpace(id) == "" {
+		return Submission{}, ErrInvalidSubmission
 	}
+	if err := RequireOpen(dropPoint, now); err != nil {
+		return Submission{}, err
+	}
+	now = now.UTC()
+	return Submission{
+		ID:                 id,
+		DropPointID:        dropPoint.ID,
+		Status:             SubmissionStatusReceiving,
+		CreatedAt:          now,
+		ReceivingStartedAt: now,
+	}, nil
 }
 
-// Valid reports whether s is one of the known lifecycle statuses.
-func (s Status) Valid() bool {
-	switch s {
-	case StatusOpen, StatusReceiving, StatusReady, StatusClosed, StatusExpired, StatusFailed:
-		return true
-	default:
-		return false
+func CommitSubmission(submission Submission, result CommitSubmissionResult, now time.Time) (Submission, error) {
+	if submission.Status != SubmissionStatusReceiving || result.EnvelopePath == "" || result.PayloadPath == "" || result.EncryptedSize < 0 {
+		return submission, ErrInvalidTransition
 	}
+	now = now.UTC()
+	submission.Status = SubmissionStatusReady
+	submission.EnvelopePath = result.EnvelopePath
+	submission.PayloadPath = result.PayloadPath
+	submission.EncryptedSize = result.EncryptedSize
+	submission.DroppedAt = &now
+	return submission, nil
 }
 
-// IsExpiredAt reports whether the drop point must be treated as expired at now.
-func (d DropPoint) IsExpiredAt(now time.Time) bool {
-	return !d.Status.Terminal() && !d.ExpiresAt.After(now.UTC())
-}
-
-// BeginReceiving applies open -> receiving.
-func BeginReceiving(d DropPoint, now time.Time) (DropPoint, error) {
-	if expired, ok := expireIfElapsed(d, now); ok {
-		return expired, ErrDropPointExpired
-	}
-	switch d.Status {
-	case StatusOpen:
-		d.Status = StatusReceiving
-		startedAt := now.UTC()
-		d.ReceivingStartedAt = &startedAt
-		return d, nil
-	case StatusClosed:
-		return d, ErrDropPointClosed
-	case StatusReady:
-		return d, ErrDropAlreadyExists
-	case StatusExpired:
-		return d, ErrDropPointExpired
-	case StatusFailed:
-		return d, ErrDropPointFailed
-	default:
-		return d, ErrDropPointNotOpen
-	}
-}
-
-// CommitReceived applies receiving -> ready after durable writes succeed.
-func CommitReceived(d DropPoint, result CommitDropResult, now time.Time) (DropPoint, error) {
-	if expired, ok := expireIfElapsed(d, now); ok {
-		return expired, ErrDropPointExpired
-	}
-	switch d.Status {
-	case StatusReceiving:
-	case StatusReady:
-		return d, ErrDropAlreadyExists
-	case StatusClosed:
-		return d, ErrDropPointClosed
-	case StatusExpired:
-		return d, ErrDropPointExpired
-	case StatusFailed:
-		return d, ErrDropPointFailed
-	default:
-		return d, ErrDropPointNotOpen
-	}
-	if result.PayloadPath == "" || result.EnvelopePath == "" {
-		return d, fmt.Errorf("payload and envelope paths must be set")
-	}
-	if result.EncryptedSize < 0 {
-		return d, fmt.Errorf("encrypted size must not be negative")
-	}
-	d.Status = StatusReady
-	d.ReceivingStartedAt = nil
-	d.PayloadPath = result.PayloadPath
-	d.EnvelopePath = result.EnvelopePath
-	d.EncryptedSize = result.EncryptedSize
-	droppedAt := now.UTC()
-	d.DroppedAt = &droppedAt
-	return d, nil
-}
-
-// AbortReceiving returns receiving -> open after a failed or partial drop.
-func AbortReceiving(d DropPoint, now time.Time) (DropPoint, error) {
-	if expired, ok := expireIfElapsed(d, now); ok {
-		return expired, ErrDropPointExpired
-	}
-	if d.Status == StatusFailed {
-		return d, ErrDropPointFailed
-	}
-	if d.Status != StatusReceiving {
-		return d, ErrDropPointNotOpen
-	}
-	d.Status = StatusOpen
-	d.ReceivingStartedAt = nil
-	return d, nil
-}
-
-// MarkPickedUp records completion of a response that began while ready. Closed
-// and expired are accepted because either transition may race after the final
-// response write; the pickup event does not change lifecycle status.
-func MarkPickedUp(d DropPoint, now time.Time) (DropPoint, error) {
-	switch d.Status {
-	case StatusReady, StatusClosed, StatusExpired:
-		if d.FirstPickedUpAt == nil {
-			pickedUpAt := now.UTC()
-			d.FirstPickedUpAt = &pickedUpAt
+func MarkSubmissionPickedUp(submission Submission, now time.Time) (Submission, error) {
+	switch submission.Status {
+	case SubmissionStatusReady, SubmissionStatusAcknowledged:
+		if submission.FirstPickedUpAt == nil {
+			now = now.UTC()
+			submission.FirstPickedUpAt = &now
 		}
-		return d, nil
-	case StatusFailed:
-		return d, ErrDropPointFailed
+		return submission, nil
+	case SubmissionStatusFailed:
+		return submission, ErrSubmissionFailed
 	default:
-		return d, ErrDropPointNotOpen
+		return submission, ErrSubmissionNotReady
 	}
 }
 
-// Close transitions an open, receiving, or ready drop point to closed. Closing an
-// already closed drop point is safe and idempotent.
-func Close(d DropPoint, now time.Time) (DropPoint, error) {
-	if d.Status == StatusClosed {
-		return d, nil
+func AcknowledgeSubmission(submission Submission, now time.Time) (Submission, error) {
+	switch submission.Status {
+	case SubmissionStatusAcknowledged:
+		return submission, nil
+	case SubmissionStatusReady:
+		now = now.UTC()
+		submission.Status = SubmissionStatusAcknowledged
+		submission.AcknowledgedAt = &now
+		return submission, nil
+	case SubmissionStatusFailed:
+		return submission, ErrSubmissionFailed
+	default:
+		return submission, ErrSubmissionNotReady
 	}
-	if expired, ok := expireIfElapsed(d, now); ok {
+}
+
+func FailSubmission(submission Submission, now time.Time) Submission {
+	if submission.Status == SubmissionStatusFailed {
+		return submission
+	}
+	now = now.UTC()
+	submission.Status = SubmissionStatusFailed
+	submission.FailedAt = &now
+	return submission
+}
+
+func RequireOpen(dp DropPoint, now time.Time) error {
+	if !now.Before(dp.ExpiresAt) && dp.Status == StatusOpen {
+		return ErrDropPointExpired
+	}
+	switch dp.Status {
+	case StatusOpen:
+		return nil
+	case StatusClosed:
+		return ErrDropPointClosed
+	case StatusExpired:
+		return ErrDropPointExpired
+	case StatusFailed:
+		return ErrDropPointFailed
+	default:
+		return ErrDropPointNotOpen
+	}
+}
+
+func Close(dp DropPoint, now time.Time) (DropPoint, error) {
+	if expired, changed := Expire(dp, now); changed {
 		return expired, ErrDropPointExpired
 	}
-	if d.Status == StatusExpired {
-		return d, ErrDropPointExpired
-	}
-	if d.Status == StatusFailed {
-		return d, ErrDropPointFailed
-	}
-	d.Status = StatusClosed
-	d.ReceivingStartedAt = nil
-	closedAt := now.UTC()
-	d.ClosedAt = &closedAt
-	return d, nil
-}
-
-// Fail transitions a non-terminal drop point to failed after an unrecoverable
-// internal inconsistency or corruption. Repeating the event is idempotent.
-func Fail(d DropPoint, now time.Time) (DropPoint, error) {
-	switch d.Status {
-	case StatusFailed:
-		return d, nil
+	switch dp.Status {
 	case StatusClosed:
-		return d, ErrDropPointClosed
+		return dp, nil
 	case StatusExpired:
-		return d, ErrDropPointExpired
+		return dp, ErrDropPointExpired
+	case StatusFailed:
+		return dp, ErrDropPointFailed
+	case StatusOpen:
+		now = now.UTC()
+		dp.Status = StatusClosed
+		dp.ClosedAt = &now
+		return dp, nil
+	default:
+		return dp, ErrInvalidTransition
 	}
-	d.Status = StatusFailed
-	d.ReceivingStartedAt = nil
-	failedAt := now.UTC()
-	d.FailedAt = &failedAt
-	return d, nil
 }
 
-// Expire transitions any non-terminal expired drop point to expired.
-func Expire(d DropPoint, now time.Time) (DropPoint, bool) {
-	return expireIfElapsed(d, now)
+func Fail(dp DropPoint, now time.Time) (DropPoint, error) {
+	if dp.Status == StatusFailed {
+		return dp, nil
+	}
+	if dp.Status == StatusClosed || dp.Status == StatusExpired {
+		return dp, ErrInvalidTransition
+	}
+	now = now.UTC()
+	dp.Status = StatusFailed
+	dp.FailedAt = &now
+	return dp, nil
 }
 
-func expireIfElapsed(d DropPoint, now time.Time) (DropPoint, bool) {
-	if !d.IsExpiredAt(now) {
-		return d, false
+func Expire(dp DropPoint, now time.Time) (DropPoint, bool) {
+	if dp.Status != StatusOpen || now.Before(dp.ExpiresAt) {
+		return dp, false
 	}
-	d.Status = StatusExpired
-	d.ReceivingStartedAt = nil
-	return d, true
+	dp.Status = StatusExpired
+	return dp, true
 }

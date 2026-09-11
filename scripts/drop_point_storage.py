@@ -16,6 +16,7 @@ from drop_point_protocol import filename_collision_key
 
 _RECEIPT_NAME = ".droppoint-receipt.json"
 _DROP_POINT_ID_RE = re.compile(r"^dp_[A-Za-z0-9_-]+$")
+_SUBMISSION_ID_RE = re.compile(r"^sub_[A-Za-z0-9_-]+$")
 
 
 class RecoveredFile(Protocol):
@@ -67,18 +68,21 @@ def atomic_write_private_json(path: Path, value: object) -> None:
 def install_bundle(
     out_dir: Path,
     drop_point_id: str,
+    submission_id: str,
     identity: str,
     recovered_files: Iterable[RecoveredFile],
 ) -> BundleInstall:
     if not _DROP_POINT_ID_RE.fullmatch(drop_point_id):
         raise ValueError("invalid drop_point_id in receiver state")
+    if not _SUBMISSION_ID_RE.fullmatch(submission_id):
+        raise ValueError("invalid submission_id")
     if not re.fullmatch(r"[0-9a-f]{64}", identity):
         raise ValueError("invalid installed bundle identity")
 
     files = tuple(recovered_files)
-    receipt = _build_receipt(drop_point_id, identity, files)
+    receipt = _build_receipt(drop_point_id, submission_id, identity, files)
     _ensure_directory(out_dir, 0o700)
-    final_path = out_dir / f"bundle-{drop_point_id}"
+    final_path = out_dir / f"bundle-{drop_point_id}-{submission_id}"
     if final_path.exists():
         _verify_receipt_and_files(final_path, receipt)
         return BundleInstall(final_path, identity, True, tuple(entry["name"] for entry in receipt["files"]))
@@ -111,9 +115,13 @@ def install_bundle(
         raise
 
 
-def verify_installed_bundle(path: Path, drop_point_id: str, identity: str) -> BundleInstall:
+def verify_installed_bundle(path: Path, drop_point_id: str, submission_id: str, identity: str) -> BundleInstall:
     receipt = _load_receipt(path)
-    if receipt.get("drop_point_id") != drop_point_id or receipt.get("bundle_sha256") != identity:
+    if (
+        receipt.get("drop_point_id") != drop_point_id
+        or receipt.get("submission_id") != submission_id
+        or receipt.get("bundle_sha256") != identity
+    ):
         raise RuntimeError(f"installed bundle receipt does not match receiver state: {path}")
     _verify_receipt_and_files(path, receipt)
     files = receipt.get("files")
@@ -162,7 +170,7 @@ def fsync_directory(path: Path) -> None:
         os.close(fd)
 
 
-def _build_receipt(drop_point_id: str, identity: str, files: tuple[RecoveredFile, ...]) -> dict:
+def _build_receipt(drop_point_id: str, submission_id: str, identity: str, files: tuple[RecoveredFile, ...]) -> dict:
     entries = []
     seen: set[str] = set()
     for recovered in files:
@@ -188,6 +196,7 @@ def _build_receipt(drop_point_id: str, identity: str, files: tuple[RecoveredFile
     return {
         "receipt_version": 1,
         "drop_point_id": drop_point_id,
+        "submission_id": submission_id,
         "bundle_sha256": identity,
         "files": entries,
     }
@@ -224,10 +233,13 @@ def _validate_receipt(receipt: dict, path: Path) -> None:
     if receipt.get("receipt_version") != 1:
         raise RuntimeError(f"existing bundle has an unsupported durable receipt: {path}")
     drop_point_id = receipt.get("drop_point_id")
+    submission_id = receipt.get("submission_id")
     identity = receipt.get("bundle_sha256")
     files = receipt.get("files")
     if not isinstance(drop_point_id, str) or not _DROP_POINT_ID_RE.fullmatch(drop_point_id):
         raise RuntimeError(f"existing bundle receipt has an invalid drop point ID: {path}")
+    if not isinstance(submission_id, str) or not _SUBMISSION_ID_RE.fullmatch(submission_id):
+        raise RuntimeError(f"existing bundle receipt has an invalid submission ID: {path}")
     if not isinstance(identity, str) or not re.fullmatch(r"[0-9a-f]{64}", identity):
         raise RuntimeError(f"existing bundle receipt has an invalid identity: {path}")
     if not isinstance(files, list):

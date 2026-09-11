@@ -8,10 +8,11 @@ import (
 
 func TestGenerateTokensUsePrefixesAndEntropy(t *testing.T) {
 	tests := map[string]func() (string, error){
-		DropPointIDPrefix: GenerateDropPointID,
-		DropTokenPrefix:   GenerateDropToken,
-		PickupTokenPrefix: GeneratePickupToken,
-		APITokenPrefix:    GenerateAPIToken,
+		DropPointIDPrefix:  GenerateDropPointID,
+		SubmissionIDPrefix: GenerateSubmissionID,
+		DropTokenPrefix:    GenerateDropToken,
+		PickupTokenPrefix:  GeneratePickupToken,
+		APITokenPrefix:     GenerateAPIToken,
 	}
 
 	for prefix, generate := range tests {
@@ -34,6 +35,22 @@ func TestGenerateTokensUsePrefixesAndEntropy(t *testing.T) {
 		}
 		if _, err := base64.RawURLEncoding.DecodeString(strings.TrimPrefix(value, prefix)); err != nil {
 			t.Fatalf("token secret is not raw base64url: %v", err)
+		}
+	}
+}
+
+func TestValidSubmissionIDBoundsDecodedEntropy(t *testing.T) {
+	encode := func(size int) string {
+		return SubmissionIDPrefix + encoding.EncodeToString(make([]byte, size))
+	}
+	for _, size := range []int{minSubmissionEntropyBytes, maxSubmissionEntropyBytes} {
+		if !ValidSubmissionID(encode(size)) {
+			t.Fatalf("ValidSubmissionID rejected %d decoded bytes", size)
+		}
+	}
+	for _, size := range []int{minSubmissionEntropyBytes - 1, maxSubmissionEntropyBytes + 1} {
+		if ValidSubmissionID(encode(size)) {
+			t.Fatalf("ValidSubmissionID accepted %d decoded bytes", size)
 		}
 	}
 }

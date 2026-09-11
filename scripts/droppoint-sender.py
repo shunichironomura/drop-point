@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import argparse
+import secrets
 import sys
 import uuid
 from pathlib import Path
@@ -23,17 +24,19 @@ USER_AGENT = "DropPointSender/1.0"
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Simulate a DropPoint sender: encrypt files locally and submit one drop.")
+    parser = argparse.ArgumentParser(description="Simulate a DropPoint sender: encrypt files locally and submit one bundle.")
     parser.add_argument("drop_link", help="Full drop link including #v=2&pk=... fragment")
     parser.add_argument("files", nargs="+", type=Path, help="Files to encrypt and drop")
     args = parser.parse_args()
 
     try:
-        drop_url, recipient_public_key = parse_drop_link(args.drop_link)
+        submissions_url, recipient_public_key = parse_drop_link(args.drop_link)
         file_paths = validate_files(args.files)
         envelope_json, encrypted_payload = encrypt_files(file_paths, recipient_public_key)
         body, content_type = multipart_body(envelope_json, encrypted_payload)
-        response = http_request("PUT", drop_url, body=body, headers={"Content-Type": content_type})
+        submission_id = "sub_" + secrets.token_urlsafe(16)
+        submission_url = submissions_url + "/" + parse.quote(submission_id, safe="")
+        response = http_request("PUT", submission_url, body=body, headers={"Content-Type": content_type})
         print(response.decode("utf-8"))
         print(f"Dropped {len(file_paths)} file(s), encrypted payload bytes={len(encrypted_payload)}")
         return 0
@@ -62,9 +65,9 @@ def parse_drop_link(drop_link: str) -> tuple[str, bytes]:
     if len(parts) < 2 or parts[-2] != "drop":
         raise ValueError("drop link path must end with /drop/<drop-token>")
     drop_token = parts[-1]
-    drop_path = "/api/drops/" + parse.quote(drop_token, safe="")
-    drop_url = parse.urlunparse((parsed.scheme, parsed.netloc, drop_path, "", "", ""))
-    return drop_url, recipient_public_key
+    submissions_path = "/api/drops/" + parse.quote(drop_token, safe="") + "/submissions"
+    submissions_url = parse.urlunparse((parsed.scheme, parsed.netloc, submissions_path, "", "", ""))
+    return submissions_url, recipient_public_key
 
 
 def validate_files(paths: list[Path]) -> list[Path]:

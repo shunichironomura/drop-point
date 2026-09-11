@@ -2,7 +2,6 @@ package cleanup
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"time"
 
@@ -13,9 +12,9 @@ import (
 type BlobStore interface {
 	DropPointIDs(ctx context.Context) ([]string, error)
 	DeleteDropPoint(ctx context.Context, id string) error
+	DeleteSubmission(ctx context.Context, dropPointID, submissionID string) error
 }
 
-// Service expires old drop points and removes their ciphertext directories.
 type Service struct {
 	Repository          *store.Repository
 	BlobStore           BlobStore
@@ -32,18 +31,15 @@ type Result struct {
 	PurgedRows         int
 }
 
-// ReconcileStartup recovers every interrupted receiving attempt before the
-// server accepts requests, then performs the regular terminal/orphan cleanup.
 func (s Service) ReconcileStartup(ctx context.Context) (Result, error) {
 	if err := s.validate(); err != nil {
 		return Result{}, err
 	}
-	now := s.now()
-	receiving, err := s.Repository.ReceivingDropPoints(ctx)
+	receiving, err := s.Repository.ReceivingSubmissions(ctx)
 	if err != nil {
 		return Result{}, err
 	}
-	recovered, err := s.recoverReceiving(ctx, receiving, now)
+	recovered, err := s.recoverReceiving(ctx, receiving)
 	if err != nil {
 		return Result{RecoveredReceiving: recovered}, err
 	}
@@ -52,10 +48,6 @@ func (s Service) ReconcileStartup(ctx context.Context) (Result, error) {
 	return result, err
 }
 
-// Expire recovers stale receiving attempts, marks elapsed rows expired,
-// reconciles every terminal row with its blob directory, and removes
-// directories that no repository row owns. Each step is safe to retry after
-// interruption.
 func (s Service) Expire(ctx context.Context) (Result, error) {
 	if err := s.validate(); err != nil {
 		return Result{}, err
@@ -63,35 +55,55 @@ func (s Service) Expire(ctx context.Context) (Result, error) {
 	now := s.now()
 	result := Result{}
 	if s.ReceivingStaleAfter > 0 {
-		receiving, err := s.Repository.ReceivingDropPointsStartedBefore(ctx, now.Add(-s.ReceivingStaleAfter))
+		receiving, err := s.Repository.ReceivingSubmissionsStartedBefore(ctx, now.Add(-s.ReceivingStaleAfter))
 		if err != nil {
 			return result, err
 		}
-		recovered, err := s.recoverReceiving(ctx, receiving, now)
+		recovered, err := s.recoverReceiving(ctx, receiving)
 		result.RecoveredReceiving = recovered
 		if err != nil {
 			return result, err
 		}
 	}
+
 	expired, err := s.Repository.ExpireDropPoints(ctx, now)
 	if err != nil {
 		return result, err
 	}
 	result.ExpiredDropPoints = len(expired)
+
+	children, err := s.Repository.CleanupSubmissions(ctx)
+	if err != nil {
+		return result, err
+	}
+	for _, submission := range children {
+		if err := s.BlobStore.DeleteSubmission(ctx, submission.DropPointID, submission.ID); err != nil {
+			return result, fmt.Errorf("delete terminal submission %q/%q blobs: %w", submission.DropPointID, submission.ID, err)
+		}
+		if err := s.Repository.ClearSubmissionFiles(ctx, submission.DropPointID, submission.ID); err != nil {
+			return result, err
+		}
+		if submission.PayloadPath != "" || submission.EnvelopePath != "" {
+			result.DeletedPayloads++
+		}
+	}
+
 	terminal, err := s.Repository.TerminalDropPoints(ctx)
 	if err != nil {
 		return result, err
 	}
 	for _, dp := range terminal {
+		files, err := s.Repository.SubmissionFilesForDropPoint(ctx, dp.ID)
+		if err != nil {
+			return result, err
+		}
 		if err := s.BlobStore.DeleteDropPoint(ctx, dp.ID); err != nil {
 			return result, fmt.Errorf("delete terminal drop point %q blobs: %w", dp.ID, err)
 		}
-		if err := s.Repository.DeleteDropPointFiles(ctx, dp.ID); err != nil {
+		if err := s.Repository.ClearDropPointFiles(ctx, dp.ID); err != nil {
 			return result, err
 		}
-		if dp.PayloadPath != "" || dp.EnvelopePath != "" {
-			result.DeletedPayloads++
-		}
+		result.DeletedPayloads += len(files)
 	}
 
 	rowIDs, err := s.Repository.DropPointIDs(ctx)
@@ -122,21 +134,16 @@ func (s Service) Expire(ctx context.Context) (Result, error) {
 	return result, nil
 }
 
-func (s Service) recoverReceiving(ctx context.Context, receiving []droppoint.DropPoint, now time.Time) (int, error) {
+func (s Service) recoverReceiving(ctx context.Context, receiving []droppoint.Submission) (int, error) {
 	recovered := 0
-	for _, dp := range receiving {
-		if err := s.BlobStore.DeleteDropPoint(ctx, dp.ID); err != nil {
-			return recovered, fmt.Errorf("delete interrupted drop point %q blobs: %w", dp.ID, err)
+	for _, submission := range receiving {
+		if err := s.BlobStore.DeleteSubmission(ctx, submission.DropPointID, submission.ID); err != nil {
+			return recovered, fmt.Errorf("delete interrupted submission %q/%q blobs: %w", submission.DropPointID, submission.ID, err)
 		}
-		err := s.Repository.ResetReceivingDrop(ctx, dp.ID, now)
-		switch {
-		case err == nil:
-			recovered++
-		case errors.Is(err, droppoint.ErrDropPointExpired):
-			recovered++
-		default:
-			return recovered, fmt.Errorf("reset interrupted drop point %q: %w", dp.ID, err)
+		if err := s.Repository.DeleteReceivingSubmission(ctx, submission.DropPointID, submission.ID); err != nil {
+			return recovered, fmt.Errorf("delete interrupted submission %q/%q row: %w", submission.DropPointID, submission.ID, err)
 		}
+		recovered++
 	}
 	return recovered, nil
 }

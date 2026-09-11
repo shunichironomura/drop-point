@@ -92,38 +92,45 @@ func New(dataDir string) *Store {
 	return &Store{dataDir: dataDir, fs: osMutationFileSystem{}}
 }
 
-// WriteDrop atomically stores envelope.json and payload.bin for a drop point.
-func (s *Store) WriteDrop(ctx context.Context, id string, envelope []byte, payload io.Reader, maxBytes int64) (droppoint.CommitDropResult, error) {
+// WriteSubmission atomically stores envelope.json and payload.bin for a submission.
+func (s *Store) WriteSubmission(ctx context.Context, dropPointID, submissionID string, envelope []byte, payload io.Reader, maxBytes int64) (droppoint.CommitSubmissionResult, error) {
 	if err := contextError(ctx); err != nil {
-		return droppoint.CommitDropResult{}, err
+		return droppoint.CommitSubmissionResult{}, err
 	}
-	if err := validateID(id); err != nil {
-		return droppoint.CommitDropResult{}, err
+	if err := validateDropPointID(dropPointID); err != nil {
+		return droppoint.CommitSubmissionResult{}, err
+	}
+	if !token.ValidSubmissionID(submissionID) {
+		return droppoint.CommitSubmissionResult{}, fmt.Errorf("invalid submission id %q", submissionID)
 	}
 	if maxBytes <= 0 {
-		return droppoint.CommitDropResult{}, fmt.Errorf("max bytes must be positive")
+		return droppoint.CommitSubmissionResult{}, fmt.Errorf("max bytes must be positive")
 	}
 	if len(envelope) == 0 {
-		return droppoint.CommitDropResult{}, droppoint.ErrEnvelopeInvalid
+		return droppoint.CommitSubmissionResult{}, droppoint.ErrEnvelopeInvalid
 	}
-	dir := s.dropDir(id)
+	dir := s.submissionDir(dropPointID, submissionID)
+	dropDir := s.dropDir(dropPointID)
 	parentDir := filepath.Join(s.dataDir, DropPointsDirName)
 	if err := s.fs.MkdirAll(dir, dirMode); err != nil {
-		return droppoint.CommitDropResult{}, fmt.Errorf("create drop blob directory %q: %w", dir, err)
+		return droppoint.CommitSubmissionResult{}, fmt.Errorf("create submission blob directory %q: %w", dir, err)
 	}
 	if err := s.fs.Chmod(dir, dirMode); err != nil {
-		return droppoint.CommitDropResult{}, fmt.Errorf("set drop blob directory permissions %q: %w", dir, err)
+		return droppoint.CommitSubmissionResult{}, fmt.Errorf("set submission blob directory permissions %q: %w", dir, err)
 	}
 	if err := s.fs.SyncDir(parentDir); err != nil {
-		return droppoint.CommitDropResult{}, fmt.Errorf("sync drop-points parent after directory creation: %w", err)
+		return droppoint.CommitSubmissionResult{}, fmt.Errorf("sync drop-points parent after directory creation: %w", err)
+	}
+	if err := s.fs.SyncDir(dropDir); err != nil {
+		return droppoint.CommitSubmissionResult{}, fmt.Errorf("sync drop point after submission directory creation: %w", err)
 	}
 	if err := contextError(ctx); err != nil {
-		return droppoint.CommitDropResult{}, err
+		return droppoint.CommitSubmissionResult{}, err
 	}
 
 	token, err := tempToken()
 	if err != nil {
-		return droppoint.CommitDropResult{}, err
+		return droppoint.CommitSubmissionResult{}, err
 	}
 	envelopeTemp := filepath.Join(dir, "."+EnvelopeFileName+"."+token+".tmp")
 	payloadTemp := filepath.Join(dir, "."+PayloadFileName+"."+token+".tmp")
@@ -136,29 +143,29 @@ func (s *Store) WriteDrop(ctx context.Context, id string, envelope []byte, paylo
 	defer cleanup()
 
 	if err := writeFileAtomicPart(ctx, s.fs, envelopeTemp, envelope); err != nil {
-		return droppoint.CommitDropResult{}, err
+		return droppoint.CommitSubmissionResult{}, err
 	}
 	size, err := writeStreamAtomicPart(ctx, s.fs, payloadTemp, payload, maxBytes)
 	if err != nil {
-		return droppoint.CommitDropResult{}, err
+		return droppoint.CommitSubmissionResult{}, err
 	}
 	if err := s.fs.Rename(payloadTemp, payloadFinal); err != nil {
-		return droppoint.CommitDropResult{}, fmt.Errorf("install payload blob: %w", err)
+		return droppoint.CommitSubmissionResult{}, fmt.Errorf("install payload blob: %w", err)
 	}
 	if err := s.fs.Rename(envelopeTemp, envelopeFinal); err != nil {
 		_ = s.fs.Remove(payloadFinal)
-		return droppoint.CommitDropResult{}, fmt.Errorf("install envelope blob: %w", err)
+		return droppoint.CommitSubmissionResult{}, fmt.Errorf("install envelope blob: %w", err)
 	}
 	if err := s.fs.SyncDir(dir); err != nil {
-		return droppoint.CommitDropResult{}, err
+		return droppoint.CommitSubmissionResult{}, err
 	}
 	if err := contextError(ctx); err != nil {
-		return droppoint.CommitDropResult{}, err
+		return droppoint.CommitSubmissionResult{}, err
 	}
 
-	return droppoint.CommitDropResult{
-		EnvelopePath:  filepath.ToSlash(filepath.Join(DropPointsDirName, id, EnvelopeFileName)),
-		PayloadPath:   filepath.ToSlash(filepath.Join(DropPointsDirName, id, PayloadFileName)),
+	return droppoint.CommitSubmissionResult{
+		EnvelopePath:  filepath.ToSlash(filepath.Join(DropPointsDirName, dropPointID, submissionID, EnvelopeFileName)),
+		PayloadPath:   filepath.ToSlash(filepath.Join(DropPointsDirName, dropPointID, submissionID, PayloadFileName)),
 		EncryptedSize: size,
 	}, nil
 }
@@ -182,20 +189,25 @@ func (s *Store) ReadEnvelope(ctx context.Context, relative string) ([]byte, erro
 	return data, nil
 }
 
-// OpenPayload opens a stored encrypted payload by repository-relative path.
-func (s *Store) OpenPayload(ctx context.Context, relative string) (io.ReadCloser, error) {
+// OpenPayload opens a stored encrypted payload and returns its current size.
+func (s *Store) OpenPayload(ctx context.Context, relative string) (io.ReadCloser, int64, error) {
 	if err := contextError(ctx); err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	path, err := s.Path(relative)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	file, err := os.Open(path)
 	if err != nil {
-		return nil, fmt.Errorf("open payload blob %q: %w", relative, err)
+		return nil, 0, fmt.Errorf("open payload blob %q: %w", relative, err)
 	}
-	return &contextReadCloser{ctx: ctx, ReadCloser: file}, nil
+	info, err := file.Stat()
+	if err != nil {
+		_ = file.Close()
+		return nil, 0, fmt.Errorf("stat payload blob %q: %w", relative, err)
+	}
+	return &contextReadCloser{ctx: ctx, ReadCloser: file}, info.Size(), nil
 }
 
 // DeleteDropPoint removes a drop point blob directory. It is idempotent.
@@ -203,7 +215,7 @@ func (s *Store) DeleteDropPoint(ctx context.Context, id string) error {
 	if err := contextError(ctx); err != nil {
 		return err
 	}
-	if err := validateID(id); err != nil {
+	if err := validateDropPointID(id); err != nil {
 		return err
 	}
 	if err := s.fs.RemoveAll(s.dropDir(id)); err != nil {
@@ -211,6 +223,26 @@ func (s *Store) DeleteDropPoint(ctx context.Context, id string) error {
 	}
 	if err := s.fs.SyncDir(filepath.Join(s.dataDir, DropPointsDirName)); err != nil {
 		return fmt.Errorf("sync drop-points parent after deleting %q: %w", id, err)
+	}
+	return contextError(ctx)
+}
+
+// DeleteSubmission removes one submission blob directory. It is idempotent.
+func (s *Store) DeleteSubmission(ctx context.Context, dropPointID, submissionID string) error {
+	if err := contextError(ctx); err != nil {
+		return err
+	}
+	if err := validateDropPointID(dropPointID); err != nil {
+		return err
+	}
+	if !token.ValidSubmissionID(submissionID) {
+		return fmt.Errorf("invalid submission id %q", submissionID)
+	}
+	if err := s.fs.RemoveAll(s.submissionDir(dropPointID, submissionID)); err != nil {
+		return fmt.Errorf("delete submission blobs %q/%q: %w", dropPointID, submissionID, err)
+	}
+	if err := s.fs.SyncDir(s.dropDir(dropPointID)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("sync drop point after deleting submission %q/%q: %w", dropPointID, submissionID, err)
 	}
 	return contextError(ctx)
 }
@@ -234,7 +266,7 @@ func (s *Store) DropPointIDs(ctx context.Context) ([]string, error) {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		if !entry.IsDir() || validateID(entry.Name()) != nil {
+		if !entry.IsDir() || validateDropPointID(entry.Name()) != nil {
 			continue
 		}
 		ids = append(ids, entry.Name())
@@ -245,6 +277,10 @@ func (s *Store) DropPointIDs(ctx context.Context) ([]string, error) {
 // DropDir returns the absolute directory for id.
 func (s *Store) DropDir(id string) string {
 	return s.dropDir(id)
+}
+
+func (s *Store) SubmissionDir(dropPointID, submissionID string) string {
+	return s.submissionDir(dropPointID, submissionID)
 }
 
 // Path resolves a repository blob path relative to the store data directory.
@@ -258,6 +294,10 @@ func (s *Store) Path(relative string) (string, error) {
 
 func (s *Store) dropDir(id string) string {
 	return filepath.Join(s.dataDir, DropPointsDirName, id)
+}
+
+func (s *Store) submissionDir(dropPointID, submissionID string) string {
+	return filepath.Join(s.dropDir(dropPointID), submissionID)
 }
 
 func writeFileAtomicPart(ctx context.Context, fs mutationFileSystem, path string, data []byte) error {
@@ -377,7 +417,7 @@ func syncDir(path string) error {
 	return nil
 }
 
-func validateID(id string) error {
+func validateDropPointID(id string) error {
 	if id == "" || id == "." || id == ".." || filepath.Base(id) != id || strings.ContainsAny(id, `/\\`) {
 		return fmt.Errorf("invalid drop point id %q", id)
 	}

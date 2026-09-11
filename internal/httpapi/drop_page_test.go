@@ -52,7 +52,7 @@ func TestDropAssetsAreSameOriginOnlyAndNoThirdPartyScripts(t *testing.T) {
 		t.Fatalf("app.js status = %d", recorder.Code)
 	}
 	app := recorder.Body.String()
-	for _, want := range []string{"window.isSecureContext", "X25519", "#", "FormData", "display_name", "fetchDropMetadata", "drop-name", "dataTransfer", "handleDroppedFiles", "formatRemainingTime", "updateSelectedFiles", "removeSelectedFile", "uniqueManifestName", "selectedFilesLimitMessage", "Ready for pickup"} {
+	for _, want := range []string{"window.isSecureContext", "X25519", "#", "FormData", "display_name", "fetchDropMetadata", "drop-name", "dataTransfer", "handleDroppedFiles", "formatRemainingTime", "updateSelectedFiles", "removeSelectedFile", "uniqueManifestName", "selectedFilesLimitMessage", "pendingSubmissionID ??= `sub_${encodeBase64URL", "/submissions/${submissionID}", "You can send more files"} {
 		if !strings.Contains(app, want) {
 			t.Fatalf("app.js missing %q", want)
 		}

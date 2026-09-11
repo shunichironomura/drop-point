@@ -6,7 +6,7 @@ import (
 	"fmt"
 )
 
-const schemaVersion = 2
+const schemaVersion = 3
 
 const schemaSQL = `
 CREATE TABLE IF NOT EXISTS drop_points (
@@ -17,17 +17,13 @@ CREATE TABLE IF NOT EXISTS drop_points (
   drop_token_hash TEXT NOT NULL UNIQUE,
   pickup_token_hash TEXT NOT NULL,
   status TEXT NOT NULL,
-  payload_path TEXT,
-  envelope_path TEXT,
-  encrypted_size INTEGER,
   created_at TEXT NOT NULL,
-  dropped_at TEXT,
-  receiving_started_at TEXT,
-  first_picked_up_at TEXT,
   closed_at TEXT,
   failed_at TEXT,
   expires_at TEXT NOT NULL,
-  max_bytes INTEGER NOT NULL
+  max_bytes INTEGER NOT NULL,
+  max_pending_submissions INTEGER NOT NULL,
+  max_pending_bytes INTEGER NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_drop_points_status_expires_at
@@ -35,6 +31,28 @@ CREATE INDEX IF NOT EXISTS idx_drop_points_status_expires_at
 
 CREATE INDEX IF NOT EXISTS idx_drop_points_api_token_status
   ON drop_points (api_token_id, status);
+
+CREATE TABLE IF NOT EXISTS submissions (
+  id TEXT NOT NULL,
+  drop_point_id TEXT NOT NULL REFERENCES drop_points(id) ON DELETE CASCADE,
+  status TEXT NOT NULL,
+  envelope_path TEXT,
+  payload_path TEXT,
+  encrypted_size INTEGER,
+  created_at TEXT NOT NULL,
+  receiving_started_at TEXT NOT NULL,
+  dropped_at TEXT,
+  first_picked_up_at TEXT,
+  acknowledged_at TEXT,
+  failed_at TEXT,
+  PRIMARY KEY (drop_point_id, id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_submissions_drop_point_status_dropped
+  ON submissions (drop_point_id, status, dropped_at, id);
+
+CREATE INDEX IF NOT EXISTS idx_submissions_status_receiving_started
+  ON submissions (status, receiving_started_at);
 
 CREATE TABLE IF NOT EXISTS api_tokens (
   id TEXT PRIMARY KEY,
@@ -45,7 +63,7 @@ CREATE TABLE IF NOT EXISTS api_tokens (
   disabled_at TEXT
 );
 
-PRAGMA user_version = 2;
+PRAGMA user_version = 3;
 `
 
 // Migrate creates or verifies the current schema. DropPoint is unreleased, so

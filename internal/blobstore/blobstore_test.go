@@ -13,25 +13,29 @@ import (
 	"github.com/shunichironomura/droppoint/internal/droppoint"
 )
 
+const testSubmissionID = "sub_AAAAAAAAAAAAAAAAAAAAAA"
+
 func TestWriteAndDeleteSyncParentDirectoryInDurableOrder(t *testing.T) {
 	store := newTestBlobStore(t)
 	recording := &recordingMutationFileSystem{mutationFileSystem: store.fs}
 	store.fs = recording
 	id := "dp_sync_order"
-	if _, err := store.WriteDrop(context.Background(), id, []byte(`{}`), bytes.NewReader([]byte("payload")), 10); err != nil {
-		t.Fatalf("WriteDrop: %v", err)
+	if _, err := store.WriteSubmission(context.Background(), id, testSubmissionID, []byte(`{}`), bytes.NewReader([]byte("payload")), 10); err != nil {
+		t.Fatalf("WriteSubmission: %v", err)
 	}
 	parent := filepath.Join(store.dataDir, DropPointsDirName)
-	child := store.DropDir(id)
-	assertEventBefore(t, recording.events, "mkdir "+child, "sync "+parent)
-	assertEventBefore(t, recording.events, "sync "+parent, "rename "+filepath.Join(child, PayloadFileName))
-	assertEventBefore(t, recording.events, "rename "+filepath.Join(child, EnvelopeFileName), "sync "+child)
+	dropDir := store.DropDir(id)
+	submissionDir := store.submissionDir(id, testSubmissionID)
+	assertEventBefore(t, recording.events, "mkdir "+submissionDir, "sync "+parent)
+	assertEventBefore(t, recording.events, "sync "+parent, "sync "+dropDir)
+	assertEventBefore(t, recording.events, "sync "+dropDir, "rename "+filepath.Join(submissionDir, PayloadFileName))
+	assertEventBefore(t, recording.events, "rename "+filepath.Join(submissionDir, EnvelopeFileName), "sync "+submissionDir)
 
 	recording.events = nil
 	if err := store.DeleteDropPoint(context.Background(), id); err != nil {
 		t.Fatalf("DeleteDropPoint: %v", err)
 	}
-	assertEventBefore(t, recording.events, "remove-all "+child, "sync "+parent)
+	assertEventBefore(t, recording.events, "remove-all "+dropDir, "sync "+parent)
 }
 
 func TestParentDirectorySyncFailuresAreRetryable(t *testing.T) {
@@ -40,19 +44,19 @@ func TestParentDirectorySyncFailuresAreRetryable(t *testing.T) {
 		parent := filepath.Join(store.dataDir, DropPointsDirName)
 		recording := &recordingMutationFileSystem{mutationFileSystem: store.fs, failSyncPath: parent, failSyncCount: 1}
 		store.fs = recording
-		if _, err := store.WriteDrop(context.Background(), "dp_sync_create_failure", []byte(`{}`), bytes.NewReader([]byte("payload")), 10); err == nil {
-			t.Fatal("WriteDrop succeeded despite parent sync failure")
+		if _, err := store.WriteSubmission(context.Background(), "dp_sync_create_failure", testSubmissionID, []byte(`{}`), bytes.NewReader([]byte("payload")), 10); err == nil {
+			t.Fatal("WriteSubmission succeeded despite parent sync failure")
 		}
-		if _, err := store.WriteDrop(context.Background(), "dp_sync_create_failure", []byte(`{}`), bytes.NewReader([]byte("payload")), 10); err != nil {
-			t.Fatalf("WriteDrop retry: %v", err)
+		if _, err := store.WriteSubmission(context.Background(), "dp_sync_create_failure", testSubmissionID, []byte(`{}`), bytes.NewReader([]byte("payload")), 10); err != nil {
+			t.Fatalf("WriteSubmission retry: %v", err)
 		}
 	})
 
 	t.Run("deletion", func(t *testing.T) {
 		store := newTestBlobStore(t)
 		id := "dp_sync_delete_failure"
-		if _, err := store.WriteDrop(context.Background(), id, []byte(`{}`), bytes.NewReader([]byte("payload")), 10); err != nil {
-			t.Fatalf("WriteDrop: %v", err)
+		if _, err := store.WriteSubmission(context.Background(), id, testSubmissionID, []byte(`{}`), bytes.NewReader([]byte("payload")), 10); err != nil {
+			t.Fatalf("WriteSubmission: %v", err)
 		}
 		parent := filepath.Join(store.dataDir, DropPointsDirName)
 		recording := &recordingMutationFileSystem{mutationFileSystem: store.fs, failSyncPath: parent, failSyncCount: 1}
@@ -66,14 +70,14 @@ func TestParentDirectorySyncFailuresAreRetryable(t *testing.T) {
 	})
 }
 
-func TestWriteDropStoresExactBytes(t *testing.T) {
+func TestWriteSubmissionStoresExactBytes(t *testing.T) {
 	store := newTestBlobStore(t)
 	envelope := []byte(`{"protocol_version":2}`)
 	payload := []byte{0, 1, 2, 3, 4}
 
-	result, err := store.WriteDrop(context.Background(), "dp_blob", envelope, bytes.NewReader(payload), int64(len(payload)))
+	result, err := store.WriteSubmission(context.Background(), "dp_blob", testSubmissionID, envelope, bytes.NewReader(payload), int64(len(payload)))
 	if err != nil {
-		t.Fatalf("WriteDrop: %v", err)
+		t.Fatalf("WriteSubmission: %v", err)
 	}
 	if result.EncryptedSize != int64(len(payload)) {
 		t.Fatalf("EncryptedSize = %d, want %d", result.EncryptedSize, len(payload))
@@ -85,9 +89,12 @@ func TestWriteDropStoresExactBytes(t *testing.T) {
 	if !bytes.Equal(gotEnvelope, envelope) {
 		t.Fatalf("envelope bytes = %q, want %q", gotEnvelope, envelope)
 	}
-	payloadReader, err := store.OpenPayload(context.Background(), result.PayloadPath)
+	payloadReader, payloadSize, err := store.OpenPayload(context.Background(), result.PayloadPath)
 	if err != nil {
 		t.Fatalf("OpenPayload: %v", err)
+	}
+	if payloadSize != int64(len(payload)) {
+		t.Fatalf("payload size = %d, want %d", payloadSize, len(payload))
 	}
 	gotPayload, err := io.ReadAll(payloadReader)
 	_ = payloadReader.Close()
@@ -99,17 +106,16 @@ func TestWriteDropStoresExactBytes(t *testing.T) {
 	}
 }
 
-func TestWriteDropRejectsOversizeWithoutFinalFiles(t *testing.T) {
+func TestWriteSubmissionRejectsOversizeWithoutFinalFiles(t *testing.T) {
 	store := newTestBlobStore(t)
-	err := error(nil)
-	_, err = store.WriteDrop(context.Background(), "dp_big", []byte(`{}`), bytes.NewReader([]byte("12345")), 4)
+	_, err := store.WriteSubmission(context.Background(), "dp_big", testSubmissionID, []byte(`{}`), bytes.NewReader([]byte("12345")), 4)
 	if !errors.Is(err, droppoint.ErrPayloadTooLarge) {
-		t.Fatalf("WriteDrop err = %v, want ErrPayloadTooLarge", err)
+		t.Fatalf("WriteSubmission err = %v, want ErrPayloadTooLarge", err)
 	}
-	if _, err := os.Stat(filepath.Join(store.DropDir("dp_big"), PayloadFileName)); !errors.Is(err, os.ErrNotExist) {
+	if _, err := os.Stat(filepath.Join(store.submissionDir("dp_big", testSubmissionID), PayloadFileName)); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("payload final stat err = %v, want not exist", err)
 	}
-	if _, err := os.Stat(filepath.Join(store.DropDir("dp_big"), EnvelopeFileName)); !errors.Is(err, os.ErrNotExist) {
+	if _, err := os.Stat(filepath.Join(store.submissionDir("dp_big", testSubmissionID), EnvelopeFileName)); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("envelope final stat err = %v, want not exist", err)
 	}
 }
@@ -118,13 +124,13 @@ func TestBlobOperationsHonorCanceledContext(t *testing.T) {
 	store := newTestBlobStore(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := store.WriteDrop(ctx, "dp_canceled_write", []byte(`{}`), bytes.NewReader([]byte("payload")), 10); !errors.Is(err, context.Canceled) {
-		t.Fatalf("WriteDrop err = %v, want context.Canceled", err)
+	if _, err := store.WriteSubmission(ctx, "dp_canceled_write", testSubmissionID, []byte(`{}`), bytes.NewReader([]byte("payload")), 10); !errors.Is(err, context.Canceled) {
+		t.Fatalf("WriteSubmission err = %v, want context.Canceled", err)
 	}
-	if _, err := store.ReadEnvelope(ctx, "drop-points/dp_canceled_write/envelope.json"); !errors.Is(err, context.Canceled) {
+	if _, err := store.ReadEnvelope(ctx, "drop-points/dp_canceled_write/"+testSubmissionID+"/envelope.json"); !errors.Is(err, context.Canceled) {
 		t.Fatalf("ReadEnvelope err = %v, want context.Canceled", err)
 	}
-	if _, err := store.OpenPayload(ctx, "drop-points/dp_canceled_write/payload.bin"); !errors.Is(err, context.Canceled) {
+	if _, _, err := store.OpenPayload(ctx, "drop-points/dp_canceled_write/"+testSubmissionID+"/payload.bin"); !errors.Is(err, context.Canceled) {
 		t.Fatalf("OpenPayload err = %v, want context.Canceled", err)
 	}
 	if err := store.DeleteDropPoint(ctx, "dp_canceled_write"); !errors.Is(err, context.Canceled) {
@@ -132,11 +138,11 @@ func TestBlobOperationsHonorCanceledContext(t *testing.T) {
 	}
 }
 
-func TestWriteDropClassifiesUploaderReadFailure(t *testing.T) {
+func TestWriteSubmissionClassifiesUploaderReadFailure(t *testing.T) {
 	store := newTestBlobStore(t)
-	_, err := store.WriteDrop(context.Background(), "dp_read_failure", []byte(`{}`), errorReader{}, 10)
+	_, err := store.WriteSubmission(context.Background(), "dp_read_failure", testSubmissionID, []byte(`{}`), errorReader{}, 10)
 	if !errors.Is(err, ErrSourceRead) {
-		t.Fatalf("WriteDrop err = %v, want ErrSourceRead", err)
+		t.Fatalf("WriteSubmission err = %v, want ErrSourceRead", err)
 	}
 	if got := ClassifyFailure(err); got != FailureClientInput {
 		t.Fatalf("ClassifyFailure = %v, want FailureClientInput", got)
@@ -145,8 +151,8 @@ func TestWriteDropClassifiesUploaderReadFailure(t *testing.T) {
 
 func TestDeleteDropPointIsIdempotent(t *testing.T) {
 	store := newTestBlobStore(t)
-	if _, err := store.WriteDrop(context.Background(), "dp_delete", []byte(`{}`), bytes.NewReader([]byte("payload")), 10); err != nil {
-		t.Fatalf("WriteDrop: %v", err)
+	if _, err := store.WriteSubmission(context.Background(), "dp_delete", testSubmissionID, []byte(`{}`), bytes.NewReader([]byte("payload")), 10); err != nil {
+		t.Fatalf("WriteSubmission: %v", err)
 	}
 	for range 2 {
 		if err := store.DeleteDropPoint(context.Background(), "dp_delete"); err != nil {

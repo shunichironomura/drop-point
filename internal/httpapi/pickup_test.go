@@ -9,119 +9,200 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/shunichironomura/droppoint/internal/blobstore"
 	"github.com/shunichironomura/droppoint/internal/droppoint"
 	"github.com/shunichironomura/droppoint/internal/store"
-	"github.com/shunichironomura/droppoint/internal/token"
 )
 
-func TestPickupRetrievesReadyCiphertextAndRecordsFirstPickup(t *testing.T) {
+func TestPickupRetrievesOneReadySubmissionAndRecordsFirstPickup(t *testing.T) {
 	repo, _, handler := newDropTestHandler(t)
-	now := dropTestNow()
-	dp := testHTTPDropPoint(t, "dp_pickup", "drop_pickup", "pick_pickup", now)
-	insertHTTPDropPoint(t, repo, dp)
-	envelope := []byte(testEnvelopeJSON())
-	payload := []byte("ciphertext")
-	dropRecorder := httptest.NewRecorder()
-	handler.ServeHTTP(dropRecorder, multipartDropRequest(t, "/api/drops/drop_pickup", envelope, payload))
-	if dropRecorder.Code != http.StatusOK {
-		t.Fatalf("drop status = %d body=%s", dropRecorder.Code, dropRecorder.Body.String())
+	dp := readyPickupSubmission(t, repo, handler, "dp_pickup", "drop_pickup", "pick_pickup", httpSubmissionOne, []byte("ciphertext"))
+	path := pickupPath(dp.ID, httpSubmissionOne)
+
+	head := authorizedRequest(t, handler, http.MethodHead, path, "pick_pickup")
+	if head.Code != http.StatusOK || head.Body.Len() != 0 {
+		t.Fatalf("HEAD = %d body=%q", head.Code, head.Body.String())
+	}
+	notPicked, err := repo.FindSubmission(context.Background(), dp.ID, httpSubmissionOne)
+	if err != nil || notPicked.FirstPickedUpAt != nil {
+		t.Fatalf("submission after HEAD = %+v, err=%v", notPicked, err)
 	}
 
-	headRecorder := httptest.NewRecorder()
-	headRequest := httptest.NewRequest(http.MethodHead, "/api/drop-points/"+dp.ID+"/pickup", nil)
-	headRequest.Header.Set("Authorization", "Bearer pick_pickup")
-	handler.ServeHTTP(headRecorder, headRequest)
-	if headRecorder.Code != http.StatusOK {
-		t.Fatalf("HEAD pickup status = %d body=%s", headRecorder.Code, headRecorder.Body.String())
+	pickup := authorizedRequest(t, handler, http.MethodGet, path, "pick_pickup")
+	if pickup.Code != http.StatusOK || pickup.Header().Get("X-Content-Type-Options") != "nosniff" {
+		t.Fatalf("pickup = %d %s", pickup.Code, pickup.Body.String())
 	}
-	if headRecorder.Body.Len() != 0 {
-		t.Fatalf("HEAD pickup body length = %d, want 0", headRecorder.Body.Len())
+	gotEnvelope, gotPayload := readPickupMultipart(t, pickup)
+	if string(gotEnvelope) != testEnvelopeJSON() || string(gotPayload) != "ciphertext" {
+		t.Fatalf("pickup envelope=%q payload=%q", gotEnvelope, gotPayload)
 	}
-	notPicked, err := repo.FindDropPointByID(context.Background(), dp.ID)
-	if err != nil {
-		t.Fatalf("FindDropPointByID after HEAD: %v", err)
-	}
-	if notPicked.FirstPickedUpAt != nil {
-		t.Fatalf("HEAD pickup recorded first pickup: %v", notPicked.FirstPickedUpAt)
-	}
-
-	pickupRecorder := httptest.NewRecorder()
-	pickupRequest := httptest.NewRequest(http.MethodGet, "/api/drop-points/"+dp.ID+"/pickup", nil)
-	pickupRequest.Header.Set("Authorization", "Bearer pick_pickup")
-	handler.ServeHTTP(pickupRecorder, pickupRequest)
-	if pickupRecorder.Code != http.StatusOK {
-		t.Fatalf("pickup status = %d body=%s", pickupRecorder.Code, pickupRecorder.Body.String())
-	}
-	if got := pickupRecorder.Header().Get("X-Content-Type-Options"); got != "nosniff" {
-		t.Fatalf("X-Content-Type-Options = %q, want nosniff", got)
-	}
-	gotEnvelope, gotPayload := readPickupMultipart(t, pickupRecorder)
-	if !bytes.Equal(gotEnvelope, envelope) {
-		t.Fatalf("envelope = %q, want %q", gotEnvelope, envelope)
-	}
-	if !bytes.Equal(gotPayload, payload) {
-		t.Fatalf("payload = %q, want %q", gotPayload, payload)
-	}
-	picked, err := repo.FindDropPointByID(context.Background(), dp.ID)
-	if err != nil {
-		t.Fatalf("FindDropPointByID: %v", err)
-	}
-	if picked.FirstPickedUpAt == nil {
-		t.Fatal("first pickup timestamp was not recorded")
+	picked, err := repo.FindSubmission(context.Background(), dp.ID, httpSubmissionOne)
+	if err != nil || picked.FirstPickedUpAt == nil {
+		t.Fatalf("picked submission = %+v, err=%v", picked, err)
 	}
 	first := *picked.FirstPickedUpAt
 
-	pickupRecorder = httptest.NewRecorder()
-	pickupRequest = httptest.NewRequest(http.MethodGet, "/api/drop-points/"+dp.ID+"/pickup", nil)
-	pickupRequest.Header.Set("Authorization", "Bearer pick_pickup")
-	handler.ServeHTTP(pickupRecorder, pickupRequest)
-	if pickupRecorder.Code != http.StatusOK {
-		t.Fatalf("second pickup status = %d", pickupRecorder.Code)
+	again := authorizedRequest(t, handler, http.MethodGet, path, "pick_pickup")
+	if again.Code != http.StatusOK {
+		t.Fatalf("repeated pickup = %d %s", again.Code, again.Body.String())
 	}
-	pickedAgain, err := repo.FindDropPointByID(context.Background(), dp.ID)
-	if err != nil {
-		t.Fatalf("FindDropPointByID again: %v", err)
-	}
-	if pickedAgain.FirstPickedUpAt == nil || !pickedAgain.FirstPickedUpAt.Equal(first) {
-		t.Fatalf("first pickup changed: %v -> %v", first, pickedAgain.FirstPickedUpAt)
+	picked, err = repo.FindSubmission(context.Background(), dp.ID, httpSubmissionOne)
+	if err != nil || picked.FirstPickedUpAt == nil || !picked.FirstPickedUpAt.Equal(first) {
+		t.Fatalf("first pickup changed: %+v, err=%v", picked, err)
 	}
 }
 
-func TestPickupMarksMissingBlobPointersFailed(t *testing.T) {
+func TestPickupIsScopedToReadySubmissionAndPickupToken(t *testing.T) {
 	repo, _, handler := newDropTestHandler(t)
-	dp := readyPickupDropPoint(t, repo, handler, "dp_pickup_corrupt", "drop_pickup_corrupt", "pick_pickup_corrupt")
-	if err := repo.DeleteDropPointFiles(context.Background(), dp.ID); err != nil {
-		t.Fatalf("DeleteDropPointFiles: %v", err)
+	dp := testHTTPDropPoint(t, "dp_pickup_scope", "drop_pickup_scope", "pick_pickup_scope", dropTestNow())
+	insertHTTPDropPoint(t, repo, dp)
+	if err := repo.BeginSubmission(context.Background(), dp.ID, httpSubmissionOne, dropTestNow()); err != nil {
+		t.Fatal(err)
 	}
-	recorder := authorizedRequest(t, handler, http.MethodGet, "/api/drop-points/"+dp.ID+"/pickup", "pick_pickup_corrupt")
-	if recorder.Code != http.StatusInternalServerError {
-		t.Fatalf("first corrupt pickup status = %d body=%s", recorder.Code, recorder.Body.String())
-	}
-	row, err := repo.FindDropPointByID(context.Background(), dp.ID)
-	if err != nil {
-		t.Fatalf("FindDropPointByID: %v", err)
-	}
-	if row.Status != droppoint.StatusFailed || row.FailedAt == nil {
-		t.Fatalf("corrupt row was not failed: %+v", row)
-	}
-	recorder = authorizedRequest(t, handler, http.MethodGet, "/api/drop-points/"+dp.ID+"/pickup", "pick_pickup_corrupt")
-	if recorder.Code != http.StatusGone {
-		t.Fatalf("failed pickup status = %d body=%s", recorder.Code, recorder.Body.String())
+	submitDrop(t, handler, "drop_pickup_scope", httpSubmissionTwo, []byte("ready"))
+
+	for _, tc := range []struct {
+		name   string
+		id     string
+		bearer string
+		want   int
+	}{
+		{name: "receiving", id: httpSubmissionOne, bearer: "pick_pickup_scope", want: http.StatusConflict},
+		{name: "unknown", id: httpSubmissionThree, bearer: "pick_pickup_scope", want: http.StatusNotFound},
+		{name: "wrong token", id: httpSubmissionTwo, bearer: "drop_pickup_scope", want: http.StatusNotFound},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			recorder := authorizedRequest(t, handler, http.MethodGet, pickupPath(dp.ID, tc.id), tc.bearer)
+			if recorder.Code != tc.want {
+				t.Fatalf("response = %d %s", recorder.Code, recorder.Body.String())
+			}
+		})
 	}
 }
 
-func TestPickupRecordsAfterFinalWriteDespiteCancellationAndClose(t *testing.T) {
+func TestPickupUnavailableAfterAcknowledgement(t *testing.T) {
 	repo, _, handler := newDropTestHandler(t)
-	dp := readyPickupDropPoint(t, repo, handler, "dp_pickup_finalize", "drop_pickup_finalize", "pick_pickup_finalize")
-	envelope := []byte(testEnvelopeJSON())
-	payload := []byte("ciphertext")
+	dp := readyPickupSubmission(t, repo, handler, "dp_pickup_ack", "drop_pickup_ack", "pick_pickup_ack", httpSubmissionOne, []byte("ciphertext"))
+	ack := authorizedRequest(t, handler, http.MethodDelete, "/api/drop-points/"+dp.ID+"/submissions/"+httpSubmissionOne, "pick_pickup_ack")
+	if ack.Code != http.StatusNoContent {
+		t.Fatalf("ack = %d %s", ack.Code, ack.Body.String())
+	}
+	pickup := authorizedRequest(t, handler, http.MethodGet, pickupPath(dp.ID, httpSubmissionOne), "pick_pickup_ack")
+	if pickup.Code != http.StatusGone {
+		t.Fatalf("pickup after ack = %d %s", pickup.Code, pickup.Body.String())
+	}
+}
+
+func TestPickupMarksOnlyCorruptSubmissionFailed(t *testing.T) {
+	repo, _, handler := newDropTestHandler(t)
+	dp := readyPickupSubmission(t, repo, handler, "dp_pickup_corrupt", "drop_pickup_corrupt", "pick_pickup_corrupt", httpSubmissionOne, []byte("ciphertext"))
+	if err := repo.ClearSubmissionFiles(context.Background(), dp.ID, httpSubmissionOne); err != nil {
+		t.Fatal(err)
+	}
+	pickup := authorizedRequest(t, handler, http.MethodGet, pickupPath(dp.ID, httpSubmissionOne), "pick_pickup_corrupt")
+	if pickup.Code != http.StatusInternalServerError {
+		t.Fatalf("corrupt pickup = %d %s", pickup.Code, pickup.Body.String())
+	}
+	failed, err := repo.FindSubmission(context.Background(), dp.ID, httpSubmissionOne)
+	if err != nil || failed.Status != droppoint.SubmissionStatusFailed || failed.FailedAt == nil {
+		t.Fatalf("failed submission = %+v, err=%v", failed, err)
+	}
+	if _, err := repo.FindOpenDropPointByDropTokenHash(context.Background(), dp.DropTokenHash, dropTestNow()); err != nil {
+		t.Fatalf("parent session was failed: %v", err)
+	}
+	submitDrop(t, handler, "drop_pickup_corrupt", httpSubmissionTwo, []byte("next"))
+}
+
+func TestPickupRejectsCorruptStoredContentsBeforeWritingResponse(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(t *testing.T, blobs *blobstore.Store, submission *droppoint.Submission)
+	}{
+		{
+			name: "invalid envelope",
+			mutate: func(t *testing.T, blobs *blobstore.Store, submission *droppoint.Submission) {
+				path, err := blobs.Path(submission.EnvelopePath)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, []byte(`{}`), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "payload size mismatch",
+			mutate: func(t *testing.T, blobs *blobstore.Store, submission *droppoint.Submission) {
+				path, err := blobs.Path(submission.PayloadPath)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, []byte("short"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo, blobs, handler := newDropTestHandler(t)
+			dp := readyPickupSubmission(t, repo, handler, "dp_stored_corrupt", "drop_stored_corrupt", "pick_stored_corrupt", httpSubmissionOne, []byte("ciphertext"))
+			submission, err := repo.FindSubmission(context.Background(), dp.ID, httpSubmissionOne)
+			if err != nil {
+				t.Fatal(err)
+			}
+			tc.mutate(t, blobs, submission)
+
+			pickup := authorizedRequest(t, handler, http.MethodGet, pickupPath(dp.ID, httpSubmissionOne), "pick_stored_corrupt")
+			if pickup.Code != http.StatusInternalServerError {
+				t.Fatalf("pickup = %d %s", pickup.Code, pickup.Body.String())
+			}
+			failed, err := repo.FindSubmission(context.Background(), dp.ID, httpSubmissionOne)
+			if err != nil || failed.Status != droppoint.SubmissionStatusFailed || failed.FirstPickedUpAt != nil {
+				t.Fatalf("failed submission = %+v, err=%v", failed, err)
+			}
+			if _, err := repo.FindOpenDropPointByDropTokenHash(context.Background(), dp.DropTokenHash, dropTestNow()); err != nil {
+				t.Fatalf("parent session was failed: %v", err)
+			}
+		})
+	}
+}
+
+func TestHeadPickupRejectsCorruptStoredContentsWithoutRecordingPickup(t *testing.T) {
+	repo, blobs, handler := newDropTestHandler(t)
+	dp := readyPickupSubmission(t, repo, handler, "dp_head_corrupt", "drop_head_corrupt", "pick_head_corrupt", httpSubmissionOne, []byte("ciphertext"))
+	submission, err := repo.FindSubmission(context.Background(), dp.ID, httpSubmissionOne)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payloadPath, err := blobs.Path(submission.PayloadPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(payloadPath, []byte("short"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	head := authorizedRequest(t, handler, http.MethodHead, pickupPath(dp.ID, httpSubmissionOne), "pick_head_corrupt")
+	if head.Code != http.StatusInternalServerError || head.Body.Len() != 0 {
+		t.Fatalf("HEAD = %d body=%q", head.Code, head.Body.String())
+	}
+	failed, err := repo.FindSubmission(context.Background(), dp.ID, httpSubmissionOne)
+	if err != nil || failed.Status != droppoint.SubmissionStatusFailed || failed.FirstPickedUpAt != nil {
+		t.Fatalf("failed submission = %+v, err=%v", failed, err)
+	}
+}
+
+func TestPickupRecordsCompletedWriteDespiteCancellationAndClose(t *testing.T) {
+	repo, _, handler := newDropTestHandler(t)
+	dp := readyPickupSubmission(t, repo, handler, "dp_pickup_finalize", "drop_pickup_finalize", "pick_pickup_finalize", httpSubmissionOne, []byte("ciphertext"))
 	expected := httptest.NewRecorder()
-	if err := writePickupMultipart(expected, envelope, bytes.NewReader(payload)); err != nil {
-		t.Fatalf("write expected multipart: %v", err)
+	if err := writePickupMultipart(expected, []byte(testEnvelopeJSON()), bytes.NewReader([]byte("ciphertext"))); err != nil {
+		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	writer := newCallbackResponseWriter(expected.Body.Len(), func() {
@@ -130,100 +211,26 @@ func TestPickupRecordsAfterFinalWriteDespiteCancellationAndClose(t *testing.T) {
 			t.Errorf("CloseDropPoint: %v", err)
 		}
 	})
-	request := httptest.NewRequest(http.MethodGet, "/api/drop-points/"+dp.ID+"/pickup", nil).WithContext(ctx)
+	request := httptest.NewRequest(http.MethodGet, pickupPath(dp.ID, httpSubmissionOne), nil).WithContext(ctx)
 	request.Header.Set("Authorization", "Bearer pick_pickup_finalize")
 	handler.ServeHTTP(writer, request)
 
-	row, err := repo.FindDropPointByID(context.Background(), dp.ID)
-	if err != nil {
-		t.Fatalf("FindDropPointByID: %v", err)
-	}
-	if row.Status != droppoint.StatusClosed || row.FirstPickedUpAt == nil {
-		t.Fatalf("row after completed canceled pickup = %+v", row)
-	}
-}
-
-func TestPickupRecordsAfterFinalWriteDespiteConcurrentExpiry(t *testing.T) {
-	repo, _, handler := newDropTestHandler(t)
-	dp := readyPickupDropPoint(t, repo, handler, "dp_pickup_expiry_race", "drop_pickup_expiry_race", "pick_pickup_expiry_race")
-	envelope := []byte(testEnvelopeJSON())
-	payload := []byte("ciphertext")
-	expected := httptest.NewRecorder()
-	if err := writePickupMultipart(expected, envelope, bytes.NewReader(payload)); err != nil {
-		t.Fatalf("write expected multipart: %v", err)
-	}
-	writer := newCallbackResponseWriter(expected.Body.Len(), func() {
-		if _, err := repo.ExpireDropPoints(context.Background(), dropTestNow().Add(20*time.Minute)); err != nil {
-			t.Errorf("ExpireDropPoints: %v", err)
-		}
-	})
-	request := httptest.NewRequest(http.MethodGet, "/api/drop-points/"+dp.ID+"/pickup", nil)
-	request.Header.Set("Authorization", "Bearer pick_pickup_expiry_race")
-	handler.ServeHTTP(writer, request)
-
-	row, err := repo.FindDropPointByID(context.Background(), dp.ID)
-	if err != nil {
-		t.Fatalf("FindDropPointByID: %v", err)
-	}
-	if row.Status != droppoint.StatusExpired || row.FirstPickedUpAt == nil {
-		t.Fatalf("row after expiry race = %+v", row)
+	picked, err := repo.FindSubmission(context.Background(), dp.ID, httpSubmissionOne)
+	if err != nil || picked.FirstPickedUpAt == nil {
+		t.Fatalf("picked submission = %+v, err=%v", picked, err)
 	}
 }
 
 func TestPickupDoesNotRecordPartialResponseWrite(t *testing.T) {
 	repo, _, handler := newDropTestHandler(t)
-	dp := readyPickupDropPoint(t, repo, handler, "dp_pickup_partial_write", "drop_pickup_partial_write", "pick_pickup_partial_write")
+	dp := readyPickupSubmission(t, repo, handler, "dp_pickup_partial", "drop_pickup_partial", "pick_pickup_partial", httpSubmissionOne, []byte("ciphertext"))
 	writer := &callbackResponseWriter{header: make(http.Header), failAfter: 1}
-	request := httptest.NewRequest(http.MethodGet, "/api/drop-points/"+dp.ID+"/pickup", nil)
-	request.Header.Set("Authorization", "Bearer pick_pickup_partial_write")
+	request := httptest.NewRequest(http.MethodGet, pickupPath(dp.ID, httpSubmissionOne), nil)
+	request.Header.Set("Authorization", "Bearer pick_pickup_partial")
 	handler.ServeHTTP(writer, request)
-
-	row, err := repo.FindDropPointByID(context.Background(), dp.ID)
-	if err != nil {
-		t.Fatalf("FindDropPointByID: %v", err)
-	}
-	if row.FirstPickedUpAt != nil {
-		t.Fatalf("partial response recorded pickup: %v", row.FirstPickedUpAt)
-	}
-}
-
-func TestPickupRejectsNotReadyWrongTokenClosedAndExpired(t *testing.T) {
-	repo, _, handler := newDropTestHandler(t)
-	now := dropTestNow()
-	open := testHTTPDropPoint(t, "dp_pickup_open", "drop_open", "pick_open", now)
-	closed := testHTTPDropPoint(t, "dp_pickup_closed", "drop_closed", "pick_closed", now)
-	expired := testHTTPDropPoint(t, "dp_pickup_expired", "drop_expired", "pick_expired", now.Add(-20*time.Minute))
-	for _, dp := range []droppoint.DropPoint{open, closed, expired} {
-		insertHTTPDropPoint(t, repo, dp)
-	}
-	if err := repo.CloseDropPoint(context.Background(), closed.ID, now); err != nil {
-		t.Fatalf("CloseDropPoint: %v", err)
-	}
-
-	tests := []struct {
-		name       string
-		id         string
-		bearer     string
-		wantStatus int
-	}{
-		{name: "before drop", id: open.ID, bearer: "pick_open", wantStatus: http.StatusConflict},
-		{name: "drop token", id: open.ID, bearer: "drop_open", wantStatus: http.StatusNotFound},
-		{name: "closed", id: closed.ID, bearer: "pick_closed", wantStatus: http.StatusGone},
-		{name: "expired", id: expired.ID, bearer: "pick_expired", wantStatus: http.StatusGone},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			recorder := httptest.NewRecorder()
-			request := httptest.NewRequest(http.MethodGet, "/api/drop-points/"+tt.id+"/pickup", nil)
-			request.Header.Set("Authorization", "Bearer "+tt.bearer)
-			handler.ServeHTTP(recorder, request)
-			if recorder.Code != tt.wantStatus {
-				t.Fatalf("status = %d body=%s, want %d", recorder.Code, recorder.Body.String(), tt.wantStatus)
-			}
-		})
-	}
-	if _, err := repo.AuthorizePickupToken(context.Background(), expired.ID, token.HashSecret("pick_expired"), now); err != nil {
-		t.Fatalf("expired token should still authorize status row: %v", err)
+	picked, err := repo.FindSubmission(context.Background(), dp.ID, httpSubmissionOne)
+	if err != nil || picked.FirstPickedUpAt != nil {
+		t.Fatalf("partial pickup = %+v, err=%v", picked, err)
 	}
 }
 
@@ -241,9 +248,7 @@ func newCallbackResponseWriter(callbackAt int, callback func()) *callbackRespons
 	return &callbackResponseWriter{header: make(http.Header), callbackAt: callbackAt, failAfter: -1, callback: callback}
 }
 
-func (w *callbackResponseWriter) Header() http.Header {
-	return w.header
-}
+func (w *callbackResponseWriter) Header() http.Header { return w.header }
 
 func (w *callbackResponseWriter) WriteHeader(status int) {
 	if w.status == 0 {
@@ -263,49 +268,46 @@ func (w *callbackResponseWriter) Write(data []byte) (int, error) {
 	return n, err
 }
 
-func readyPickupDropPoint(t *testing.T, repo *store.Repository, handler http.Handler, id string, dropToken string, pickupToken string) droppoint.DropPoint {
+func readyPickupSubmission(t *testing.T, repo *store.Repository, handler http.Handler, id, dropToken, pickupToken, submissionID string, payload []byte) droppoint.DropPoint {
 	t.Helper()
 	dp := testHTTPDropPoint(t, id, dropToken, pickupToken, dropTestNow())
 	insertHTTPDropPoint(t, repo, dp)
-	recorder := httptest.NewRecorder()
-	handler.ServeHTTP(recorder, multipartDropRequest(t, "/api/drops/"+dropToken, []byte(testEnvelopeJSON()), []byte("ciphertext")))
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("drop status = %d body=%s", recorder.Code, recorder.Body.String())
-	}
+	submitDrop(t, handler, dropToken, submissionID, payload)
 	return dp
+}
+
+func pickupPath(dropPointID, submissionID string) string {
+	return "/api/drop-points/" + dropPointID + "/submissions/" + submissionID + "/pickup"
 }
 
 func readPickupMultipart(t *testing.T, recorder *httptest.ResponseRecorder) ([]byte, []byte) {
 	t.Helper()
 	mediaType, params, err := mime.ParseMediaType(recorder.Header().Get("Content-Type"))
-	if err != nil {
-		t.Fatalf("ParseMediaType: %v", err)
-	}
-	if mediaType != "multipart/mixed" {
-		t.Fatalf("Content-Type = %q, want multipart/mixed", mediaType)
+	if err != nil || mediaType != "multipart/mixed" {
+		t.Fatalf("Content-Type = %q, err=%v", recorder.Header().Get("Content-Type"), err)
 	}
 	reader := multipart.NewReader(strings.NewReader(recorder.Body.String()), params["boundary"])
 	envelopePart, err := reader.NextPart()
 	if err != nil {
-		t.Fatalf("NextPart envelope: %v", err)
+		t.Fatal(err)
 	}
 	envelope, err := io.ReadAll(envelopePart)
 	if err != nil {
-		t.Fatalf("ReadAll envelope: %v", err)
+		t.Fatal(err)
 	}
 	payloadPart, err := reader.NextPart()
 	if err != nil {
-		t.Fatalf("NextPart payload: %v", err)
+		t.Fatal(err)
 	}
 	payload, err := io.ReadAll(payloadPart)
 	if err != nil {
-		t.Fatalf("ReadAll payload: %v", err)
+		t.Fatal(err)
 	}
-	if extra, err := reader.NextPart(); err != io.EOF {
+	if extra, err := reader.NextPart(); !errors.Is(err, io.EOF) {
 		if extra != nil {
 			_ = extra.Close()
 		}
-		t.Fatalf("extra part err = %v", err)
+		t.Fatalf("extra multipart part: %v", err)
 	}
 	return envelope, payload
 }

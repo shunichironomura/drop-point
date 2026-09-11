@@ -2,8 +2,8 @@
 
 The `scripts/` directory contains two small Python clients that exercise the real HTTP API and protocol:
 
-- `scripts/droppoint-receiver.py`: creates a drop point, saves receiver state, polls/picks up/decrypts, and closes.
-- `scripts/droppoint-sender.py`: reads a full drop link, encrypts local files with the URL-fragment public key, and submits one encrypted drop.
+- `scripts/droppoint-receiver.py`: creates a reusable drop point, saves receiver state, and lists/picks up/decrypts/acknowledges child submissions.
+- `scripts/droppoint-sender.py`: reads a full drop link, encrypts local files with the URL-fragment public key, and submits one immutable encrypted child.
 
 They are `uv` scripts, so dependencies are installed automatically from their inline metadata.
 
@@ -94,7 +94,7 @@ verify that the page shows the printed drop name, choose files, and submit the d
   --wait
 ```
 
-The decrypted files are atomically published in an owner-only bundle directory under `.local/browser-test/output`. A durable receipt in that directory lets a retry verify the same bundle and safely resume remote close.
+The decrypted files are atomically published in an owner-only bundle directory under `.local/browser-test/output`. A durable per-submission receipt lets a retry verify the same bundle and safely resume acknowledgement. The page remains open and can send more bundles through the same drop link.
 
 ## 3. Receiver: create a drop point
 
@@ -119,7 +119,7 @@ printf 'hello from sender\n' > .local/local-test/input/hello.txt
 
 The sender script encrypts the manifest and payload locally and uploads only ciphertext.
 
-## 5. Receiver: status, pickup, decrypt, close
+## 5. Receiver: list, pickup, decrypt, and acknowledge
 
 ```sh
 ./scripts/droppoint-receiver.py status \
@@ -131,6 +131,15 @@ The sender script encrypts the manifest and payload locally and uploads only cip
   --wait
 ```
 
-The decrypted file is atomically published in a `bundle-dp_...` directory under `.local/local-test/output` together with a durable identity receipt.
+The decrypted file is atomically published in a `bundle-dp_...-sub_...` directory under `.local/local-test/output` together with a durable identity receipt.
 
-By default pickup closes the remote drop point only after the complete bundle and updated private receiver state have been fsynced, then atomically removes `recipient_private_key` from the state file. If interrupted, rerunning the command verifies the installed receipt and resumes close without overwriting files. Use `--no-close` to keep it open for repeated pickup testing.
+Pickup processes every ready child, atomically publishes each bundle under a directory named for its drop point and submission IDs, durably records the receipt, and then acknowledges that child. If interrupted, rerunning the command verifies installed receipts and resumes incomplete acknowledgements without overwriting files. The reusable parent remains open, so run the sender and pickup commands again to test additional submissions without creating or scanning another link.
+
+Close the session explicitly when it should stop accepting files:
+
+```sh
+./scripts/droppoint-receiver.py close \
+  --state .local/local-test/state.json
+```
+
+Successful close removes `recipient_private_key` from the private state file.

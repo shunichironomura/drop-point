@@ -10,9 +10,11 @@ import (
 )
 
 type dropMetadataResponse struct {
-	DisplayName string    `json:"display_name"`
-	ExpiresAt   time.Time `json:"expires_at"`
-	MaxBytes    int64     `json:"max_bytes"`
+	DisplayName           string    `json:"display_name"`
+	ExpiresAt             time.Time `json:"expires_at"`
+	MaxBytes              int64     `json:"max_bytes"`
+	MaxPendingSubmissions int       `json:"max_pending_submissions"`
+	MaxPendingBytes       int64     `json:"max_pending_bytes"`
 }
 
 // HandleGetDropMetadata handles GET /api/drops/:drop_token.
@@ -37,7 +39,7 @@ func HandleGetDropMetadata(deps Dependencies) http.HandlerFunc {
 				writeError(w, http.StatusGone, "drop_point_expired", "drop point has expired")
 			case errors.Is(err, droppoint.ErrDropPointFailed):
 				writeError(w, http.StatusGone, "drop_point_failed", "drop point is unavailable")
-			case errors.Is(err, droppoint.ErrDropAlreadyExists), errors.Is(err, droppoint.ErrDropPointClosed), errors.Is(err, droppoint.ErrDropPointNotOpen):
+			case errors.Is(err, droppoint.ErrDropPointClosed), errors.Is(err, droppoint.ErrDropPointNotOpen):
 				writeError(w, http.StatusConflict, "drop_point_unavailable", "drop point cannot accept files")
 			default:
 				writeError(w, http.StatusInternalServerError, "drop_point_lookup_failed", "could not look up drop point")
@@ -46,9 +48,11 @@ func HandleGetDropMetadata(deps Dependencies) http.HandlerFunc {
 		}
 
 		writeJSON(w, http.StatusOK, dropMetadataResponse{
-			DisplayName: dp.DisplayName,
-			ExpiresAt:   dp.ExpiresAt,
-			MaxBytes:    dp.MaxBytes,
+			DisplayName:           dp.DisplayName,
+			ExpiresAt:             dp.ExpiresAt,
+			MaxBytes:              dp.MaxBytes,
+			MaxPendingSubmissions: dp.MaxPendingSubmissions,
+			MaxPendingBytes:       dp.MaxPendingBytes,
 		})
 	}
 }

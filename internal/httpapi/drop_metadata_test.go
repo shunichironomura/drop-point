@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -14,101 +15,110 @@ import (
 	"github.com/shunichironomura/droppoint/internal/token"
 )
 
-func TestGetDropMetadataReturnsServerBoundDisplayName(t *testing.T) {
+func TestGetDropMetadataReturnsSenderSafeSessionDetails(t *testing.T) {
 	apiPlain := "api_valid"
 	_, handler := newCreateTestHandler(t, apiTokenSeed{ID: "desktop-main", SecretHash: token.HashSecret(apiPlain), Enabled: true, MaxActiveDropPoints: intPtr(3)})
-
 	createRecorder := httptest.NewRecorder()
-	createRequest := httptest.NewRequest(http.MethodPost, "/api/drop-points", strings.NewReader(`{"client_name":"test-client","ttl_seconds":120,"max_bytes":2048,"single_use":true}`))
+	createRequest := httptest.NewRequest(http.MethodPost, "/api/drop-points", strings.NewReader(`{"client_name":"test-client","ttl_seconds":120,"max_bytes":2048}`))
 	createRequest.Header.Set("Authorization", "Bearer "+apiPlain)
 	createRequest.Header.Set("Content-Type", "application/json")
 	handler.ServeHTTP(createRecorder, createRequest)
 	if createRecorder.Code != http.StatusCreated {
 		t.Fatalf("create status = %d body=%s", createRecorder.Code, createRecorder.Body.String())
 	}
-
 	var created createDropPointResponse
 	if err := json.NewDecoder(createRecorder.Body).Decode(&created); err != nil {
-		t.Fatalf("decode create response: %v", err)
+		t.Fatal(err)
 	}
 	parsed, err := url.Parse(created.DropLink)
 	if err != nil {
-		t.Fatalf("parse drop_link: %v", err)
+		t.Fatal(err)
 	}
 	dropToken := strings.TrimPrefix(parsed.Path, "/drop/")
 
-	metadataRecorder := httptest.NewRecorder()
-	metadataRequest := httptest.NewRequest(http.MethodGet, "/api/drops/"+dropToken, nil)
-	handler.ServeHTTP(metadataRecorder, metadataRequest)
-	if metadataRecorder.Code != http.StatusOK {
-		t.Fatalf("metadata status = %d body=%s", metadataRecorder.Code, metadataRecorder.Body.String())
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/drops/"+dropToken, nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("metadata status = %d body=%s", recorder.Code, recorder.Body.String())
 	}
-
 	var metadata dropMetadataResponse
-	if err := json.NewDecoder(metadataRecorder.Body).Decode(&metadata); err != nil {
-		t.Fatalf("decode metadata response: %v", err)
+	if err := json.NewDecoder(recorder.Body).Decode(&metadata); err != nil {
+		t.Fatal(err)
 	}
-	if metadata.DisplayName != created.DisplayName || !dropname.Valid(metadata.DisplayName) {
-		t.Fatalf("display_name = %q, want created name %q", metadata.DisplayName, created.DisplayName)
+	if metadata.DisplayName != created.DisplayName || !dropname.Valid(metadata.DisplayName) || !metadata.ExpiresAt.Equal(created.ExpiresAt) {
+		t.Fatalf("metadata = %+v created=%+v", metadata, created)
 	}
-	if !metadata.ExpiresAt.Equal(created.ExpiresAt) {
-		t.Fatalf("expires_at = %s, want %s", metadata.ExpiresAt, created.ExpiresAt)
+	if metadata.MaxBytes != 2048 || metadata.MaxPendingSubmissions != 10 || metadata.MaxPendingBytes != 20_480 {
+		t.Fatalf("metadata limits = %+v", metadata)
 	}
-	if metadata.MaxBytes != created.MaxBytes {
-		t.Fatalf("max_bytes = %d, want %d", metadata.MaxBytes, created.MaxBytes)
+	if strings.Contains(recorder.Body.String(), created.PickupToken) || strings.Contains(recorder.Body.String(), created.DropPointID) {
+		t.Fatalf("metadata leaked receiver capability: %s", recorder.Body.String())
 	}
 }
 
-func TestGetDropMetadataRejectsUnknownExpiredAndUsedDrops(t *testing.T) {
-	repo, handler := newCreateTestHandler(t, apiTokenSeed{ID: "desktop-main", SecretHash: token.HashSecret("api_valid"), Enabled: true})
-	now := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
+func TestGetDropMetadataRemainsAvailableAfterSubmission(t *testing.T) {
+	repo, _, handler := newDropTestHandler(t)
+	dp := testHTTPDropPoint(t, "dp_metadata_reuse", "drop_metadata_reuse", "pick_metadata_reuse", dropTestNow())
+	insertHTTPDropPoint(t, repo, dp)
+	submit := httptest.NewRecorder()
+	handler.ServeHTTP(submit, multipartDropRequest(t, submissionPath("drop_metadata_reuse", httpSubmissionOne), []byte(testEnvelopeJSON()), []byte("payload")))
+	if submit.Code != http.StatusOK {
+		t.Fatalf("submit status = %d body=%s", submit.Code, submit.Body.String())
+	}
+	metadata := httptest.NewRecorder()
+	handler.ServeHTTP(metadata, httptest.NewRequest(http.MethodGet, "/api/drops/drop_metadata_reuse", nil))
+	if metadata.Code != http.StatusOK {
+		t.Fatalf("metadata after submission = %d body=%s", metadata.Code, metadata.Body.String())
+	}
+}
+
+func TestGetDropMetadataRejectsUnavailableSessionsWithoutDisplayName(t *testing.T) {
+	repo, handler := newCreateTestHandler(t)
+	now := dropTestNow()
 	expired := metadataTestDropPoint(t, "dp_expired_metadata", "drop_expired_metadata", now.Add(-20*time.Minute))
-	ready := metadataTestDropPoint(t, "dp_ready_metadata", "drop_ready_metadata", now)
-	ready.Status = droppoint.StatusReady
-	droppedAt := now.Add(time.Second)
-	ready.DroppedAt = &droppedAt
-	ready.EnvelopePath = "drop-points/dp_ready_metadata/envelope.json"
-	ready.PayloadPath = "drop-points/dp_ready_metadata/payload.bin"
-	ready.EncryptedSize = 42
+	closed := metadataTestDropPoint(t, "dp_closed_metadata", "drop_closed_metadata", now)
 	failed := metadataTestDropPoint(t, "dp_failed_metadata", "drop_failed_metadata", now)
-	for _, dp := range []droppoint.DropPoint{expired, ready, failed} {
+	for _, dp := range []droppoint.DropPoint{expired, closed, failed} {
 		insertHTTPDropPoint(t, repo, dp)
 	}
-	if err := repo.FailDropPoint(t.Context(), failed.ID, now.Add(time.Second)); err != nil {
-		t.Fatalf("FailDropPoint: %v", err)
+	if err := repo.CloseDropPoint(context.Background(), closed.ID, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.FailDropPoint(context.Background(), failed.ID, now); err != nil {
+		t.Fatal(err)
 	}
 
-	tests := map[string]struct {
-		token string
-		want  int
+	for name, tc := range map[string]struct {
+		dropToken string
+		want      int
 	}{
-		"unknown": {token: "drop_unknown_metadata", want: http.StatusNotFound},
-		"expired": {token: "drop_expired_metadata", want: http.StatusGone},
-		"used":    {token: "drop_ready_metadata", want: http.StatusConflict},
-		"failed":  {token: "drop_failed_metadata", want: http.StatusGone},
-	}
-	for name, tc := range tests {
+		"unknown": {dropToken: "drop_unknown_metadata", want: http.StatusNotFound},
+		"expired": {dropToken: "drop_expired_metadata", want: http.StatusGone},
+		"closed":  {dropToken: "drop_closed_metadata", want: http.StatusConflict},
+		"failed":  {dropToken: "drop_failed_metadata", want: http.StatusGone},
+	} {
 		t.Run(name, func(t *testing.T) {
 			recorder := httptest.NewRecorder()
-			request := httptest.NewRequest(http.MethodGet, "/api/drops/"+tc.token, nil)
-			handler.ServeHTTP(recorder, request)
-			if recorder.Code != tc.want {
-				t.Fatalf("status = %d body=%s, want %d", recorder.Code, recorder.Body.String(), tc.want)
+			handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/drops/"+tc.dropToken, nil))
+			if recorder.Code != tc.want || strings.Contains(recorder.Body.String(), "calm-otter") {
+				t.Fatalf("response = %d %s, want %d without display name", recorder.Code, recorder.Body.String(), tc.want)
 			}
 		})
 	}
 }
 
-func metadataTestDropPoint(t *testing.T, id string, dropPlain string, now time.Time) droppoint.DropPoint {
+func metadataTestDropPoint(t *testing.T, id, dropPlain string, now time.Time) droppoint.DropPoint {
 	t.Helper()
 	dp, err := droppoint.New(droppoint.CreateDropPointRequest{
-		ID:              id,
-		APITokenID:      "desktop-main",
-		DisplayName:     "calm-otter",
-		DropTokenHash:   token.HashSecret(dropPlain),
-		PickupTokenHash: token.HashSecret("pick_" + id),
-		TTL:             10 * time.Minute,
-		MaxBytes:        1024,
+		ID:                    id,
+		APITokenID:            "desktop-main",
+		DisplayName:           "calm-otter",
+		DropTokenHash:         token.HashSecret(dropPlain),
+		PickupTokenHash:       token.HashSecret("pick_" + id),
+		TTL:                   10 * time.Minute,
+		MaxBytes:              1024,
+		MaxPendingSubmissions: 10,
+		MaxPendingBytes:       10_240,
 	}, now)
 	if err != nil {
 		t.Fatalf("droppoint.New: %v", err)

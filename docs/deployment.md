@@ -90,7 +90,7 @@ from a timer or cron as an operational backstop.
 
 ## Reverse proxy and tunnel requirements
 
-- `/drop/:drop_token` and `/api/drops/:drop_token` metadata/upload routes must be reachable by sender browsers.
+- `/drop/:drop_token`, `/api/drops/:drop_token` metadata, and `/api/drops/:drop_token/submissions/:submission_id` upload routes must be reachable by sender browsers.
 - Receiver APIs under `/api/drop-points` must be reachable by receiver clients.
 - Sender browsers must see HTTPS or localhost. HTTP over a LAN IP is not a secure browser context.
 - Request body limits and idle/upload timeouts must allow `max_bytes` plus multipart overhead for slow mobile senders.
@@ -105,6 +105,7 @@ Application logs prefer matched route templates and redact capability-shaped val
 
 - `/drop/:drop_token`
 - `/api/drops/:drop_token`
+- `/api/drops/:drop_token/submissions/:submission_id`
 - `Authorization` headers
 - query strings and fragments
 

@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"log"
 	"math"
@@ -22,349 +21,267 @@ import (
 	"time"
 
 	"github.com/shunichironomura/droppoint/internal/blobstore"
-	"github.com/shunichironomura/droppoint/internal/cleanup"
 	"github.com/shunichironomura/droppoint/internal/config"
 	"github.com/shunichironomura/droppoint/internal/cryptoenv"
 	"github.com/shunichironomura/droppoint/internal/droppoint"
 	"github.com/shunichironomura/droppoint/internal/store"
-	"github.com/shunichironomura/droppoint/internal/token"
 )
 
-func TestSubmitDropStoresEncryptedPayload(t *testing.T) {
+const (
+	httpSubmissionOne   = "sub_AAAAAAAAAAAAAAAAAAAAAA"
+	httpSubmissionTwo   = "sub_AQEBAQEBAQEBAQEBAQEBAQ"
+	httpSubmissionThree = "sub_AgICAgICAgICAgICAgICAg"
+)
+
+func TestSubmitDropQueuesMultipleImmutableSubmissions(t *testing.T) {
 	repo, blobs, handler := newDropTestHandler(t)
-	now := dropTestNow()
-	dp := testHTTPDropPoint(t, "dp_submit", "drop_submit", "pick_submit", now)
-	dp.MaxBytes = 1024
+	dp := testHTTPDropPoint(t, "dp_submit", "drop_submit", "pick_submit", dropTestNow())
 	insertHTTPDropPoint(t, repo, dp)
-	payload := []byte{0, 1, 2, 3, 4, 5}
-	envelope := []byte(testEnvelopeJSON())
 
-	recorder := httptest.NewRecorder()
-	request := multipartDropRequest(t, "/api/drops/drop_submit", envelope, payload)
-	handler.ServeHTTP(recorder, request)
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("status = %d body=%s", recorder.Code, recorder.Body.String())
-	}
-	var response submitDropResponse
-	if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
-		t.Fatalf("decode response: %v", err)
-	}
-	if response.Status != droppoint.StatusReady {
-		t.Fatalf("response status = %q, want ready", response.Status)
-	}
-
-	ready, err := repo.FindDropPointByID(context.Background(), dp.ID)
-	if err != nil {
-		t.Fatalf("FindDropPointByID: %v", err)
-	}
-	if ready.Status != droppoint.StatusReady || ready.EncryptedSize != int64(len(payload)) || ready.DroppedAt == nil {
-		t.Fatalf("ready row mismatch: %+v", ready)
-	}
-	if got := readBlobPath(t, blobs, ready.PayloadPath); !bytes.Equal(got, payload) {
-		t.Fatalf("payload bytes = %v, want %v", got, payload)
-	}
-	if got := readBlobPath(t, blobs, ready.EnvelopePath); !bytes.Equal(got, envelope) {
-		t.Fatalf("envelope bytes = %q, want %q", got, envelope)
-	}
-}
-
-func TestSubmitDropRejectsSecondDrop(t *testing.T) {
-	repo, _, handler := newDropTestHandler(t)
-	dp := testHTTPDropPoint(t, "dp_second", "drop_second", "pick_second", dropTestNow())
-	insertHTTPDropPoint(t, repo, dp)
-	for i, want := range []int{http.StatusOK, http.StatusConflict} {
+	for _, tc := range []struct {
+		id      string
+		payload []byte
+	}{
+		{id: httpSubmissionOne, payload: []byte("first")},
+		{id: httpSubmissionTwo, payload: []byte("second")},
+	} {
 		recorder := httptest.NewRecorder()
-		handler.ServeHTTP(recorder, multipartDropRequest(t, "/api/drops/drop_second", []byte(testEnvelopeJSON()), []byte("payload")))
-		if recorder.Code != want {
-			t.Fatalf("drop #%d status = %d body=%s, want %d", i+1, recorder.Code, recorder.Body.String(), want)
+		handler.ServeHTTP(recorder, multipartDropRequest(t, submissionPath("drop_submit", tc.id), []byte(testEnvelopeJSON()), tc.payload))
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("submit %s = %d %s", tc.id, recorder.Code, recorder.Body.String())
+		}
+		var response submitDropResponse
+		if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
+			t.Fatal(err)
+		}
+		if response.SubmissionID != tc.id || response.Status != droppoint.SubmissionStatusReady {
+			t.Fatalf("response = %+v", response)
+		}
+		stored, err := repo.FindSubmission(context.Background(), dp.ID, tc.id)
+		if err != nil || stored.Status != droppoint.SubmissionStatusReady || stored.DroppedAt == nil {
+			t.Fatalf("stored = %+v, err=%v", stored, err)
+		}
+		if got := readBlobPath(t, blobs, stored.PayloadPath); !bytes.Equal(got, tc.payload) {
+			t.Fatalf("payload = %q, want %q", got, tc.payload)
 		}
 	}
+	parent, err := repo.FindOpenDropPointByDropTokenHash(context.Background(), dp.DropTokenHash, dropTestNow())
+	if err != nil || parent.Status != droppoint.StatusOpen {
+		t.Fatalf("parent session = %+v, err=%v", parent, err)
+	}
 }
 
-func TestSubmitDropRejectsOversizeAndResetsOpen(t *testing.T) {
+func TestSubmitDropRetryDoesNotReplaceCommittedCiphertext(t *testing.T) {
+	repo, blobs, handler := newDropTestHandler(t)
+	dp := testHTTPDropPoint(t, "dp_retry", "drop_retry", "pick_retry", dropTestNow())
+	insertHTTPDropPoint(t, repo, dp)
+	submitDrop(t, handler, "drop_retry", httpSubmissionOne, []byte("original"))
+
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, multipartDropRequest(t, submissionPath("drop_retry", httpSubmissionOne), []byte(testEnvelopeJSON()), []byte("replacement")))
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"status":"ready"`) {
+		t.Fatalf("retry = %d %s", recorder.Code, recorder.Body.String())
+	}
+	stored, err := repo.FindSubmission(context.Background(), dp.ID, httpSubmissionOne)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := readBlobPath(t, blobs, stored.PayloadPath); string(got) != "original" {
+		t.Fatalf("payload was replaced: %q", got)
+	}
+	if err := repo.AcknowledgeSubmission(context.Background(), dp.ID, httpSubmissionOne, dropTestNow()); err != nil {
+		t.Fatal(err)
+	}
+	recorder = httptest.NewRecorder()
+	handler.ServeHTTP(recorder, multipartDropRequest(t, submissionPath("drop_retry", httpSubmissionOne), []byte(testEnvelopeJSON()), []byte("replacement")))
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"status":"acknowledged"`) {
+		t.Fatalf("acknowledged retry = %d %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestSubmitDropEnforcesCountQueueAndFreesItAfterAcknowledgement(t *testing.T) {
+	repo, _, handler := newDropTestHandler(t)
+	dp := testHTTPDropPoint(t, "dp_count", "drop_count", "pick_count", dropTestNow())
+	dp.MaxPendingSubmissions = 1
+	insertHTTPDropPoint(t, repo, dp)
+	submitDrop(t, handler, "drop_count", httpSubmissionOne, []byte("first"))
+
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, multipartDropRequest(t, submissionPath("drop_count", httpSubmissionOne), []byte(testEnvelopeJSON()), []byte("replacement")))
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"status":"ready"`) {
+		t.Fatalf("immutable retry at full queue = %d %s", recorder.Code, recorder.Body.String())
+	}
+
+	recorder = httptest.NewRecorder()
+	handler.ServeHTTP(recorder, multipartDropRequest(t, submissionPath("drop_count", httpSubmissionTwo), []byte(testEnvelopeJSON()), []byte("second")))
+	if recorder.Code != http.StatusTooManyRequests {
+		t.Fatalf("full queue = %d %s", recorder.Code, recorder.Body.String())
+	}
+	ack := authorizedRequest(t, handler, http.MethodDelete, "/api/drop-points/"+dp.ID+"/submissions/"+httpSubmissionOne, "pick_count")
+	if ack.Code != http.StatusNoContent {
+		t.Fatalf("ack = %d %s", ack.Code, ack.Body.String())
+	}
+	submitDrop(t, handler, "drop_count", httpSubmissionTwo, []byte("second"))
+}
+
+func TestSubmitDropEnforcesPendingByteQueue(t *testing.T) {
+	repo, _, handler := newDropTestHandler(t)
+	dp := testHTTPDropPoint(t, "dp_bytes", "drop_bytes", "pick_bytes", dropTestNow())
+	dp.MaxBytes = 6
+	dp.MaxPendingBytes = 6
+	insertHTTPDropPoint(t, repo, dp)
+	submitDrop(t, handler, "drop_bytes", httpSubmissionOne, []byte("1234"))
+
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, multipartDropRequest(t, submissionPath("drop_bytes", httpSubmissionTwo), []byte(testEnvelopeJSON()), []byte("567")))
+	if recorder.Code != http.StatusTooManyRequests {
+		t.Fatalf("byte-full queue = %d %s", recorder.Code, recorder.Body.String())
+	}
+	if _, err := repo.FindSubmission(context.Background(), dp.ID, httpSubmissionTwo); !errors.Is(err, droppoint.ErrSubmissionNotFound) {
+		t.Fatalf("rejected submission row error = %v", err)
+	}
+}
+
+func TestSubmitDropMalformedAttemptCanRetrySameID(t *testing.T) {
+	repo, _, handler := newDropTestHandler(t)
+	dp := testHTTPDropPoint(t, "dp_retry_bad", "drop_retry_bad", "pick_retry_bad", dropTestNow())
+	insertHTTPDropPoint(t, repo, dp)
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, multipartDropRequest(t, submissionPath("drop_retry_bad", httpSubmissionOne), []byte(`{"protocol_version":2}`), []byte("payload")))
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("malformed = %d %s", recorder.Code, recorder.Body.String())
+	}
+	if _, err := repo.FindSubmission(context.Background(), dp.ID, httpSubmissionOne); !errors.Is(err, droppoint.ErrSubmissionNotFound) {
+		t.Fatalf("failed attempt row error = %v", err)
+	}
+	submitDrop(t, handler, "drop_retry_bad", httpSubmissionOne, []byte("payload"))
+}
+
+func TestSubmitDropRejectsOversizeWithoutConsumingID(t *testing.T) {
 	repo, blobs, handler := newDropTestHandler(t)
 	dp := testHTTPDropPoint(t, "dp_oversize", "drop_oversize", "pick_oversize", dropTestNow())
 	dp.MaxBytes = 4
 	insertHTTPDropPoint(t, repo, dp)
 	recorder := httptest.NewRecorder()
-	handler.ServeHTTP(recorder, multipartDropRequest(t, "/api/drops/drop_oversize", []byte(testEnvelopeJSON()), []byte("12345")))
+	handler.ServeHTTP(recorder, multipartDropRequest(t, submissionPath("drop_oversize", httpSubmissionOne), []byte(testEnvelopeJSON()), []byte("12345")))
 	if recorder.Code != http.StatusRequestEntityTooLarge {
-		t.Fatalf("status = %d body=%s", recorder.Code, recorder.Body.String())
+		t.Fatalf("oversize = %d %s", recorder.Code, recorder.Body.String())
 	}
-	open, err := repo.FindDropPointByID(context.Background(), dp.ID)
-	if err != nil {
-		t.Fatalf("FindDropPointByID: %v", err)
+	if _, err := repo.FindSubmission(context.Background(), dp.ID, httpSubmissionOne); !errors.Is(err, droppoint.ErrSubmissionNotFound) {
+		t.Fatalf("oversize row error = %v", err)
 	}
-	if open.Status != droppoint.StatusOpen {
-		t.Fatalf("status = %q, want open", open.Status)
-	}
-	if _, err := os.Stat(filepath.Join(blobs.DropDir(dp.ID), blobstore.PayloadFileName)); !os.IsNotExist(err) {
-		t.Fatalf("payload final stat err = %v, want not exist", err)
+	if _, err := os.Stat(filepath.Join(blobs.DropDir(dp.ID), httpSubmissionOne)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("oversize blob directory error = %v", err)
 	}
 }
 
-func TestSubmitDropEnforcesNormativeMultipartFraming(t *testing.T) {
-	tests := []struct {
+func TestSubmitDropEnforcesMultipartFraming(t *testing.T) {
+	for _, tc := range []struct {
 		name  string
 		parts []testMultipartPart
 	}{
-		{name: "payload before envelope", parts: []testMultipartPart{{payloadPartName, octetContentType, []byte("payload")}, {envelopePartName, jsonContentType, []byte(testEnvelopeJSON())}}},
-		{name: "extra third part", parts: []testMultipartPart{{envelopePartName, jsonContentType, []byte(testEnvelopeJSON())}, {payloadPartName, octetContentType, []byte("payload")}, {"extra", octetContentType, []byte("extra")}}},
-		{name: "envelope over one MiB", parts: []testMultipartPart{{envelopePartName, jsonContentType, bytes.Repeat([]byte(" "), maxEnvelopeBytes+1)}, {payloadPartName, octetContentType, []byte("payload")}}},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
+		{name: "payload first", parts: []testMultipartPart{{payloadPartName, octetContentType, []byte("payload")}, {envelopePartName, jsonContentType, []byte(testEnvelopeJSON())}}},
+		{name: "extra part", parts: []testMultipartPart{{envelopePartName, jsonContentType, []byte(testEnvelopeJSON())}, {payloadPartName, octetContentType, []byte("payload")}, {"extra", octetContentType, []byte("extra")}}},
+		{name: "large envelope", parts: []testMultipartPart{{envelopePartName, jsonContentType, bytes.Repeat([]byte(" "), maxEnvelopeBytes+1)}, {payloadPartName, octetContentType, []byte("payload")}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
 			repo, _, handler := newDropTestHandler(t)
-			suffix := strings.NewReplacer(" ", "_", "-", "_").Replace(tt.name)
-			dp := testHTTPDropPoint(t, "dp_framing_"+suffix, "drop_framing_"+suffix, "pick_framing_"+suffix, dropTestNow())
+			dp := testHTTPDropPoint(t, "dp_framing", "drop_framing", "pick_framing", dropTestNow())
 			insertHTTPDropPoint(t, repo, dp)
 			recorder := httptest.NewRecorder()
-			handler.ServeHTTP(recorder, multipartDropRequestWithParts(t, "/api/drops/drop_framing_"+suffix, tt.parts))
+			handler.ServeHTTP(recorder, multipartDropRequestWithParts(t, submissionPath("drop_framing", httpSubmissionOne), tc.parts))
 			if recorder.Code != http.StatusBadRequest {
-				t.Fatalf("status = %d body=%s, want bad request", recorder.Code, recorder.Body.String())
+				t.Fatalf("response = %d %s", recorder.Code, recorder.Body.String())
 			}
-			assertDropStatus(t, repo, dp.ID, droppoint.StatusOpen)
 		})
 	}
 }
 
-func TestSubmitDropRejectsMalformedMultipartWithoutConsumingSlot(t *testing.T) {
+func TestSubmitDropAuthorizesTokenAndValidatesSubmissionID(t *testing.T) {
 	repo, _, handler := newDropTestHandler(t)
-	dp := testHTTPDropPoint(t, "dp_bad_envelope", "drop_bad_envelope", "pick_bad_envelope", dropTestNow())
+	dp := testHTTPDropPoint(t, "dp_auth", "drop_auth", "pick_auth", dropTestNow())
 	insertHTTPDropPoint(t, repo, dp)
-	recorder := httptest.NewRecorder()
-	handler.ServeHTTP(recorder, multipartDropRequest(t, "/api/drops/drop_bad_envelope", []byte(`{"protocol_version":2}`), []byte("payload")))
-	if recorder.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d body=%s", recorder.Code, recorder.Body.String())
-	}
-	open, err := repo.FindOpenDropPointByDropTokenHash(context.Background(), token.HashSecret("drop_bad_envelope"), dropTestNow())
-	if err != nil {
-		t.Fatalf("FindOpenDropPointByDropTokenHash after malformed upload: %v", err)
-	}
-	if open.Status != droppoint.StatusOpen {
-		t.Fatalf("status = %q, want open", open.Status)
-	}
-}
-
-func TestSubmitDropResetsOpenAfterCanceledPartialUpload(t *testing.T) {
-	repo, blobs, handler := newDropTestHandler(t)
-	dp := testHTTPDropPoint(t, "dp_canceled_partial", "drop_canceled_partial", "pick_canceled_partial", dropTestNow())
-	insertHTTPDropPoint(t, repo, dp)
-	body, contentType := multipartDropBody(t, []byte(testEnvelopeJSON()), []byte("partial-payload"))
-	payloadOffset := bytes.Index(body, []byte("partial-payload"))
-	if payloadOffset < 0 {
-		t.Fatal("test payload bytes not found in multipart body")
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	request := httptest.NewRequest(http.MethodPut, "/api/drops/drop_canceled_partial", &cancelAfterNReader{data: body, limit: payloadOffset + len("partial"), cancel: cancel}).WithContext(ctx)
-	request.Header.Set("Content-Type", contentType)
-	recorder := httptest.NewRecorder()
-	handler.ServeHTTP(recorder, request)
-	if recorder.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d body=%s", recorder.Code, recorder.Body.String())
-	}
-	open, err := repo.FindOpenDropPointByDropTokenHash(context.Background(), token.HashSecret("drop_canceled_partial"), dropTestNow())
-	if err != nil {
-		t.Fatalf("FindOpenDropPointByDropTokenHash after canceled upload: %v", err)
-	}
-	if open.Status != droppoint.StatusOpen {
-		t.Fatalf("status = %q, want open", open.Status)
-	}
-	if _, err := os.Stat(filepath.Join(blobs.DropDir(dp.ID), blobstore.PayloadFileName)); !os.IsNotExist(err) {
-		t.Fatalf("payload final stat err = %v, want not exist", err)
-	}
-}
-
-func TestSubmitDropCommitsAfterRequestContextCanceledPostUpload(t *testing.T) {
-	repo, _, handler := newDropTestHandler(t)
-	dp := testHTTPDropPoint(t, "dp_canceled_commit", "drop_canceled_commit", "pick_canceled_commit", dropTestNow())
-	insertHTTPDropPoint(t, repo, dp)
-	body, contentType := multipartDropBody(t, []byte(testEnvelopeJSON()), []byte("payload"))
-	ctx, cancel := context.WithCancel(context.Background())
-	request := httptest.NewRequest(http.MethodPut, "/api/drops/drop_canceled_commit", &cancelOnEOFReader{reader: bytes.NewReader(body), cancel: cancel}).WithContext(ctx)
-	request.Header.Set("Content-Type", contentType)
-	recorder := httptest.NewRecorder()
-	handler.ServeHTTP(recorder, request)
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("status = %d body=%s", recorder.Code, recorder.Body.String())
-	}
-	ready, err := repo.FindDropPointByID(context.Background(), dp.ID)
-	if err != nil {
-		t.Fatalf("FindDropPointByID: %v", err)
-	}
-	if ready.Status != droppoint.StatusReady {
-		t.Fatalf("status = %q, want ready", ready.Status)
-	}
-}
-
-func TestDropRequestSizeLimitRejectsOverflow(t *testing.T) {
-	if _, err := dropRequestSizeLimit(math.MaxInt64); err == nil {
-		t.Fatal("dropRequestSizeLimit accepted overflowing payload limit")
-	}
-	got, err := dropRequestSizeLimit(1024)
-	if err != nil {
-		t.Fatalf("dropRequestSizeLimit: %v", err)
-	}
-	if want := int64(1024 + maxEnvelopeBytes + multipartOverhead); got != want {
-		t.Fatalf("dropRequestSizeLimit = %d, want %d", got, want)
-	}
-}
-
-func TestWriteMultipartDropErrorMapsRequestLimitToPayloadTooLarge(t *testing.T) {
-	recorder := httptest.NewRecorder()
-	writeMultipartDropError(recorder, &http.MaxBytesError{Limit: 1})
-	if recorder.Code != http.StatusRequestEntityTooLarge {
-		t.Fatalf("status = %d body=%s", recorder.Code, recorder.Body.String())
-	}
-}
-
-func TestSubmitDropAuthorizesOnlyDropToken(t *testing.T) {
-	repo, _, handler := newDropTestHandler(t)
-	dp := testHTTPDropPoint(t, "dp_auth_drop", "drop_auth", "pick_auth", dropTestNow())
-	insertHTTPDropPoint(t, repo, dp)
-	for name, path := range map[string]string{
-		"unknown":      "/api/drops/drop_unknown",
-		"pickup token": "/api/drops/pick_auth",
+	for _, path := range []string{
+		submissionPath("drop_unknown", httpSubmissionOne),
+		submissionPath("pick_auth", httpSubmissionOne),
+		submissionPath("drop_auth", "sub_too-short"),
 	} {
-		t.Run(name, func(t *testing.T) {
-			recorder := httptest.NewRecorder()
-			handler.ServeHTTP(recorder, multipartDropRequest(t, path, []byte(testEnvelopeJSON()), []byte("payload")))
-			if recorder.Code != http.StatusNotFound {
-				t.Fatalf("status = %d body=%s", recorder.Code, recorder.Body.String())
-			}
-		})
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, multipartDropRequest(t, path, []byte(testEnvelopeJSON()), []byte("payload")))
+		if recorder.Code != http.StatusNotFound {
+			t.Fatalf("path %q = %d %s", path, recorder.Code, recorder.Body.String())
+		}
 	}
 }
 
-func TestSubmitDropMapsStorageFailures(t *testing.T) {
-	tests := []struct {
-		name       string
-		err        error
-		wantStatus int
+func TestSubmitDropMapsStorageFailuresAndLeavesSessionOpen(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+		want int
 	}{
-		{name: "request limit", err: fmt.Errorf("read: %w", &http.MaxBytesError{Limit: 1}), wantStatus: http.StatusRequestEntityTooLarge},
-		{name: "disk full", err: fmt.Errorf("write: %w", syscall.ENOSPC), wantStatus: http.StatusInsufficientStorage},
-		{name: "temporarily unavailable", err: fmt.Errorf("write: %w", syscall.EAGAIN), wantStatus: http.StatusServiceUnavailable},
-		{name: "durability failure", err: errors.New("simulated fsync failure"), wantStatus: http.StatusInternalServerError},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
+		{name: "disk full", err: syscall.ENOSPC, want: http.StatusInsufficientStorage},
+		{name: "temporary", err: syscall.EAGAIN, want: http.StatusServiceUnavailable},
+		{name: "internal", err: errors.New("fsync failed"), want: http.StatusInternalServerError},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
 			repo, blobs, _ := newDropTestHandler(t)
-			dp := testHTTPDropPoint(t, "dp_storage_"+strings.ReplaceAll(tt.name, " ", "_"), "drop_storage", "pick_storage", dropTestNow())
+			dp := testHTTPDropPoint(t, "dp_storage", "drop_storage", "pick_storage", dropTestNow())
 			insertHTTPDropPoint(t, repo, dp)
 			var logs bytes.Buffer
-			handler := dropHandler(repo, &writeErrorBlobStore{BlobStore: blobs, err: tt.err}, &logs)
+			handler := dropHandler(repo, &writeErrorBlobStore{BlobStore: blobs, err: tc.err}, &logs)
 			recorder := httptest.NewRecorder()
-			handler.ServeHTTP(recorder, multipartDropRequest(t, "/api/drops/drop_storage", []byte(testEnvelopeJSON()), []byte("payload")))
-			if recorder.Code != tt.wantStatus {
-				t.Fatalf("status = %d body=%s, want %d", recorder.Code, recorder.Body.String(), tt.wantStatus)
+			handler.ServeHTTP(recorder, multipartDropRequest(t, submissionPath("drop_storage", httpSubmissionOne), []byte(testEnvelopeJSON()), []byte("payload")))
+			if recorder.Code != tc.want {
+				t.Fatalf("response = %d %s, want %d", recorder.Code, recorder.Body.String(), tc.want)
 			}
-			row, err := repo.FindDropPointByID(context.Background(), dp.ID)
-			if err != nil {
-				t.Fatalf("FindDropPointByID: %v", err)
+			if _, err := repo.FindOpenDropPointByDropTokenHash(context.Background(), dp.DropTokenHash, dropTestNow()); err != nil {
+				t.Fatalf("session no longer open: %v", err)
 			}
-			if row.Status != droppoint.StatusOpen {
-				t.Fatalf("status after storage failure = %q, want open", row.Status)
-			}
-			if !strings.Contains(logs.String(), "event=drop.failed") || strings.Contains(logs.String(), "drop_storage") {
-				t.Fatalf("structured storage log missing or leaked capability: %s", logs.String())
+			if !strings.Contains(logs.String(), "event=submission.failed") || strings.Contains(logs.String(), "drop_storage") {
+				t.Fatalf("unsafe or missing structured log: %s", logs.String())
 			}
 		})
 	}
 }
 
-func TestSubmitDropFinalizationFailuresRemainRecoverable(t *testing.T) {
-	t.Run("commit", func(t *testing.T) {
+func TestSubmitDropHandlesCommitFailureAndAmbiguousSuccess(t *testing.T) {
+	t.Run("commit failure", func(t *testing.T) {
 		repo, blobs, _ := newDropTestHandler(t)
-		dp := testHTTPDropPoint(t, "dp_commit_failure", "drop_commit_failure", "pick_commit_failure", dropTestNow())
+		dp := testHTTPDropPoint(t, "dp_commit", "drop_commit", "pick_commit", dropTestNow())
 		insertHTTPDropPoint(t, repo, dp)
-		handler := dropHandler(&repositoryOverride{Repository: repo, commitErr: errors.New("injected commit failure")}, blobs, nil)
+		handler := dropHandler(&repositoryOverride{Repository: repo, commitErr: errors.New("commit failed")}, blobs, nil)
 		recorder := httptest.NewRecorder()
-		handler.ServeHTTP(recorder, multipartDropRequest(t, "/api/drops/drop_commit_failure", []byte(testEnvelopeJSON()), []byte("payload")))
+		handler.ServeHTTP(recorder, multipartDropRequest(t, submissionPath("drop_commit", httpSubmissionOne), []byte(testEnvelopeJSON()), []byte("payload")))
 		if recorder.Code != http.StatusInternalServerError {
-			t.Fatalf("status = %d body=%s", recorder.Code, recorder.Body.String())
+			t.Fatalf("response = %d %s", recorder.Code, recorder.Body.String())
 		}
-		assertDropStatus(t, repo, dp.ID, droppoint.StatusOpen)
-		if _, err := os.Stat(blobs.DropDir(dp.ID)); !errors.Is(err, os.ErrNotExist) {
-			t.Fatalf("drop dir stat err = %v, want not exist", err)
+		if _, err := repo.FindSubmission(context.Background(), dp.ID, httpSubmissionOne); !errors.Is(err, droppoint.ErrSubmissionNotFound) {
+			t.Fatalf("submission row error = %v", err)
 		}
 	})
 
-	t.Run("ambiguous commit", func(t *testing.T) {
+	t.Run("ambiguous success", func(t *testing.T) {
 		repo, blobs, _ := newDropTestHandler(t)
-		dp := testHTTPDropPoint(t, "dp_ambiguous_commit", "drop_ambiguous_commit", "pick_ambiguous_commit", dropTestNow())
+		dp := testHTTPDropPoint(t, "dp_ambiguous", "drop_ambiguous", "pick_ambiguous", dropTestNow())
 		insertHTTPDropPoint(t, repo, dp)
-		repository := &repositoryOverride{Repository: repo, errorAfterCommit: true}
-		handler := dropHandler(repository, blobs, nil)
+		handler := dropHandler(&repositoryOverride{Repository: repo, errorAfterCommit: true, rejectCommitContextLookup: true}, blobs, nil)
 		recorder := httptest.NewRecorder()
-		handler.ServeHTTP(recorder, multipartDropRequest(t, "/api/drops/drop_ambiguous_commit", []byte(testEnvelopeJSON()), []byte("payload")))
-		if recorder.Code != http.StatusInternalServerError {
-			t.Fatalf("status = %d body=%s", recorder.Code, recorder.Body.String())
+		handler.ServeHTTP(recorder, multipartDropRequest(t, submissionPath("drop_ambiguous", httpSubmissionOne), []byte(testEnvelopeJSON()), []byte("payload")))
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("response = %d %s", recorder.Code, recorder.Body.String())
 		}
-		row, err := repo.FindDropPointByID(context.Background(), dp.ID)
+		stored, err := repo.FindSubmission(context.Background(), dp.ID, httpSubmissionOne)
 		if err != nil {
-			t.Fatalf("FindDropPointByID: %v", err)
+			t.Fatal(err)
 		}
-		if row.Status != droppoint.StatusFailed || row.FailedAt == nil {
-			t.Fatalf("ambiguous commit row = %+v, want failed", row)
+		if got := readBlobPath(t, blobs, stored.PayloadPath); string(got) != "payload" {
+			t.Fatalf("payload after ambiguous commit = %q", got)
 		}
-		if _, err := os.Stat(blobs.DropDir(dp.ID)); !errors.Is(err, os.ErrNotExist) {
-			t.Fatalf("drop dir stat err = %v, want not exist", err)
-		}
-	})
-
-	t.Run("reset", func(t *testing.T) {
-		repo, blobs, _ := newDropTestHandler(t)
-		dp := testHTTPDropPoint(t, "dp_reset_failure", "drop_reset_failure", "pick_reset_failure", dropTestNow())
-		insertHTTPDropPoint(t, repo, dp)
-		repository := &repositoryOverride{Repository: repo, resetErr: errors.New("injected reset failure")}
-		handler := dropHandler(repository, &writeErrorBlobStore{BlobStore: blobs, err: errors.New("injected write failure")}, nil)
-		recorder := httptest.NewRecorder()
-		handler.ServeHTTP(recorder, multipartDropRequest(t, "/api/drops/drop_reset_failure", []byte(testEnvelopeJSON()), []byte("payload")))
-		if recorder.Code != http.StatusInternalServerError {
-			t.Fatalf("status = %d body=%s", recorder.Code, recorder.Body.String())
-		}
-		assertDropStatus(t, repo, dp.ID, droppoint.StatusReceiving)
-		if _, err := (cleanup.Service{Repository: repo, BlobStore: blobs, Now: dropTestNow}).ReconcileStartup(context.Background()); err != nil {
-			t.Fatalf("ReconcileStartup: %v", err)
-		}
-		assertDropStatus(t, repo, dp.ID, droppoint.StatusOpen)
-	})
-
-	t.Run("delete", func(t *testing.T) {
-		repo, blobs, _ := newDropTestHandler(t)
-		dp := testHTTPDropPoint(t, "dp_delete_failure", "drop_delete_failure", "pick_delete_failure", dropTestNow())
-		insertHTTPDropPoint(t, repo, dp)
-		failing := &deleteErrorBlobStore{BlobStore: blobs, err: errors.New("injected delete failure")}
-		handler := dropHandler(repo, failing, nil)
-		recorder := httptest.NewRecorder()
-		handler.ServeHTTP(recorder, multipartDropRequest(t, "/api/drops/drop_delete_failure", []byte(`{"protocol_version":2}`), []byte("payload")))
-		if recorder.Code != http.StatusInternalServerError {
-			t.Fatalf("status = %d body=%s", recorder.Code, recorder.Body.String())
-		}
-		assertDropStatus(t, repo, dp.ID, droppoint.StatusReceiving)
-		if _, err := (cleanup.Service{Repository: repo, BlobStore: blobs, Now: dropTestNow}).ReconcileStartup(context.Background()); err != nil {
-			t.Fatalf("ReconcileStartup: %v", err)
-		}
-		assertDropStatus(t, repo, dp.ID, droppoint.StatusOpen)
 	})
 }
 
-func TestSubmitDropReportsFailedPointGone(t *testing.T) {
-	repo, _, handler := newDropTestHandler(t)
-	dp := testHTTPDropPoint(t, "dp_submit_failed", "drop_submit_failed", "pick_submit_failed", dropTestNow())
-	insertHTTPDropPoint(t, repo, dp)
-	if err := repo.FailDropPoint(context.Background(), dp.ID, dropTestNow()); err != nil {
-		t.Fatalf("FailDropPoint: %v", err)
-	}
-	recorder := httptest.NewRecorder()
-	handler.ServeHTTP(recorder, multipartDropRequest(t, "/api/drops/drop_submit_failed", []byte(testEnvelopeJSON()), []byte("payload")))
-	if recorder.Code != http.StatusGone {
-		t.Fatalf("status = %d body=%s, want gone", recorder.Code, recorder.Body.String())
-	}
-}
-
-func TestConcurrentDropAttemptsCommitAtMostOne(t *testing.T) {
+func TestConcurrentAttemptsForOneIDCommitAtMostOneSubmission(t *testing.T) {
 	repo, _, handler := newDropTestHandler(t)
 	dp := testHTTPDropPoint(t, "dp_race", "drop_race", "pick_race", dropTestNow())
 	insertHTTPDropPoint(t, repo, dp)
@@ -375,35 +292,47 @@ func TestConcurrentDropAttemptsCommitAtMostOne(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			recorder := httptest.NewRecorder()
-			handler.ServeHTTP(recorder, multipartDropRequest(t, "/api/drops/drop_race", []byte(testEnvelopeJSON()), []byte("payload")))
+			handler.ServeHTTP(recorder, multipartDropRequest(t, submissionPath("drop_race", httpSubmissionOne), []byte(testEnvelopeJSON()), []byte("payload")))
 			statuses <- recorder.Code
 		}()
 	}
 	wg.Wait()
 	close(statuses)
-	successes := 0
 	for status := range statuses {
-		if status == http.StatusOK {
-			successes++
+		if status != http.StatusOK && status != http.StatusConflict {
+			t.Fatalf("unexpected concurrent status %d", status)
 		}
 	}
-	if successes != 1 {
-		t.Fatalf("successful drops = %d, want 1", successes)
+	ready, err := repo.ListReadySubmissions(context.Background(), dp.ID)
+	if err != nil || len(ready) != 1 || ready[0].ID != httpSubmissionOne {
+		t.Fatalf("ready = %+v, err=%v", ready, err)
+	}
+}
+
+func TestDropRequestSizeLimitRejectsOverflow(t *testing.T) {
+	if _, err := dropRequestSizeLimit(math.MaxInt64); err == nil {
+		t.Fatal("accepted overflowing payload limit")
+	}
+	got, err := dropRequestSizeLimit(1024)
+	if err != nil || got != int64(1024+maxEnvelopeBytes+multipartOverhead) {
+		t.Fatalf("limit = %d, err=%v", got, err)
 	}
 }
 
 type repositoryOverride struct {
 	Repository
-	commitErr        error
-	resetErr         error
-	errorAfterCommit bool
+	commitErr                 error
+	errorAfterCommit          bool
+	rejectCommitContextLookup bool
+	commitContext             context.Context
 }
 
-func (r *repositoryOverride) CommitReceivedDrop(ctx context.Context, id string, result droppoint.CommitDropResult, now time.Time) error {
+func (r *repositoryOverride) CommitSubmission(ctx context.Context, dropPointID, submissionID string, result droppoint.CommitSubmissionResult, now time.Time) error {
+	r.commitContext = ctx
 	if r.commitErr != nil {
 		return r.commitErr
 	}
-	if err := r.Repository.CommitReceivedDrop(ctx, id, result, now); err != nil {
+	if err := r.Repository.CommitSubmission(ctx, dropPointID, submissionID, result, now); err != nil {
 		return err
 	}
 	if r.errorAfterCommit {
@@ -412,11 +341,11 @@ func (r *repositoryOverride) CommitReceivedDrop(ctx context.Context, id string, 
 	return nil
 }
 
-func (r *repositoryOverride) ResetReceivingDrop(ctx context.Context, id string, now time.Time) error {
-	if r.resetErr != nil {
-		return r.resetErr
+func (r *repositoryOverride) FindSubmission(ctx context.Context, dropPointID, submissionID string) (*droppoint.Submission, error) {
+	if r.rejectCommitContextLookup && ctx == r.commitContext {
+		return nil, context.DeadlineExceeded
 	}
-	return r.Repository.ResetReceivingDrop(ctx, id, now)
+	return r.Repository.FindSubmission(ctx, dropPointID, submissionID)
 }
 
 type writeErrorBlobStore struct {
@@ -424,22 +353,8 @@ type writeErrorBlobStore struct {
 	err error
 }
 
-func (s *writeErrorBlobStore) WriteDrop(context.Context, string, []byte, io.Reader, int64) (droppoint.CommitDropResult, error) {
-	return droppoint.CommitDropResult{}, s.err
-}
-
-type deleteErrorBlobStore struct {
-	BlobStore
-	err    error
-	failed bool
-}
-
-func (s *deleteErrorBlobStore) DeleteDropPoint(ctx context.Context, id string) error {
-	if !s.failed {
-		s.failed = true
-		return s.err
-	}
-	return s.BlobStore.DeleteDropPoint(ctx, id)
+func (s *writeErrorBlobStore) WriteSubmission(context.Context, string, string, []byte, io.Reader, int64) (droppoint.CommitSubmissionResult, error) {
+	return droppoint.CommitSubmissionResult{}, s.err
 }
 
 func dropHandler(repository Repository, blobs BlobStore, logs *bytes.Buffer) http.Handler {
@@ -450,37 +365,33 @@ func dropHandler(repository Repository, blobs BlobStore, logs *bytes.Buffer) htt
 	return NewRouterWithDependencies(Dependencies{Config: config.Default(), Repository: repository, BlobStore: blobs, Logger: logger, Now: dropTestNow})
 }
 
-func assertDropStatus(t *testing.T, repo *store.Repository, id string, want droppoint.Status) {
-	t.Helper()
-	row, err := repo.FindDropPointByID(context.Background(), id)
-	if err != nil {
-		t.Fatalf("FindDropPointByID: %v", err)
-	}
-	if row.Status != want {
-		t.Fatalf("status = %q, want %q", row.Status, want)
-	}
-}
-
 func newDropTestHandler(t *testing.T) (*store.Repository, *blobstore.Store, http.Handler) {
 	t.Helper()
 	dataDir := filepath.Join(t.TempDir(), "data")
 	if err := config.EnsureDataDir(dataDir); err != nil {
-		t.Fatalf("EnsureDataDir: %v", err)
+		t.Fatal(err)
 	}
 	db, err := store.Open(context.Background(), dataDir)
 	if err != nil {
-		t.Fatalf("store.Open: %v", err)
+		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
 	repo := store.NewRepository(db.SQLDB())
 	blobs := blobstore.New(dataDir)
-	handler := NewRouterWithDependencies(Dependencies{
-		Config:     config.Default(),
-		Repository: repo,
-		BlobStore:  blobs,
-		Now:        dropTestNow,
-	})
-	return repo, blobs, handler
+	return repo, blobs, NewRouterWithDependencies(Dependencies{Config: config.Default(), Repository: repo, BlobStore: blobs, Now: dropTestNow})
+}
+
+func submitDrop(t *testing.T, handler http.Handler, dropToken, submissionID string, payload []byte) {
+	t.Helper()
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, multipartDropRequest(t, submissionPath(dropToken, submissionID), []byte(testEnvelopeJSON()), payload))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("submit %s = %d %s", submissionID, recorder.Code, recorder.Body.String())
+	}
+}
+
+func submissionPath(dropToken, submissionID string) string {
+	return "/api/drops/" + dropToken + "/submissions/" + submissionID
 }
 
 type testMultipartPart struct {
@@ -497,44 +408,38 @@ func multipartDropRequestWithParts(t *testing.T, path string, parts []testMultip
 		mustWritePart(t, writer, part.name, part.contentType, part.data)
 	}
 	if err := writer.Close(); err != nil {
-		t.Fatalf("close multipart writer: %v", err)
+		t.Fatal(err)
 	}
 	request := httptest.NewRequest(http.MethodPut, path, bytes.NewReader(body.Bytes()))
 	request.Header.Set("Content-Type", writer.FormDataContentType())
 	return request
 }
 
-func multipartDropRequest(t *testing.T, path string, envelope []byte, payload []byte) *http.Request {
-	t.Helper()
-	body, contentType := multipartDropBody(t, envelope, payload)
-	request := httptest.NewRequest(http.MethodPut, path, bytes.NewReader(body))
-	request.Header.Set("Content-Type", contentType)
-	return request
-}
-
-func multipartDropBody(t *testing.T, envelope []byte, payload []byte) ([]byte, string) {
+func multipartDropRequest(t *testing.T, path string, envelope, payload []byte) *http.Request {
 	t.Helper()
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
 	mustWritePart(t, writer, envelopePartName, jsonContentType, envelope)
 	mustWritePart(t, writer, payloadPartName, octetContentType, payload)
 	if err := writer.Close(); err != nil {
-		t.Fatalf("close multipart writer: %v", err)
+		t.Fatal(err)
 	}
-	return body.Bytes(), writer.FormDataContentType()
+	request := httptest.NewRequest(http.MethodPut, path, bytes.NewReader(body.Bytes()))
+	request.Header.Set("Content-Type", writer.FormDataContentType())
+	return request
 }
 
-func mustWritePart(t *testing.T, writer *multipart.Writer, name string, contentType string, data []byte) {
+func mustWritePart(t *testing.T, writer *multipart.Writer, name, contentType string, data []byte) {
 	t.Helper()
 	header := make(textproto.MIMEHeader)
 	header.Set("Content-Disposition", `form-data; name="`+name+`"`)
 	header.Set("Content-Type", contentType)
 	part, err := writer.CreatePart(header)
 	if err != nil {
-		t.Fatalf("CreatePart %s: %v", name, err)
+		t.Fatal(err)
 	}
 	if _, err := part.Write(data); err != nil {
-		t.Fatalf("write part %s: %v", name, err)
+		t.Fatal(err)
 	}
 }
 
@@ -542,51 +447,15 @@ func testEnvelopeJSON() string {
 	return `{"protocol_version":2,"key_agreement":"` + cryptoenv.KeyAgreement + `","sender_ephemeral_public_key":"` + cryptoenv.EncodeBase64URL(make([]byte, 32)) + `","metadata_nonce":"` + cryptoenv.EncodeBase64URL(make([]byte, 12)) + `","payload_nonce":"` + cryptoenv.EncodeBase64URL(make([]byte, 12)) + `","encrypted_metadata":"` + cryptoenv.EncodeBase64URL(make([]byte, 16)) + `"}`
 }
 
-type cancelAfterNReader struct {
-	data     []byte
-	limit    int
-	offset   int
-	cancel   context.CancelFunc
-	canceled bool
-}
-
-func (r *cancelAfterNReader) Read(p []byte) (int, error) {
-	if r.offset >= r.limit {
-		if !r.canceled {
-			r.cancel()
-			r.canceled = true
-		}
-		return 0, io.ErrUnexpectedEOF
-	}
-	n := copy(p, r.data[r.offset:r.limit])
-	r.offset += n
-	return n, nil
-}
-
-type cancelOnEOFReader struct {
-	reader   *bytes.Reader
-	cancel   context.CancelFunc
-	canceled bool
-}
-
-func (r *cancelOnEOFReader) Read(p []byte) (int, error) {
-	n, err := r.reader.Read(p)
-	if err == io.EOF && !r.canceled {
-		r.cancel()
-		r.canceled = true
-	}
-	return n, err
-}
-
 func readBlobPath(t *testing.T, blobs *blobstore.Store, relative string) []byte {
 	t.Helper()
 	path, err := blobs.Path(relative)
 	if err != nil {
-		t.Fatalf("Path: %v", err)
+		t.Fatal(err)
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
-		t.Fatalf("ReadFile %s: %v", path, err)
+		t.Fatal(err)
 	}
 	return data
 }

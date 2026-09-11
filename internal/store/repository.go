@@ -13,35 +13,27 @@ import (
 	sqlite3 "modernc.org/sqlite/lib"
 )
 
-// sqliteTimeFormat must stay fixed-width and all writes must use UTC so SQLite
-// TEXT comparisons on expires_at preserve chronological ordering.
 const sqliteTimeFormat = "2006-01-02T15:04:05.000000000Z07:00"
 
-const insertDropPointWithinQuotaSQL = `
-INSERT INTO drop_points (
-  id, api_token_id, client_name, display_name, drop_token_hash, pickup_token_hash, status,
-  payload_path, envelope_path, encrypted_size, created_at, dropped_at, receiving_started_at,
-  first_picked_up_at, closed_at, failed_at, expires_at, max_bytes
-)
-SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
-WHERE (
-  SELECT count(*)
-  FROM drop_points
-  WHERE api_token_id = ? AND status IN (?, ?, ?) AND expires_at > ?
-) < ?`
+const dropPointColumns = `id, api_token_id, client_name, display_name, drop_token_hash, pickup_token_hash,
+status, created_at, closed_at, failed_at, expires_at, max_bytes, max_pending_submissions, max_pending_bytes`
 
-// Repository provides typed persistence operations for drop point lifecycle rows.
+const submissionColumns = `id, drop_point_id, status, envelope_path, payload_path, encrypted_size,
+created_at, receiving_started_at, dropped_at, first_picked_up_at, acknowledged_at, failed_at`
+
 type Repository struct {
 	db *sql.DB
 }
 
-// NewRepository wraps db with typed drop point persistence methods.
+type PendingStats struct {
+	Submissions int
+	Bytes       int64
+}
+
 func NewRepository(db *sql.DB) *Repository {
 	return &Repository{db: db}
 }
 
-// CreateDropPointWithinQuota inserts a new drop point only if doing so keeps the
-// API token's active open/receiving/ready drop point count below maxActive.
 func (r *Repository) CreateDropPointWithinQuota(ctx context.Context, dp droppoint.DropPoint, maxActive int, now time.Time) error {
 	if err := r.ensureReady(); err != nil {
 		return err
@@ -49,15 +41,18 @@ func (r *Repository) CreateDropPointWithinQuota(ctx context.Context, dp droppoin
 	if maxActive <= 0 {
 		return fmt.Errorf("max active drop points must be positive")
 	}
-	args := append(dropPointInsertArgs(dp),
-		dp.APITokenID,
-		string(droppoint.StatusOpen),
-		string(droppoint.StatusReceiving),
-		string(droppoint.StatusReady),
-		formatTime(now),
-		maxActive,
+	result, err := r.db.ExecContext(ctx, `
+INSERT INTO drop_points (`+dropPointColumns+`)
+SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+WHERE (
+  SELECT count(*) FROM drop_points
+  WHERE api_token_id = ? AND status = ? AND expires_at > ?
+) < ?`,
+		dp.ID, dp.APITokenID, nullString(dp.ClientName), dp.DisplayName, dp.DropTokenHash, dp.PickupTokenHash,
+		string(dp.Status), formatTime(dp.CreatedAt), nullTime(dp.ClosedAt), nullTime(dp.FailedAt), formatTime(dp.ExpiresAt),
+		dp.MaxBytes, dp.MaxPendingSubmissions, dp.MaxPendingBytes,
+		dp.APITokenID, string(droppoint.StatusOpen), formatTime(now), maxActive,
 	)
-	result, err := r.db.ExecContext(ctx, insertDropPointWithinQuotaSQL, args...)
 	if err != nil {
 		return fmt.Errorf("create drop point %q within quota: %w", dp.ID, err)
 	}
@@ -65,20 +60,14 @@ func (r *Repository) CreateDropPointWithinQuota(ctx context.Context, dp droppoin
 	if err != nil {
 		return fmt.Errorf("create drop point %q within quota: rows affected: %w", dp.ID, err)
 	}
-	if changed == 1 {
-		return nil
+	if changed == 0 {
+		return droppoint.ErrActiveDropPointQuotaExceeded
 	}
-	return droppoint.ErrActiveDropPointQuotaExceeded
+	return nil
 }
 
-// FindDropPointByID returns a drop point by public ID.
 func (r *Repository) FindDropPointByID(ctx context.Context, id string) (*droppoint.DropPoint, error) {
-	dp, err := r.queryOne(ctx, `
-SELECT id, api_token_id, client_name, display_name, drop_token_hash, pickup_token_hash, status,
-       payload_path, envelope_path, encrypted_size, created_at, dropped_at, receiving_started_at,
-       first_picked_up_at, closed_at, failed_at, expires_at, max_bytes
-FROM drop_points
-WHERE id = ?`, id)
+	dp, err := scanDropPoint(r.db.QueryRowContext(ctx, `SELECT `+dropPointColumns+` FROM drop_points WHERE id = ?`, id))
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, droppoint.ErrDropPointNotFound
 	}
@@ -88,22 +77,15 @@ WHERE id = ?`, id)
 	return dp, nil
 }
 
-// FindDropPointByDropTokenHash authorizes a sender drop token hash and returns
-// the matching drop point. Expired rows are marked expired before returning.
 func (r *Repository) FindDropPointByDropTokenHash(ctx context.Context, dropTokenHash string, now time.Time) (*droppoint.DropPoint, error) {
-	dp, err := r.queryOne(ctx, `
-SELECT id, api_token_id, client_name, display_name, drop_token_hash, pickup_token_hash, status,
-       payload_path, envelope_path, encrypted_size, created_at, dropped_at, receiving_started_at,
-       first_picked_up_at, closed_at, failed_at, expires_at, max_bytes
-FROM drop_points
-WHERE drop_token_hash = ?`, dropTokenHash)
+	dp, err := scanDropPoint(r.db.QueryRowContext(ctx, `SELECT `+dropPointColumns+` FROM drop_points WHERE drop_token_hash = ?`, dropTokenHash))
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, droppoint.ErrDropTokenInvalid
 	}
 	if err != nil {
 		return nil, err
 	}
-	if dp.IsExpiredAt(now) {
+	if !now.Before(dp.ExpiresAt) && dp.Status == droppoint.StatusOpen {
 		if err := r.markExpired(ctx, dp.ID); err != nil {
 			return nil, err
 		}
@@ -112,24 +94,17 @@ WHERE drop_token_hash = ?`, dropTokenHash)
 	return dp, nil
 }
 
-// FindOpenDropPointByDropTokenHash authorizes a sender drop token hash and
-// returns the matching open drop point if it can receive a drop at now.
 func (r *Repository) FindOpenDropPointByDropTokenHash(ctx context.Context, dropTokenHash string, now time.Time) (*droppoint.DropPoint, error) {
 	dp, err := r.FindDropPointByDropTokenHash(ctx, dropTokenHash, now)
 	if err != nil {
 		return nil, err
 	}
-	if dp.Status == droppoint.StatusExpired {
-		return nil, droppoint.ErrDropPointExpired
+	if err := droppoint.RequireOpen(*dp, now); err != nil {
+		return nil, err
 	}
-	if dp.Status == droppoint.StatusOpen {
-		return dp, nil
-	}
-	return nil, errorForUnavailableStatus(dp.Status)
+	return dp, nil
 }
 
-// AuthorizePickupToken returns the drop point only when pickupTokenHash belongs
-// to that exact drop point.
 func (r *Repository) AuthorizePickupToken(ctx context.Context, id string, pickupTokenHash string, now time.Time) (*droppoint.DropPoint, error) {
 	dp, err := r.FindDropPointByID(ctx, id)
 	if err != nil {
@@ -138,157 +113,252 @@ func (r *Repository) AuthorizePickupToken(ctx context.Context, id string, pickup
 	if !token.EqualHash(dp.PickupTokenHash, pickupTokenHash) {
 		return nil, droppoint.ErrPickupTokenInvalid
 	}
-	if dp.IsExpiredAt(now) {
+	if !now.Before(dp.ExpiresAt) && dp.Status == droppoint.StatusOpen {
 		if err := r.markExpired(ctx, dp.ID); err != nil {
 			return nil, err
 		}
 		dp.Status = droppoint.StatusExpired
-		return dp, nil
 	}
 	return dp, nil
 }
 
-// BeginReceivingDrop atomically claims the single-use receiving slot.
-func (r *Repository) BeginReceivingDrop(ctx context.Context, id string, now time.Time) error {
+func (r *Repository) BeginSubmission(ctx context.Context, dropPointID, submissionID string, now time.Time) error {
 	result, err := r.db.ExecContext(ctx, `
-UPDATE drop_points
-SET status = ?, receiving_started_at = ?
-WHERE id = ? AND status = ? AND expires_at > ?`,
-		string(droppoint.StatusReceiving), formatTime(now), id, string(droppoint.StatusOpen), formatTime(now),
+INSERT INTO submissions (id, drop_point_id, status, created_at, receiving_started_at)
+SELECT ?, id, ?, ?, ?
+FROM drop_points
+WHERE id = ? AND status = ? AND expires_at > ?
+  AND (
+    SELECT count(*) FROM submissions
+    WHERE drop_point_id = ? AND status IN (?, ?)
+  ) < max_pending_submissions`,
+		submissionID, string(droppoint.SubmissionStatusReceiving), formatTime(now), formatTime(now),
+		dropPointID, string(droppoint.StatusOpen), formatTime(now), dropPointID,
+		string(droppoint.SubmissionStatusReceiving), string(droppoint.SubmissionStatusReady),
 	)
+	if IsUniqueConstraint(err) {
+		return droppoint.ErrSubmissionAlreadyExists
+	}
 	if err != nil {
-		return fmt.Errorf("begin receiving drop %q: %w", id, err)
-	}
-	if changed, err := result.RowsAffected(); err == nil && changed == 1 {
-		return nil
-	}
-	return r.classifyMutationMiss(ctx, id, now)
-}
-
-// CommitReceivedDrop records the durable envelope and payload and marks the drop
-// point ready.
-func (r *Repository) CommitReceivedDrop(ctx context.Context, id string, result droppoint.CommitDropResult, now time.Time) error {
-	if result.EnvelopePath == "" || result.PayloadPath == "" {
-		return fmt.Errorf("commit received drop %q: payload and envelope paths must be set", id)
-	}
-	if result.EncryptedSize < 0 {
-		return fmt.Errorf("commit received drop %q: encrypted size must not be negative", id)
-	}
-	res, err := r.db.ExecContext(ctx, `
-UPDATE drop_points
-SET status = ?, envelope_path = ?, payload_path = ?, encrypted_size = ?, dropped_at = ?, receiving_started_at = NULL
-WHERE id = ? AND status = ? AND expires_at > ?`,
-		string(droppoint.StatusReady), result.EnvelopePath, result.PayloadPath, result.EncryptedSize, formatTime(now),
-		id, string(droppoint.StatusReceiving), formatTime(now),
-	)
-	if err != nil {
-		return fmt.Errorf("commit received drop %q: %w", id, err)
-	}
-	if changed, err := res.RowsAffected(); err == nil && changed == 1 {
-		return nil
-	}
-	return r.classifyMutationMiss(ctx, id, now)
-}
-
-// ResetReceivingDrop returns a failed in-flight drop to open unless it has
-// expired by now.
-func (r *Repository) ResetReceivingDrop(ctx context.Context, id string, now time.Time) error {
-	dp, err := r.FindDropPointByID(ctx, id)
-	if err != nil {
-		return err
-	}
-	if dp.IsExpiredAt(now) {
-		if err := r.markExpired(ctx, id); err != nil {
-			return err
-		}
-		return droppoint.ErrDropPointExpired
-	}
-	if dp.Status == droppoint.StatusFailed {
-		return droppoint.ErrDropPointFailed
-	}
-	if dp.Status != droppoint.StatusReceiving {
-		return droppoint.ErrDropPointNotOpen
-	}
-	result, err := r.db.ExecContext(ctx, `
-UPDATE drop_points
-SET status = ?, payload_path = NULL, envelope_path = NULL, encrypted_size = NULL, dropped_at = NULL,
-    receiving_started_at = NULL
-WHERE id = ? AND status = ?`, string(droppoint.StatusOpen), id, string(droppoint.StatusReceiving))
-	if err != nil {
-		return fmt.Errorf("reset receiving drop %q: %w", id, err)
+		return fmt.Errorf("begin submission %q/%q: %w", dropPointID, submissionID, err)
 	}
 	changed, err := result.RowsAffected()
 	if err != nil {
-		return fmt.Errorf("reset receiving drop %q: rows affected: %w", id, err)
+		return fmt.Errorf("begin submission %q/%q: rows affected: %w", dropPointID, submissionID, err)
 	}
-	if changed != 1 {
-		return r.classifyMutationMiss(ctx, id, now)
+	if changed == 1 {
+		return nil
+	}
+	dp, err := r.FindDropPointByID(ctx, dropPointID)
+	if err != nil {
+		return err
+	}
+	if err := droppoint.RequireOpen(*dp, now); err != nil {
+		if errors.Is(err, droppoint.ErrDropPointExpired) {
+			if markErr := r.markExpired(ctx, dropPointID); markErr != nil {
+				return markErr
+			}
+		}
+		return err
+	}
+	if _, err := r.FindSubmission(ctx, dropPointID, submissionID); err == nil {
+		return droppoint.ErrSubmissionAlreadyExists
+	} else if !errors.Is(err, droppoint.ErrSubmissionNotFound) {
+		return err
+	}
+	return droppoint.ErrPendingSubmissionQuotaExceeded
+}
+
+func (r *Repository) CommitSubmission(ctx context.Context, dropPointID, submissionID string, stored droppoint.CommitSubmissionResult, now time.Time) error {
+	if stored.EnvelopePath == "" || stored.PayloadPath == "" || stored.EncryptedSize < 0 {
+		return fmt.Errorf("commit submission %q/%q: invalid stored result", dropPointID, submissionID)
+	}
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin commit submission transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	dp, err := scanDropPoint(tx.QueryRowContext(ctx, `SELECT `+dropPointColumns+` FROM drop_points WHERE id = ?`, dropPointID))
+	if errors.Is(err, sql.ErrNoRows) {
+		return droppoint.ErrDropPointNotFound
+	}
+	if err != nil {
+		return err
+	}
+	if err := droppoint.RequireOpen(*dp, now); err != nil {
+		return err
+	}
+	submission, err := scanSubmission(tx.QueryRowContext(ctx, `SELECT `+submissionColumns+` FROM submissions WHERE drop_point_id = ? AND id = ?`, dropPointID, submissionID))
+	if errors.Is(err, sql.ErrNoRows) {
+		return droppoint.ErrSubmissionNotFound
+	}
+	if err != nil {
+		return err
+	}
+	if submission.Status != droppoint.SubmissionStatusReceiving {
+		return submissionUnavailableError(submission.Status)
+	}
+	var pendingBytes int64
+	if err := tx.QueryRowContext(ctx, `
+SELECT COALESCE(sum(encrypted_size), 0) FROM submissions
+WHERE drop_point_id = ? AND status = ?`, dropPointID, string(droppoint.SubmissionStatusReady)).Scan(&pendingBytes); err != nil {
+		return fmt.Errorf("sum pending submission bytes: %w", err)
+	}
+	if stored.EncryptedSize > dp.MaxPendingBytes-pendingBytes {
+		return droppoint.ErrPendingBytesQuotaExceeded
+	}
+	result, err := tx.ExecContext(ctx, `
+UPDATE submissions
+SET status = ?, envelope_path = ?, payload_path = ?, encrypted_size = ?, dropped_at = ?
+WHERE drop_point_id = ? AND id = ? AND status = ?`,
+		string(droppoint.SubmissionStatusReady), stored.EnvelopePath, stored.PayloadPath, stored.EncryptedSize, formatTime(now),
+		dropPointID, submissionID, string(droppoint.SubmissionStatusReceiving),
+	)
+	if err != nil {
+		return fmt.Errorf("commit submission %q/%q: %w", dropPointID, submissionID, err)
+	}
+	changed, err := result.RowsAffected()
+	if err != nil || changed != 1 {
+		return fmt.Errorf("commit submission %q/%q changed %d rows: %w", dropPointID, submissionID, changed, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit submission transaction: %w", err)
 	}
 	return nil
 }
 
-// FailDropPoint marks a non-terminal row failed after an unrecoverable internal
-// inconsistency or corruption. Repeating it for an already failed row is safe.
-func (r *Repository) FailDropPoint(ctx context.Context, id string, now time.Time) error {
+func (r *Repository) DeleteReceivingSubmission(ctx context.Context, dropPointID, submissionID string) error {
+	_, err := r.db.ExecContext(ctx, `DELETE FROM submissions WHERE drop_point_id = ? AND id = ? AND status = ?`,
+		dropPointID, submissionID, string(droppoint.SubmissionStatusReceiving))
+	if err != nil {
+		return fmt.Errorf("delete receiving submission %q/%q: %w", dropPointID, submissionID, err)
+	}
+	return nil
+}
+
+func (r *Repository) FindSubmission(ctx context.Context, dropPointID, submissionID string) (*droppoint.Submission, error) {
+	submission, err := scanSubmission(r.db.QueryRowContext(ctx, `SELECT `+submissionColumns+` FROM submissions WHERE drop_point_id = ? AND id = ?`, dropPointID, submissionID))
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, droppoint.ErrSubmissionNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return submission, nil
+}
+
+func (r *Repository) ListReadySubmissions(ctx context.Context, dropPointID string) ([]droppoint.Submission, error) {
+	return r.querySubmissions(ctx, `
+SELECT `+submissionColumns+` FROM submissions
+WHERE drop_point_id = ? AND status = ?
+ORDER BY dropped_at, id`, dropPointID, string(droppoint.SubmissionStatusReady))
+}
+
+func (r *Repository) PendingStats(ctx context.Context, dropPointID string) (PendingStats, error) {
+	var stats PendingStats
+	err := r.db.QueryRowContext(ctx, `
+SELECT count(*), COALESCE(sum(CASE WHEN status = ? THEN encrypted_size ELSE 0 END), 0)
+FROM submissions WHERE drop_point_id = ? AND status IN (?, ?)`,
+		string(droppoint.SubmissionStatusReady), dropPointID,
+		string(droppoint.SubmissionStatusReceiving), string(droppoint.SubmissionStatusReady),
+	).Scan(&stats.Submissions, &stats.Bytes)
+	if err != nil {
+		return PendingStats{}, fmt.Errorf("read pending stats for %q: %w", dropPointID, err)
+	}
+	return stats, nil
+}
+
+func (r *Repository) MarkSubmissionPickedUp(ctx context.Context, dropPointID, submissionID string, now time.Time) error {
 	result, err := r.db.ExecContext(ctx, `
-UPDATE drop_points
-SET status = ?, receiving_started_at = NULL, failed_at = COALESCE(failed_at, ?)
-WHERE id = ? AND status IN (?, ?, ?)`,
-		string(droppoint.StatusFailed), formatTime(now), id,
-		string(droppoint.StatusOpen), string(droppoint.StatusReceiving), string(droppoint.StatusReady),
+UPDATE submissions SET first_picked_up_at = COALESCE(first_picked_up_at, ?)
+WHERE drop_point_id = ? AND id = ? AND status IN (?, ?)`,
+		formatTime(now), dropPointID, submissionID,
+		string(droppoint.SubmissionStatusReady), string(droppoint.SubmissionStatusAcknowledged),
 	)
 	if err != nil {
-		return fmt.Errorf("fail drop point %q: %w", id, err)
+		return fmt.Errorf("mark submission picked up %q/%q: %w", dropPointID, submissionID, err)
 	}
 	changed, err := result.RowsAffected()
 	if err != nil {
-		return fmt.Errorf("fail drop point %q: rows affected: %w", id, err)
+		return err
 	}
 	if changed == 1 {
 		return nil
 	}
-	dp, err := r.FindDropPointByID(ctx, id)
-	if err != nil {
-		return err
+	submission, findErr := r.FindSubmission(ctx, dropPointID, submissionID)
+	if findErr != nil {
+		return findErr
 	}
-	if dp.Status == droppoint.StatusFailed {
-		return nil
-	}
-	return errorForUnavailableStatus(dp.Status)
+	return submissionUnavailableError(submission.Status)
 }
 
-// MarkFirstPickedUp records first_picked_up_at after a successful response
-// write. Ready, closed, and expired are accepted so a concurrent close/expiry
-// cannot erase an event that completed first. It is safe to repeat.
-func (r *Repository) MarkFirstPickedUp(ctx context.Context, id string, now time.Time) error {
-	res, err := r.db.ExecContext(ctx, `
-UPDATE drop_points
-SET first_picked_up_at = COALESCE(first_picked_up_at, ?)
-WHERE id = ? AND status IN (?, ?, ?)`,
-		formatTime(now), id, string(droppoint.StatusReady), string(droppoint.StatusClosed), string(droppoint.StatusExpired),
+func (r *Repository) AcknowledgeSubmission(ctx context.Context, dropPointID, submissionID string, now time.Time) error {
+	result, err := r.db.ExecContext(ctx, `
+UPDATE submissions SET status = ?, acknowledged_at = COALESCE(acknowledged_at, ?)
+WHERE drop_point_id = ? AND id = ? AND status = ?`,
+		string(droppoint.SubmissionStatusAcknowledged), formatTime(now), dropPointID, submissionID, string(droppoint.SubmissionStatusReady),
 	)
 	if err != nil {
-		return fmt.Errorf("mark first pickup %q: %w", id, err)
+		return fmt.Errorf("acknowledge submission %q/%q: %w", dropPointID, submissionID, err)
 	}
-	changed, err := res.RowsAffected()
+	changed, err := result.RowsAffected()
 	if err != nil {
-		return fmt.Errorf("mark first pickup %q: rows affected: %w", id, err)
+		return err
 	}
 	if changed == 1 {
 		return nil
 	}
-	dp, err := r.FindDropPointByID(ctx, id)
-	if err != nil {
-		return err
+	submission, findErr := r.FindSubmission(ctx, dropPointID, submissionID)
+	if findErr != nil {
+		return findErr
 	}
-	if dp.Status == droppoint.StatusFailed {
-		return droppoint.ErrDropPointFailed
+	if submission.Status == droppoint.SubmissionStatusAcknowledged {
+		return nil
 	}
-	return droppoint.ErrDropPointNotOpen
+	return submissionUnavailableError(submission.Status)
 }
 
-// CloseDropPoint marks a drop point closed. Closing an already closed drop point
-// is a no-op.
+func (r *Repository) FailSubmission(ctx context.Context, dropPointID, submissionID string, now time.Time) error {
+	result, err := r.db.ExecContext(ctx, `
+UPDATE submissions SET status = ?, failed_at = COALESCE(failed_at, ?)
+WHERE drop_point_id = ? AND id = ? AND status IN (?, ?)`,
+		string(droppoint.SubmissionStatusFailed), formatTime(now), dropPointID, submissionID,
+		string(droppoint.SubmissionStatusReceiving), string(droppoint.SubmissionStatusReady),
+	)
+	if err != nil {
+		return fmt.Errorf("fail submission %q/%q: %w", dropPointID, submissionID, err)
+	}
+	changed, err := result.RowsAffected()
+	if err == nil && changed == 1 {
+		return nil
+	}
+	submission, findErr := r.FindSubmission(ctx, dropPointID, submissionID)
+	if findErr != nil {
+		return findErr
+	}
+	if submission.Status == droppoint.SubmissionStatusFailed {
+		return nil
+	}
+	return submissionUnavailableError(submission.Status)
+}
+
+func (r *Repository) ClearSubmissionFiles(ctx context.Context, dropPointID, submissionID string) error {
+	_, err := r.db.ExecContext(ctx, `UPDATE submissions SET envelope_path = NULL, payload_path = NULL WHERE drop_point_id = ? AND id = ?`, dropPointID, submissionID)
+	if err != nil {
+		return fmt.Errorf("clear submission file pointers %q/%q: %w", dropPointID, submissionID, err)
+	}
+	return nil
+}
+
+func (r *Repository) ClearDropPointFiles(ctx context.Context, dropPointID string) error {
+	_, err := r.db.ExecContext(ctx, `UPDATE submissions SET envelope_path = NULL, payload_path = NULL WHERE drop_point_id = ?`, dropPointID)
+	if err != nil {
+		return fmt.Errorf("clear drop point submission file pointers %q: %w", dropPointID, err)
+	}
+	return nil
+}
+
 func (r *Repository) CloseDropPoint(ctx context.Context, id string, now time.Time) error {
 	dp, err := r.FindDropPointByID(ctx, id)
 	if err != nil {
@@ -297,51 +367,71 @@ func (r *Repository) CloseDropPoint(ctx context.Context, id string, now time.Tim
 	if dp.Status == droppoint.StatusClosed {
 		return nil
 	}
-	if dp.Status == droppoint.StatusExpired || dp.IsExpiredAt(now) {
-		if err := r.markExpired(ctx, id); err != nil {
-			return err
+	if err := droppoint.RequireOpen(*dp, now); err != nil {
+		if errors.Is(err, droppoint.ErrDropPointExpired) {
+			if markErr := r.markExpired(ctx, id); markErr != nil {
+				return markErr
+			}
 		}
-		return droppoint.ErrDropPointExpired
+		return err
 	}
-	if dp.Status == droppoint.StatusFailed {
-		return droppoint.ErrDropPointFailed
-	}
-	res, err := r.db.ExecContext(ctx, `
-UPDATE drop_points
-SET status = ?, closed_at = ?, receiving_started_at = NULL
-WHERE id = ? AND status IN (?, ?, ?) AND expires_at > ?`,
-		string(droppoint.StatusClosed), formatTime(now), id,
-		string(droppoint.StatusOpen), string(droppoint.StatusReceiving), string(droppoint.StatusReady), formatTime(now),
-	)
+	result, err := r.db.ExecContext(ctx, `UPDATE drop_points SET status = ?, closed_at = ? WHERE id = ? AND status = ? AND expires_at > ?`,
+		string(droppoint.StatusClosed), formatTime(now), id, string(droppoint.StatusOpen), formatTime(now))
 	if err != nil {
 		return fmt.Errorf("close drop point %q: %w", id, err)
 	}
-	if changed, err := res.RowsAffected(); err == nil && changed == 1 {
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("close drop point %q: rows affected: %w", id, err)
+	}
+	if changed == 1 {
 		return nil
 	}
-	err = r.classifyMutationMiss(ctx, id, now)
-	if errors.Is(err, droppoint.ErrDropPointClosed) {
+	dp, err = r.FindDropPointByID(ctx, id)
+	if err != nil {
+		return err
+	}
+	if dp.Status == droppoint.StatusClosed {
 		return nil
 	}
-	return err
+	if err := droppoint.RequireOpen(*dp, now); errors.Is(err, droppoint.ErrDropPointExpired) {
+		if markErr := r.markExpired(ctx, id); markErr != nil {
+			return markErr
+		}
+		return err
+	} else if err != nil {
+		return err
+	}
+	return droppoint.ErrDropPointNotOpen
 }
 
-// ExpireDropPoints marks all expired non-terminal drop points expired and
-// returns the affected rows for cleanup.
+func (r *Repository) FailDropPoint(ctx context.Context, id string, now time.Time) error {
+	result, err := r.db.ExecContext(ctx, `
+UPDATE drop_points SET status = ?, failed_at = COALESCE(failed_at, ?)
+WHERE id = ? AND status = ?`, string(droppoint.StatusFailed), formatTime(now), id, string(droppoint.StatusOpen))
+	if err != nil {
+		return fmt.Errorf("fail drop point %q: %w", id, err)
+	}
+	changed, err := result.RowsAffected()
+	if err == nil && changed == 1 {
+		return nil
+	}
+	dp, findErr := r.FindDropPointByID(ctx, id)
+	if findErr != nil {
+		return findErr
+	}
+	if dp.Status == droppoint.StatusFailed {
+		return nil
+	}
+	return unavailableDropPointError(dp.Status)
+}
+
 func (r *Repository) ExpireDropPoints(ctx context.Context, now time.Time) ([]droppoint.DropPoint, error) {
-	rows, err := r.db.QueryContext(ctx, `
-SELECT id, api_token_id, client_name, display_name, drop_token_hash, pickup_token_hash, status,
-       payload_path, envelope_path, encrypted_size, created_at, dropped_at, receiving_started_at,
-       first_picked_up_at, closed_at, failed_at, expires_at, max_bytes
-FROM drop_points
-WHERE status IN (?, ?, ?) AND expires_at <= ?`,
-		string(droppoint.StatusOpen), string(droppoint.StatusReceiving), string(droppoint.StatusReady), formatTime(now),
-	)
+	rows, err := r.db.QueryContext(ctx, `SELECT `+dropPointColumns+` FROM drop_points WHERE status = ? AND expires_at <= ? ORDER BY id`, string(droppoint.StatusOpen), formatTime(now))
 	if err != nil {
 		return nil, fmt.Errorf("select expired drop points: %w", err)
 	}
 	defer rows.Close()
-
 	var expired []droppoint.DropPoint
 	for rows.Next() {
 		dp, err := scanDropPoint(rows)
@@ -351,9 +441,8 @@ WHERE status IN (?, ?, ?) AND expires_at <= ?`,
 		expired = append(expired, *dp)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("scan expired drop points: %w", err)
+		return nil, err
 	}
-
 	for _, dp := range expired {
 		if err := r.markExpired(ctx, dp.ID); err != nil {
 			return nil, err
@@ -362,84 +451,52 @@ WHERE status IN (?, ?, ?) AND expires_at <= ?`,
 	return expired, nil
 }
 
-// ReceivingDropPoints returns all in-flight attempts. It is intended for
-// startup reconciliation before the server can accept a new upload.
-func (r *Repository) ReceivingDropPoints(ctx context.Context) ([]droppoint.DropPoint, error) {
-	return r.queryMany(ctx, `
-SELECT id, api_token_id, client_name, display_name, drop_token_hash, pickup_token_hash, status,
-       payload_path, envelope_path, encrypted_size, created_at, dropped_at, receiving_started_at,
-       first_picked_up_at, closed_at, failed_at, expires_at, max_bytes
-FROM drop_points
-WHERE status = ?
-ORDER BY id`, string(droppoint.StatusReceiving))
+func (r *Repository) ReceivingSubmissions(ctx context.Context) ([]droppoint.Submission, error) {
+	return r.querySubmissions(ctx, `SELECT `+submissionColumns+` FROM submissions WHERE status = ? ORDER BY drop_point_id, id`, string(droppoint.SubmissionStatusReceiving))
 }
 
-// ReceivingDropPointsStartedBefore returns interrupted receiving attempts whose
-// leases started at or before cutoff. A missing timestamp is treated as stale
-// internal state and is included for reconciliation.
-func (r *Repository) ReceivingDropPointsStartedBefore(ctx context.Context, cutoff time.Time) ([]droppoint.DropPoint, error) {
-	return r.queryMany(ctx, `
-SELECT id, api_token_id, client_name, display_name, drop_token_hash, pickup_token_hash, status,
-       payload_path, envelope_path, encrypted_size, created_at, dropped_at, receiving_started_at,
-       first_picked_up_at, closed_at, failed_at, expires_at, max_bytes
-FROM drop_points
-WHERE status = ? AND (receiving_started_at IS NULL OR receiving_started_at <= ?)
-ORDER BY id`, string(droppoint.StatusReceiving), formatTime(cutoff))
+func (r *Repository) ReceivingSubmissionsStartedBefore(ctx context.Context, cutoff time.Time) ([]droppoint.Submission, error) {
+	return r.querySubmissions(ctx, `SELECT `+submissionColumns+` FROM submissions WHERE status = ? AND receiving_started_at <= ? ORDER BY drop_point_id, id`, string(droppoint.SubmissionStatusReceiving), formatTime(cutoff))
 }
 
-// TerminalDropPoints returns every terminal row so cleanup can retry deleting
-// ciphertext after interruption, including rows whose pointers were already
-// cleared before a racing filesystem write completed.
+func (r *Repository) CleanupSubmissions(ctx context.Context) ([]droppoint.Submission, error) {
+	return r.querySubmissions(ctx, `SELECT `+submissionColumns+` FROM submissions WHERE status IN (?, ?) ORDER BY drop_point_id, id`, string(droppoint.SubmissionStatusAcknowledged), string(droppoint.SubmissionStatusFailed))
+}
+
+func (r *Repository) SubmissionFilesForDropPoint(ctx context.Context, dropPointID string) ([]droppoint.Submission, error) {
+	return r.querySubmissions(ctx, `SELECT `+submissionColumns+` FROM submissions WHERE drop_point_id = ? AND (envelope_path IS NOT NULL OR payload_path IS NOT NULL) ORDER BY id`, dropPointID)
+}
+
 func (r *Repository) TerminalDropPoints(ctx context.Context) ([]droppoint.DropPoint, error) {
-	return r.queryMany(ctx, `
-SELECT id, api_token_id, client_name, display_name, drop_token_hash, pickup_token_hash, status,
-       payload_path, envelope_path, encrypted_size, created_at, dropped_at, receiving_started_at,
-       first_picked_up_at, closed_at, failed_at, expires_at, max_bytes
-FROM drop_points
-WHERE status IN (?, ?, ?)
-ORDER BY id`,
-		string(droppoint.StatusClosed), string(droppoint.StatusExpired), string(droppoint.StatusFailed),
-	)
+	return r.queryDropPoints(ctx, `SELECT `+dropPointColumns+` FROM drop_points WHERE status IN (?, ?, ?) ORDER BY id`, string(droppoint.StatusClosed), string(droppoint.StatusExpired), string(droppoint.StatusFailed))
 }
 
-// DropPointIDs returns the IDs represented by repository rows. Cleanup uses the
-// result to distinguish receiver-owned orphan blob directories from live rows.
 func (r *Repository) DropPointIDs(ctx context.Context) (map[string]struct{}, error) {
-	if err := r.ensureReady(); err != nil {
-		return nil, err
-	}
 	rows, err := r.db.QueryContext(ctx, `SELECT id FROM drop_points`)
 	if err != nil {
-		return nil, fmt.Errorf("select drop point IDs: %w", err)
+		return nil, err
 	}
 	defer rows.Close()
-
 	ids := make(map[string]struct{})
 	for rows.Next() {
 		var id string
 		if err := rows.Scan(&id); err != nil {
-			return nil, fmt.Errorf("scan drop point ID: %w", err)
+			return nil, err
 		}
 		ids[id] = struct{}{}
 	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("scan drop point IDs: %w", err)
-	}
-	return ids, nil
+	return ids, rows.Err()
 }
 
-// PurgeTerminalDropPoints deletes terminal metadata rows whose ciphertext file
-// pointers have already been cleared and whose terminal timestamp is older than
-// cutoff. Closed, expired, and failed rows use their respective terminal time.
 func (r *Repository) PurgeTerminalDropPoints(ctx context.Context, cutoff time.Time) (int, error) {
-	if err := r.ensureReady(); err != nil {
-		return 0, err
-	}
 	result, err := r.db.ExecContext(ctx, `
 DELETE FROM drop_points
 WHERE status IN (?, ?, ?)
-  AND payload_path IS NULL
-  AND envelope_path IS NULL
+  AND NOT EXISTS (
+    SELECT 1 FROM submissions
+    WHERE submissions.drop_point_id = drop_points.id
+      AND (envelope_path IS NOT NULL OR payload_path IS NOT NULL)
+  )
   AND (
     (status = ? AND closed_at IS NOT NULL AND closed_at <= ?)
     OR (status = ? AND expires_at <= ?)
@@ -454,43 +511,53 @@ WHERE status IN (?, ?, ?)
 		return 0, fmt.Errorf("purge terminal drop points: %w", err)
 	}
 	rows, err := result.RowsAffected()
-	if err != nil {
-		return 0, fmt.Errorf("purge terminal drop points: rows affected: %w", err)
-	}
-	return int(rows), nil
+	return int(rows), err
 }
 
-// DeleteDropPointFiles clears persisted file pointers after the imperative shell
-// deletes the corresponding blob directory.
-func (r *Repository) DeleteDropPointFiles(ctx context.Context, id string) error {
-	_, err := r.db.ExecContext(ctx, `
-UPDATE drop_points
-SET payload_path = NULL, envelope_path = NULL, encrypted_size = NULL
-WHERE id = ?`, id)
+func (r *Repository) markExpired(ctx context.Context, id string) error {
+	_, err := r.db.ExecContext(ctx, `UPDATE drop_points SET status = ? WHERE id = ? AND status = ?`, string(droppoint.StatusExpired), id, string(droppoint.StatusOpen))
 	if err != nil {
-		return fmt.Errorf("clear drop point file pointers %q: %w", id, err)
+		return fmt.Errorf("mark drop point expired %q: %w", id, err)
 	}
 	return nil
 }
 
-func (r *Repository) classifyMutationMiss(ctx context.Context, id string, now time.Time) error {
-	dp, err := r.FindDropPointByID(ctx, id)
+func (r *Repository) queryDropPoints(ctx context.Context, query string, args ...any) ([]droppoint.DropPoint, error) {
+	rows, err := r.db.QueryContext(ctx, query, args...)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	if dp.IsExpiredAt(now) {
-		if err := r.markExpired(ctx, id); err != nil {
-			return err
+	defer rows.Close()
+	var result []droppoint.DropPoint
+	for rows.Next() {
+		dp, err := scanDropPoint(rows)
+		if err != nil {
+			return nil, err
 		}
-		return droppoint.ErrDropPointExpired
+		result = append(result, *dp)
 	}
-	return errorForUnavailableStatus(dp.Status)
+	return result, rows.Err()
 }
 
-func errorForUnavailableStatus(status droppoint.Status) error {
+func (r *Repository) querySubmissions(ctx context.Context, query string, args ...any) ([]droppoint.Submission, error) {
+	rows, err := r.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var result []droppoint.Submission
+	for rows.Next() {
+		submission, err := scanSubmission(rows)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, *submission)
+	}
+	return result, rows.Err()
+}
+
+func unavailableDropPointError(status droppoint.Status) error {
 	switch status {
-	case droppoint.StatusReady:
-		return droppoint.ErrDropAlreadyExists
 	case droppoint.StatusClosed:
 		return droppoint.ErrDropPointClosed
 	case droppoint.StatusExpired:
@@ -502,49 +569,17 @@ func errorForUnavailableStatus(status droppoint.Status) error {
 	}
 }
 
-func (r *Repository) markExpired(ctx context.Context, id string) error {
-	_, err := r.db.ExecContext(ctx, `
-UPDATE drop_points
-SET status = ?, receiving_started_at = NULL
-WHERE id = ? AND status IN (?, ?, ?)`,
-		string(droppoint.StatusExpired), id,
-		string(droppoint.StatusOpen), string(droppoint.StatusReceiving), string(droppoint.StatusReady),
-	)
-	if err != nil {
-		return fmt.Errorf("mark drop point expired %q: %w", id, err)
+func submissionUnavailableError(status droppoint.SubmissionStatus) error {
+	switch status {
+	case droppoint.SubmissionStatusAcknowledged:
+		return droppoint.ErrSubmissionAcknowledged
+	case droppoint.SubmissionStatusFailed:
+		return droppoint.ErrSubmissionFailed
+	case droppoint.SubmissionStatusReady:
+		return droppoint.ErrSubmissionAlreadyExists
+	default:
+		return droppoint.ErrSubmissionNotReady
 	}
-	return nil
-}
-
-func (r *Repository) queryOne(ctx context.Context, query string, args ...any) (*droppoint.DropPoint, error) {
-	if err := r.ensureReady(); err != nil {
-		return nil, err
-	}
-	return scanDropPoint(r.db.QueryRowContext(ctx, query, args...))
-}
-
-func (r *Repository) queryMany(ctx context.Context, query string, args ...any) ([]droppoint.DropPoint, error) {
-	if err := r.ensureReady(); err != nil {
-		return nil, err
-	}
-	rows, err := r.db.QueryContext(ctx, query, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var dropPoints []droppoint.DropPoint
-	for rows.Next() {
-		dp, err := scanDropPoint(rows)
-		if err != nil {
-			return nil, err
-		}
-		dropPoints = append(dropPoints, *dp)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return dropPoints, nil
 }
 
 func (r *Repository) ensureReady() error {
@@ -554,32 +589,6 @@ func (r *Repository) ensureReady() error {
 	return nil
 }
 
-func dropPointInsertArgs(dp droppoint.DropPoint) []any {
-	return []any{
-		dp.ID,
-		dp.APITokenID,
-		nullString(dp.ClientName),
-		dp.DisplayName,
-		dp.DropTokenHash,
-		dp.PickupTokenHash,
-		string(dp.Status),
-		nullString(dp.PayloadPath),
-		nullString(dp.EnvelopePath),
-		nullInt64(dp.EncryptedSize, dp.EncryptedSize > 0),
-		formatTime(dp.CreatedAt),
-		nullTime(dp.DroppedAt),
-		nullTime(dp.ReceivingStartedAt),
-		nullTime(dp.FirstPickedUpAt),
-		nullTime(dp.ClosedAt),
-		nullTime(dp.FailedAt),
-		formatTime(dp.ExpiresAt),
-		dp.MaxBytes,
-	}
-}
-
-// IsUniqueConstraint reports whether err wraps a SQLite primary-key or UNIQUE
-// constraint failure. It intentionally checks driver result codes rather than
-// localized or version-specific error text.
 func IsUniqueConstraint(err error) bool {
 	var sqliteErr *sqlite.Error
 	if !errors.As(err, &sqliteErr) {
@@ -598,91 +607,82 @@ type scanner interface {
 }
 
 func scanDropPoint(row scanner) (*droppoint.DropPoint, error) {
-	var (
-		dp                 droppoint.DropPoint
-		clientName         sql.NullString
-		payloadPath        sql.NullString
-		envelopePath       sql.NullString
-		encryptedSize      sql.NullInt64
-		createdAt          string
-		droppedAt          sql.NullString
-		receivingStartedAt sql.NullString
-		firstPickedUpAt    sql.NullString
-		closedAt           sql.NullString
-		failedAt           sql.NullString
-		expiresAt          string
-		status             string
-	)
+	var dp droppoint.DropPoint
+	var clientName, closedAt, failedAt sql.NullString
+	var status, createdAt, expiresAt string
 	if err := row.Scan(
-		&dp.ID,
-		&dp.APITokenID,
-		&clientName,
-		&dp.DisplayName,
-		&dp.DropTokenHash,
-		&dp.PickupTokenHash,
-		&status,
-		&payloadPath,
-		&envelopePath,
-		&encryptedSize,
-		&createdAt,
-		&droppedAt,
-		&receivingStartedAt,
-		&firstPickedUpAt,
-		&closedAt,
-		&failedAt,
-		&expiresAt,
-		&dp.MaxBytes,
+		&dp.ID, &dp.APITokenID, &clientName, &dp.DisplayName, &dp.DropTokenHash, &dp.PickupTokenHash,
+		&status, &createdAt, &closedAt, &failedAt, &expiresAt, &dp.MaxBytes, &dp.MaxPendingSubmissions, &dp.MaxPendingBytes,
 	); err != nil {
 		return nil, err
 	}
+	dp.ClientName = clientName.String
 	dp.Status = droppoint.Status(status)
-	if !dp.Status.Valid() {
+	if dp.Status != droppoint.StatusOpen && dp.Status != droppoint.StatusClosed && dp.Status != droppoint.StatusExpired && dp.Status != droppoint.StatusFailed {
 		return nil, fmt.Errorf("drop point %q has invalid status %q", dp.ID, status)
 	}
-	dp.ClientName = clientName.String
-	dp.PayloadPath = payloadPath.String
-	dp.EnvelopePath = envelopePath.String
-	if encryptedSize.Valid {
-		dp.EncryptedSize = encryptedSize.Int64
-	}
 	var err error
-	dp.CreatedAt, err = parseTime(createdAt)
-	if err != nil {
-		return nil, fmt.Errorf("parse created_at for %q: %w", dp.ID, err)
+	if dp.CreatedAt, err = parseTime(createdAt); err != nil {
+		return nil, err
 	}
-	dp.DroppedAt, err = parseNullTime(droppedAt)
-	if err != nil {
-		return nil, fmt.Errorf("parse dropped_at for %q: %w", dp.ID, err)
+	if dp.ClosedAt, err = parseNullTime(closedAt); err != nil {
+		return nil, err
 	}
-	dp.ReceivingStartedAt, err = parseNullTime(receivingStartedAt)
-	if err != nil {
-		return nil, fmt.Errorf("parse receiving_started_at for %q: %w", dp.ID, err)
+	if dp.FailedAt, err = parseNullTime(failedAt); err != nil {
+		return nil, err
 	}
-	dp.FirstPickedUpAt, err = parseNullTime(firstPickedUpAt)
-	if err != nil {
-		return nil, fmt.Errorf("parse first_picked_up_at for %q: %w", dp.ID, err)
-	}
-	dp.ClosedAt, err = parseNullTime(closedAt)
-	if err != nil {
-		return nil, fmt.Errorf("parse closed_at for %q: %w", dp.ID, err)
-	}
-	dp.FailedAt, err = parseNullTime(failedAt)
-	if err != nil {
-		return nil, fmt.Errorf("parse failed_at for %q: %w", dp.ID, err)
-	}
-	dp.ExpiresAt, err = parseTime(expiresAt)
-	if err != nil {
-		return nil, fmt.Errorf("parse expires_at for %q: %w", dp.ID, err)
+	if dp.ExpiresAt, err = parseTime(expiresAt); err != nil {
+		return nil, err
 	}
 	return &dp, nil
 }
 
-func nullString(value string) sql.NullString {
-	return sql.NullString{String: value, Valid: value != ""}
+func scanSubmission(row scanner) (*droppoint.Submission, error) {
+	var submission droppoint.Submission
+	var status, createdAt, receivingStartedAt string
+	var envelopePath, payloadPath, droppedAt, firstPickedUpAt, acknowledgedAt, failedAt sql.NullString
+	var encryptedSize sql.NullInt64
+	if err := row.Scan(
+		&submission.ID, &submission.DropPointID, &status, &envelopePath, &payloadPath, &encryptedSize,
+		&createdAt, &receivingStartedAt, &droppedAt, &firstPickedUpAt, &acknowledgedAt, &failedAt,
+	); err != nil {
+		return nil, err
+	}
+	submission.Status = droppoint.SubmissionStatus(status)
+	switch submission.Status {
+	case droppoint.SubmissionStatusReceiving, droppoint.SubmissionStatusReady, droppoint.SubmissionStatusAcknowledged, droppoint.SubmissionStatusFailed:
+	default:
+		return nil, fmt.Errorf("submission %q/%q has invalid status %q", submission.DropPointID, submission.ID, status)
+	}
+	submission.EnvelopePath = envelopePath.String
+	submission.PayloadPath = payloadPath.String
+	if encryptedSize.Valid {
+		submission.EncryptedSize = encryptedSize.Int64
+	}
+	var err error
+	if submission.CreatedAt, err = parseTime(createdAt); err != nil {
+		return nil, err
+	}
+	if submission.ReceivingStartedAt, err = parseTime(receivingStartedAt); err != nil {
+		return nil, err
+	}
+	if submission.DroppedAt, err = parseNullTime(droppedAt); err != nil {
+		return nil, err
+	}
+	if submission.FirstPickedUpAt, err = parseNullTime(firstPickedUpAt); err != nil {
+		return nil, err
+	}
+	if submission.AcknowledgedAt, err = parseNullTime(acknowledgedAt); err != nil {
+		return nil, err
+	}
+	if submission.FailedAt, err = parseNullTime(failedAt); err != nil {
+		return nil, err
+	}
+	return &submission, nil
 }
 
-func nullInt64(value int64, valid bool) sql.NullInt64 {
-	return sql.NullInt64{Int64: value, Valid: valid}
+func nullString(value string) sql.NullString {
+	return sql.NullString{String: value, Valid: value != ""}
 }
 
 func nullTime(value *time.Time) sql.NullString {

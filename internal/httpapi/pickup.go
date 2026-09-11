@@ -11,29 +11,67 @@ import (
 	"os"
 	"time"
 
+	"github.com/shunichironomura/droppoint/internal/cryptoenv"
 	"github.com/shunichironomura/droppoint/internal/droppoint"
+	"github.com/shunichironomura/droppoint/internal/token"
 )
 
 const pickupFinalizationTimeout = 10 * time.Second
 
-// HandlePickupPayload handles GET /api/drop-points/:drop_point_id/pickup.
-func HandlePickupPayload(deps Dependencies) http.HandlerFunc {
+func HandlePickupSubmission(deps Dependencies) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("drop_point_id")
 		dp, ok := authorizePickup(w, r, deps, id)
-		if !ok {
+		if !ok || !requireOpenDropPoint(w, dp) {
 			return
 		}
-		if dp.Status != droppoint.StatusReady {
-			writePickupUnavailable(w, dp.Status)
+		submissionID := r.PathValue("submission_id")
+		if !token.ValidSubmissionID(submissionID) {
+			writeError(w, http.StatusNotFound, "submission_not_found", "submission not found")
 			return
 		}
-		if dp.EnvelopePath == "" || dp.PayloadPath == "" {
-			failCorruptDropPoint(r.Context(), deps, id, "missing_blob_pointer")
+		submission, err := deps.Repository.FindSubmission(r.Context(), id, submissionID)
+		if err != nil {
+			writeSubmissionUnavailable(w, err)
+			return
+		}
+		if submission.Status != droppoint.SubmissionStatusReady {
+			writeSubmissionUnavailable(w, submissionStatusError(submission.Status))
+			return
+		}
+		if submission.EnvelopePath == "" || submission.PayloadPath == "" {
+			failCorruptSubmission(r.Context(), deps, id, submissionID, "missing_blob_pointer")
 			writeError(w, http.StatusInternalServerError, "payload_unavailable", "stored payload is unavailable")
 			return
 		}
 		if deps.BlobStore == nil {
+			writeError(w, http.StatusInternalServerError, "payload_unavailable", "stored payload is unavailable")
+			return
+		}
+		envelope, err := deps.BlobStore.ReadEnvelope(r.Context(), submission.EnvelopePath)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				failCorruptSubmission(r.Context(), deps, id, submissionID, "missing_envelope_blob")
+			}
+			writeError(w, http.StatusInternalServerError, "payload_unavailable", "stored envelope is unavailable")
+			return
+		}
+		if _, err := cryptoenv.ValidateEnvelopeJSON(envelope); err != nil {
+			failCorruptSubmission(r.Context(), deps, id, submissionID, "invalid_envelope_blob")
+			writeError(w, http.StatusInternalServerError, "payload_unavailable", "stored envelope is unavailable")
+			return
+		}
+		payload, payloadSize, err := deps.BlobStore.OpenPayload(r.Context(), submission.PayloadPath)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				failCorruptSubmission(r.Context(), deps, id, submissionID, "missing_payload_blob")
+			}
+			writeError(w, http.StatusInternalServerError, "payload_unavailable", "stored payload is unavailable")
+			return
+		}
+		defer payload.Close()
+		if payloadSize != submission.EncryptedSize {
+			failCorruptSubmission(r.Context(), deps, id, submissionID, "payload_size_mismatch")
 			writeError(w, http.StatusInternalServerError, "payload_unavailable", "stored payload is unavailable")
 			return
 		}
@@ -44,49 +82,32 @@ func HandlePickupPayload(deps Dependencies) http.HandlerFunc {
 			w.WriteHeader(http.StatusOK)
 			return
 		}
-		envelope, err := deps.BlobStore.ReadEnvelope(r.Context(), dp.EnvelopePath)
-		if err != nil {
-			if errors.Is(err, os.ErrNotExist) {
-				failCorruptDropPoint(r.Context(), deps, id, "missing_envelope_blob")
-			}
-			writeError(w, http.StatusInternalServerError, "payload_unavailable", "stored envelope is unavailable")
-			return
-		}
-		payload, err := deps.BlobStore.OpenPayload(r.Context(), dp.PayloadPath)
-		if err != nil {
-			if errors.Is(err, os.ErrNotExist) {
-				failCorruptDropPoint(r.Context(), deps, id, "missing_payload_blob")
-			}
-			writeError(w, http.StatusInternalServerError, "payload_unavailable", "stored payload is unavailable")
-			return
-		}
-		defer payload.Close()
 
 		if err := writePickupMultipart(w, envelope, payload); err != nil {
 			if deps.Logger != nil {
-				deps.Logger.Printf("event=pickup.response_failed drop_point_id=%s error=%q", id, err)
+				deps.Logger.Printf("event=pickup.response_failed drop_point_id=%s submission_id=%s error=%q", id, submissionID, err)
 			}
 			return
 		}
 		finalizeCtx, cancel := pickupFinalizationContext(r.Context())
 		defer cancel()
-		if err := deps.Repository.MarkFirstPickedUp(finalizeCtx, id, deps.Now().UTC()); err != nil && deps.Logger != nil {
-			deps.Logger.Printf("event=pickup.timestamp_failed drop_point_id=%s error=%q", id, err)
+		if err := deps.Repository.MarkSubmissionPickedUp(finalizeCtx, id, submissionID, deps.Now().UTC()); err != nil && deps.Logger != nil {
+			deps.Logger.Printf("event=pickup.timestamp_failed drop_point_id=%s submission_id=%s error=%q", id, submissionID, err)
 		}
 	}
 }
 
-func failCorruptDropPoint(parent context.Context, deps Dependencies, id string, reason string) {
+func failCorruptSubmission(parent context.Context, deps Dependencies, id, submissionID, reason string) {
 	ctx, cancel := pickupFinalizationContext(parent)
 	defer cancel()
-	if err := deps.Repository.FailDropPoint(ctx, id, deps.Now().UTC()); err != nil {
+	if err := deps.Repository.FailSubmission(ctx, id, submissionID, deps.Now().UTC()); err != nil {
 		if deps.Logger != nil {
-			deps.Logger.Printf("event=drop.fail_transition_failed drop_point_id=%s reason=%s error=%q", id, reason, err)
+			deps.Logger.Printf("event=submission.fail_transition_failed drop_point_id=%s submission_id=%s reason=%s error=%q", id, submissionID, reason, err)
 		}
 		return
 	}
 	if deps.Logger != nil {
-		deps.Logger.Printf("event=drop.failed_terminal drop_point_id=%s reason=%s", id, reason)
+		deps.Logger.Printf("event=submission.failed_terminal drop_point_id=%s submission_id=%s reason=%s", id, submissionID, reason)
 	}
 }
 
@@ -130,17 +151,13 @@ func writePickupPart(writer *multipart.Writer, name string, contentType string, 
 	return err
 }
 
-func writePickupUnavailable(w http.ResponseWriter, status droppoint.Status) {
+func submissionStatusError(status droppoint.SubmissionStatus) error {
 	switch status {
-	case droppoint.StatusOpen, droppoint.StatusReceiving:
-		writeError(w, http.StatusConflict, "drop_not_ready", "drop point is not ready for pickup")
-	case droppoint.StatusClosed:
-		writeError(w, http.StatusGone, "drop_point_closed", "drop point is closed")
-	case droppoint.StatusExpired:
-		writeError(w, http.StatusGone, "drop_point_expired", "drop point has expired")
-	case droppoint.StatusFailed:
-		writeError(w, http.StatusGone, "drop_point_failed", "drop point failed internally")
+	case droppoint.SubmissionStatusAcknowledged:
+		return droppoint.ErrSubmissionAcknowledged
+	case droppoint.SubmissionStatusFailed:
+		return droppoint.ErrSubmissionFailed
 	default:
-		writeError(w, http.StatusConflict, "drop_not_ready", "drop point is not ready for pickup")
+		return droppoint.ErrSubmissionNotReady
 	}
 }

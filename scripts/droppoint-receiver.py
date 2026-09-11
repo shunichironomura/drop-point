@@ -47,13 +47,20 @@ def main() -> int:
     status = subcommands.add_parser("status", help="Print receiver-visible drop point status")
     status.add_argument("--state", type=Path, default=Path(".local/droppoint-receiver-state.json"))
 
-    pickup = subcommands.add_parser("pickup", help="Pick up, decrypt, and write files")
+    list_command = subcommands.add_parser("list", help="List ready submissions")
+    list_command.add_argument("--state", type=Path, default=Path(".local/droppoint-receiver-state.json"))
+
+    pickup = subcommands.add_parser("pickup", help="Pick up, decrypt, install, and acknowledge ready submissions")
     pickup.add_argument("--state", type=Path, default=Path(".local/droppoint-receiver-state.json"))
     pickup.add_argument("--out-dir", type=Path, default=Path(".local/droppoint-pickup"))
-    pickup.add_argument("--wait", action="store_true", help="Poll until ready before pickup")
+    pickup.add_argument("--submission-id", help="Process only this ready submission")
+    pickup.add_argument("--wait", action="store_true", help="Poll until at least one requested submission is ready")
     pickup.add_argument("--timeout", type=float, default=120.0)
     pickup.add_argument("--interval", type=float, default=1.0)
-    pickup.add_argument("--close", action=argparse.BooleanOptionalAction, default=True, help="Close after durable bundle installation")
+    pickup.add_argument("--close", action="store_true", help="Close the reusable drop point after processing the current queue")
+
+    close = subcommands.add_parser("close", help="Close the reusable drop point and delete remaining ciphertext")
+    close.add_argument("--state", type=Path, default=Path(".local/droppoint-receiver-state.json"))
 
     args = parser.parse_args()
     try:
@@ -65,8 +72,17 @@ def main() -> int:
                 status_result = get_status(state)
                 print(json.dumps(status_result, indent=2))
                 discard_private_key_if_terminal(args.state, state, status_result)
+            case "list":
+                state = load_state(args.state)
+                print(json.dumps(list_submissions(state), indent=2))
             case "pickup":
                 pickup_drop(args)
+            case "close":
+                state = load_state(args.state)
+                close_drop_point(state)
+                print("closed remote drop point")
+                if discard_private_key(args.state, state):
+                    print(f"removed recipient_private_key from {args.state}")
         return 0
     except Exception as exc:  # noqa: BLE001 - CLI should report any failure clearly.
         print(f"receiver error: {exc}", file=sys.stderr)
@@ -81,7 +97,6 @@ def create_drop_point(args: argparse.Namespace) -> None:
             "client_name": args.client_name,
             "ttl_seconds": args.ttl_seconds,
             "max_bytes": args.max_bytes,
-            "single_use": True,
         }
     ).encode("utf-8")
     created = json_request(
@@ -104,6 +119,9 @@ def create_drop_point(args: argparse.Namespace) -> None:
         "drop_link_with_fragment": drop_link_with_fragment,
         "expires_at": created["expires_at"],
         "max_bytes": created["max_bytes"],
+        "max_pending_submissions": created["max_pending_submissions"],
+        "max_pending_bytes": created["max_pending_bytes"],
+        "installed_submissions": {},
     }
     atomic_write_private_json(args.state, state)
     print(f"State written to: {args.state}")
@@ -114,28 +132,17 @@ def create_drop_point(args: argparse.Namespace) -> None:
 
 def pickup_drop(args: argparse.Namespace) -> None:
     state = load_state(args.state)
-    installed = installed_bundle_from_state(state)
-    if installed is None:
-        if args.wait:
-            wait_until_ready(state, args.timeout, args.interval)
-        envelope_json, encrypted_payload = pickup_ciphertext(state)
-        identity = encrypted_bundle_identity(envelope_json, encrypted_payload)
-        files = decrypt_bundle(b64u_decode_from_state(state, "recipient_private_key"), envelope_json, encrypted_payload)
-        installed = install_bundle(args.out_dir, state["drop_point_id"], identity, files)
-        durable_state = dict(state)
-        durable_state["installed_bundle"] = {
-            "identity": installed.identity,
-            "path": str(installed.path.resolve()),
-        }
-        atomic_write_private_json(args.state, durable_state)
-        state.clear()
-        state.update(durable_state)
-        action = "verified" if installed.already_installed else "installed"
-        print(f"{action} durable bundle: {installed.path}")
-        for name in installed.files:
-            print(f"  {name}")
-    else:
-        print(f"verified previously installed bundle: {installed.path}")
+    resume_pending_acknowledgements(args.state, state)
+    submissions = wait_until_ready(state, args.submission_id, args.timeout, args.interval) if args.wait else list_submissions(state)
+    if args.submission_id:
+        submissions = [submission for submission in submissions if submission.get("submission_id") == args.submission_id]
+    if not submissions:
+        print("no ready submissions")
+    for submission in submissions:
+        submission_id = submission.get("submission_id")
+        if not isinstance(submission_id, str):
+            raise ValueError("submission list contains an invalid submission_id")
+        pickup_submission(args.state, args.out_dir, state, submission_id)
 
     if args.close:
         close_drop_point(state)
@@ -144,17 +151,35 @@ def pickup_drop(args: argparse.Namespace) -> None:
             print(f"removed recipient_private_key from {args.state}")
 
 
-def wait_until_ready(state: dict, timeout: float, interval: float) -> None:
+def pickup_submission(state_path: Path, out_dir: Path, state: dict, submission_id: str) -> None:
+    installed = installed_submission_from_state(state, submission_id)
+    if installed is None:
+        envelope_json, encrypted_payload = pickup_ciphertext(state, submission_id)
+        identity = encrypted_bundle_identity(envelope_json, encrypted_payload)
+        files = decrypt_bundle(b64u_decode_from_state(state, "recipient_private_key"), envelope_json, encrypted_payload)
+        installed = install_bundle(out_dir, state["drop_point_id"], submission_id, identity, files)
+        update_installed_submission(state_path, state, submission_id, installed, acknowledged=False)
+        action = "verified" if installed.already_installed else "installed"
+        print(f"{action} durable bundle for {submission_id}: {installed.path}")
+        for name in installed.files:
+            print(f"  {name}")
+    else:
+        print(f"verified previously installed bundle for {submission_id}: {installed.path}")
+    acknowledge_submission(state, submission_id)
+    update_installed_submission(state_path, state, submission_id, installed, acknowledged=True)
+    print(f"acknowledged {submission_id}")
+
+
+def wait_until_ready(state: dict, submission_id: str | None, timeout: float, interval: float) -> list[dict]:
     deadline = time.monotonic() + timeout
     while True:
-        status = get_status(state)
-        print(f"status={status['status']}")
-        if status["status"] == "ready":
-            return
-        if status["status"] in {"closed", "expired", "failed"}:
-            raise RuntimeError(f"drop point is terminal: {status['status']}")
+        submissions = list_submissions(state)
+        ready = [submission for submission in submissions if submission.get("submission_id") == submission_id] if submission_id else submissions
+        print(f"ready_submissions={len(submissions)}")
+        if ready:
+            return submissions
         if time.monotonic() >= deadline:
-            raise TimeoutError("timed out waiting for drop point to become ready")
+            raise TimeoutError("timed out waiting for a ready submission")
         time.sleep(interval)
 
 
@@ -162,13 +187,33 @@ def get_status(state: dict) -> dict:
     return json_request("GET", api_url(state, f"/api/drop-points/{state['drop_point_id']}/status"), token=state["pickup_token"])
 
 
-def pickup_ciphertext(state: dict) -> tuple[bytes, bytes]:
+def list_submissions(state: dict) -> list[dict]:
+    response = json_request(
+        "GET",
+        api_url(state, f"/api/drop-points/{state['drop_point_id']}/submissions"),
+        token=state["pickup_token"],
+    )
+    submissions = response.get("submissions")
+    if not isinstance(submissions, list) or not all(isinstance(submission, dict) for submission in submissions):
+        raise ValueError("submission list response is invalid")
+    return submissions
+
+
+def pickup_ciphertext(state: dict, submission_id: str) -> tuple[bytes, bytes]:
     content_type, body = raw_request(
         "GET",
-        api_url(state, f"/api/drop-points/{state['drop_point_id']}/pickup"),
+        api_url(state, f"/api/drop-points/{state['drop_point_id']}/submissions/{parse.quote(submission_id, safe='')}/pickup"),
         token=state["pickup_token"],
     )
     return parse_pickup_multipart(content_type, body)
+
+
+def acknowledge_submission(state: dict, submission_id: str) -> None:
+    raw_request(
+        "DELETE",
+        api_url(state, f"/api/drop-points/{state['drop_point_id']}/submissions/{parse.quote(submission_id, safe='')}"),
+        token=state["pickup_token"],
+    )
 
 
 def close_drop_point(state: dict) -> None:
@@ -191,18 +236,58 @@ def discard_private_key(path: Path, state: dict) -> bool:
     return True
 
 
-def installed_bundle_from_state(state: dict) -> BundleInstall | None:
-    installed = state.get("installed_bundle")
+def installed_submission_from_state(state: dict, submission_id: str) -> BundleInstall | None:
+    installed_submissions = state.get("installed_submissions", {})
+    if not isinstance(installed_submissions, dict):
+        raise ValueError("receiver state installed_submissions must be an object")
+    installed = installed_submissions.get(submission_id)
     if installed is None:
         return None
     if not isinstance(installed, dict):
-        raise ValueError("receiver state installed_bundle must be an object")
+        raise ValueError(f"receiver state entry for {submission_id} must be an object")
     identity = installed.get("identity")
     path = installed.get("path")
     drop_point_id = state.get("drop_point_id")
     if not isinstance(identity, str) or not isinstance(path, str) or not isinstance(drop_point_id, str):
-        raise ValueError("receiver state has an invalid installed_bundle receipt")
-    return verify_installed_bundle(Path(path), drop_point_id, identity)
+        raise ValueError(f"receiver state has an invalid receipt for {submission_id}")
+    return verify_installed_bundle(Path(path), drop_point_id, submission_id, identity)
+
+
+def update_installed_submission(
+    state_path: Path,
+    state: dict,
+    submission_id: str,
+    installed: BundleInstall,
+    *,
+    acknowledged: bool,
+) -> None:
+    durable_state = dict(state)
+    installed_submissions = dict(durable_state.get("installed_submissions", {}))
+    installed_submissions[submission_id] = {
+        "identity": installed.identity,
+        "path": str(installed.path.resolve()),
+        "acknowledged": acknowledged,
+    }
+    durable_state["installed_submissions"] = installed_submissions
+    atomic_write_private_json(state_path, durable_state)
+    state.clear()
+    state.update(durable_state)
+
+
+def resume_pending_acknowledgements(state_path: Path, state: dict) -> None:
+    installed_submissions = state.get("installed_submissions", {})
+    if not isinstance(installed_submissions, dict):
+        raise ValueError("receiver state installed_submissions must be an object")
+    for submission_id, entry in list(installed_submissions.items()):
+        if not isinstance(submission_id, str) or not isinstance(entry, dict):
+            raise ValueError("receiver state has an invalid installed submission entry")
+        if entry.get("acknowledged") is True:
+            continue
+        installed = installed_submission_from_state(state, submission_id)
+        assert installed is not None
+        acknowledge_submission(state, submission_id)
+        update_installed_submission(state_path, state, submission_id, installed, acknowledged=True)
+        print(f"resumed acknowledgement for {submission_id}")
 
 
 def parse_pickup_multipart(content_type: str, body: bytes) -> tuple[bytes, bytes]:

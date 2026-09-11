@@ -3,9 +3,9 @@
 Date: 2026-07-08
 Status: Draft
 
-DropPoint is a temporary encrypted file handoff service. A receiver creates a short-lived drop point and shares a drop link. A sender opens the link, encrypts one or more files locally, and drops a single encrypted bundle. The relay stores ciphertext only. The receiver later picks up the payload and decrypts it locally.
+DropPoint is a temporary encrypted file handoff service. A receiver creates a short-lived drop point and shares a drop link. A sender can keep the link open and submit multiple encrypted bundles over the drop point's lifetime. The relay stores ciphertext only. The receiver picks up, processes, and acknowledges each submission independently.
 
-DropPoint is not a system of record. Drop points are short-lived, single-use handoff points that are explicitly closed by the receiver or expired by time-to-live policy.
+DropPoint is not a system of record. Drop points are short-lived reusable handoff sessions that are explicitly closed by the receiver or expired by time-to-live policy. Each child submission is immutable and remains available until the receiver acknowledges it or the parent drop point ends.
 
 This document is a product, API, data, and protocol specification.
 
@@ -22,8 +22,9 @@ DropPoint provides:
 - A sender-facing drop page that encrypts selected files in the browser.
 - A relay API that stores and returns ciphertext and encrypted metadata only.
 - Separate sender-side drop capability and receiver-side pickup capability.
-- Expiring, single-use drop points.
-- Receiver-side pickup and explicit close semantics.
+- Expiring, reusable drop points with bounded submission queues.
+- Submission-specific pickup and acknowledgement.
+- Receiver-side explicit close semantics.
 
 DropPoint does not provide:
 
@@ -32,7 +33,6 @@ DropPoint does not provide:
 - Anonymous drop point creation.
 - Public pickup URLs.
 - Sender identity proof beyond possession of the drop token.
-- Multiple independently stored payloads per drop point.
 - Resumable or chunked cryptographic payloads.
 - A full account system or admin dashboard.
 - Zero-trust confidentiality against an operator that can serve malicious sender-side JavaScript.
@@ -45,16 +45,18 @@ DropPoint does not provide:
 | DropPoint | Product/service name. |
 | `droppoint` | Operator CLI/binary name for running the relay. |
 | drop point | One temporary handoff session created by a receiver. |
+| submission | One immutable encrypted bundle queued within a drop point. |
 | display name | Human-readable random label for a drop point, such as `calm-otter`, used only as a UX check. |
 | receiver | Client that creates the drop point, owns the private key, and picks up the payload. |
 | sender / uploader | Person or client that opens the drop link and drops encrypted files. |
 | relay | DropPoint HTTP service that stores ciphertext and operational metadata. |
 | drop link | URL shared with the sender. |
 | drop token | Sender-side capability token in the drop link path. |
-| pickup token | Receiver-side capability token used to poll, pick up, and close. |
+| pickup token | Receiver-side capability token used to list, pick up, acknowledge, and close. |
 | drop page | Sender-facing page served at the drop link. |
-| drop | Sender-side encrypted upload action. |
-| pickup | Receiver-side encrypted payload retrieval action. |
+| drop | Sender-side encrypted submission action. |
+| pickup | Receiver-side encrypted submission retrieval action. |
+| acknowledge | Receiver confirmation that one submission is durably processed and can be deleted. |
 | close | Receiver-driven cancellation/deletion action. |
 | bundle | Ordered logical set of one or more files before encryption. |
 | payload | Binary AES-GCM ciphertext stream for the concatenated bundle bytes. |
@@ -66,15 +68,16 @@ Protocol terms such as `payload`, `envelope`, `ciphertext`, `nonce`, `AAD`, `pub
 
 1. The receiver authenticates to the relay and creates a drop point.
 2. The receiver locally generates a per-drop-point X25519 key pair.
-3. The relay returns a drop point ID, display name, drop link without fragment, pickup token, expiry time, and max payload size.
+3. The relay returns a drop point ID, display name, drop link without fragment, pickup token, expiry time, payload limit, and queue limits.
 4. The receiver appends the encryption public key fragment to the drop link and displays or shares it alongside the display name, commonly as a QR code.
 5. The sender opens the drop link.
-6. The drop page reads the receiver public key from `location.hash`, fetches sender-safe metadata including the server-bound display name, encrypts a bundle locally, and submits an envelope plus encrypted payload to the relay.
-7. The relay stores the envelope and encrypted payload and marks the drop point `ready` only after durable storage succeeds.
-8. The receiver polls status, picks up the envelope and encrypted payload, decrypts locally, validates the decrypted bundle, stores plaintext in its own system if desired, and then explicitly closes the drop point.
-9. The relay deletes stored ciphertext when the drop point is closed or expires.
+6. For each bundle, the drop page creates a fresh submission ID, reads the receiver public key from `location.hash`, encrypts the bundle locally with fresh sender ephemeral material, and submits the envelope plus encrypted payload.
+7. The relay stores each submission immutably and marks that submission `ready` only after durable storage succeeds. The parent drop point remains `open` and can accept more submissions while queue limits permit.
+8. The receiver lists ready submissions and, for each one, picks up the ciphertext, decrypts and validates it locally, durably stores the plaintext in its own system if desired, and then acknowledges that submission.
+9. The relay deletes acknowledged ciphertext. The receiver explicitly closes the reusable drop point when no more submissions should be accepted.
+10. The relay deletes all remaining ciphertext when the drop point is closed or expires.
 
-A pickup MUST NOT automatically close or delete a drop point. Pickup is repeatable until the drop point is closed or expires.
+A pickup MUST NOT automatically acknowledge a submission or close a drop point. Pickup is repeatable until that submission is acknowledged or the drop point closes or expires.
 
 ## 5. Drop point state model
 
@@ -82,25 +85,32 @@ Drop points use these status values:
 
 | Status | Meaning | Terminal |
 | --- | --- | --- |
-| `open` | Drop point exists and can accept exactly one drop. | No |
-| `receiving` | The relay is receiving a drop stream. | No |
-| `ready` | A durable encrypted payload is available for pickup. | No |
+| `open` | Drop point exists and can accept submissions while its queue has capacity. | No |
 | `closed` | Receiver explicitly closed the drop point. | Yes |
 | `expired` | TTL elapsed and the drop point is no longer usable. | Yes |
 | `failed` | Terminal internal failure requiring cleanup or operator attention. | Yes |
 
+Submissions use these status values:
+
+| Status | Meaning | Terminal |
+| --- | --- | --- |
+| `receiving` | The relay is receiving this submission's stream. | No |
+| `ready` | Durable ciphertext is available for pickup. | No |
+| `acknowledged` | The receiver confirmed durable processing; ciphertext is deleted or queued for deletion. | Yes |
+| `failed` | This submission is corrupt or internally inconsistent and is queued for cleanup. | Yes |
+
 Required transition rules:
 
-- `open` MAY transition to `receiving` when a valid drop starts.
-- `receiving` MUST transition to `ready` only after the envelope and payload are durably stored.
-- A failed or partial drop MUST NOT consume the single-use slot; the relay MUST delete attempt artifacts and return the drop point to `open` unless it has expired or failed terminally.
-- Durable storage failures, including disk-full or write-failure paths, MUST NOT mark a drop point `ready` and MUST NOT consume the single-use slot unless it has expired or failed terminally.
-- The relay MUST durably record when a `receiving` attempt begins. Startup reconciliation MUST recover every interrupted `receiving` attempt before serving requests, and periodic reconciliation MUST recover attempts older than the configured HTTP operation bound plus a conservative grace period.
-- `failed` is reserved for unrecoverable internal inconsistency or corruption. Entering it MUST record `failed_at`; repeating the failure transition is idempotent. Malformed requests, interrupted uploads, and transient storage failures MUST remain recoverable and MUST NOT ordinarily transition to `failed`.
-- A ready row with missing blob pointers/files, or an ambiguous commit/finalization result that leaves metadata `ready` after attempt artifacts were removed, MUST transition to `failed`. Status polling reports `failed`; sender metadata/drop, pickup, and close treat it as terminal/unavailable. Cleanup reconciles its blobs and purges it by `failed_at` retention.
-- `open`, `receiving`, and `ready` MAY transition to `closed` by receiver request.
-- Any non-terminal status whose expiry time has elapsed MUST be treated as expired and MUST NOT accept new drops or pickups.
-- Pickup records `first_picked_up_at` and optionally `last_picked_up_at`; pickup MUST NOT be modeled as a terminal status.
+- An `open` drop point MAY create multiple child submissions.
+- Submission IDs are sender-generated random public identifiers. Reusing an existing ID MUST NOT overwrite or create another submission.
+- A submission starts as `receiving` and MUST transition to `ready` only after its envelope and payload are durably stored.
+- A malformed, interrupted, oversized, or transiently failed upload MUST delete its attempt artifacts and receiving row so the same ID can be retried. It MUST NOT fail or consume the parent drop point.
+- The relay MUST durably record when a submission starts receiving. Startup reconciliation MUST recover every interrupted `receiving` submission before serving requests, and periodic reconciliation MUST recover attempts older than the configured HTTP operation bound plus a conservative grace period.
+- A ready submission with missing blob pointers/files, or an ambiguous finalization result that leaves metadata inconsistent with stored artifacts, MUST transition to submission status `failed`. One failed submission MUST NOT fail its parent session.
+- A ready submission MAY transition to `acknowledged` only by receiver request. Acknowledgement is idempotent and MUST be durably recorded before ciphertext deletion so cleanup can retry interrupted deletion.
+- `open` MAY transition to `closed` by receiver request. Any non-terminal drop point whose expiry time has elapsed MUST be treated as expired. A terminal parent MUST NOT accept uploads, lists, pickups, or acknowledgements.
+- Pickup records submission-specific `first_picked_up_at`; pickup MUST NOT be modeled as a terminal status.
+- `max_pending_submissions` limits the combined count of `receiving` and `ready` submissions. `max_pending_bytes` limits the combined encrypted payload bytes of `ready` submissions. A sender receives a retryable capacity response when either bound is reached.
 
 ## 6. Authentication and capabilities
 
@@ -116,13 +126,13 @@ API tokens are long random secrets. Stored API token material MUST be hashed at 
 
 ### 6.2 Drop token
 
-The drop token is embedded in the drop link path. Possession authorizes the sender to submit exactly one encrypted drop before expiry. It MUST NOT authorize status polling, pickup, or close.
+The drop token is embedded in the drop link path. Possession authorizes the sender to create submissions before expiry, subject to queue limits. It MUST NOT authorize status polling, listing, pickup, acknowledgement, or close.
 
-Because the drop token appears in URL paths, it may be exposed by application, proxy, tunnel, CDN, or browser history logs unless those layers are configured carefully. A leaked drop token within the TTL can let an attacker pre-empt the legitimate sender by dropping junk first; it does not authorize pickup or decryption. Operators MUST redact token-bearing paths and SHOULD keep TTLs short.
+Because the drop token appears in URL paths, it may be exposed by application, proxy, tunnel, CDN, or browser history logs unless those layers are configured carefully. A leaked drop token within the TTL can let an attacker fill the bounded queue with junk; it does not authorize pickup or decryption. Operators MUST redact token-bearing paths and SHOULD keep TTLs short.
 
 ### 6.3 Pickup token
 
-The pickup token is returned only to the receiver at drop point creation. Possession authorizes status polling, pickup, and close for that drop point. It MUST NOT authorize dropping a payload.
+The pickup token is returned only to the receiver at drop point creation. Possession authorizes status polling, submission listing, pickup, acknowledgement, and close for that drop point. It MUST NOT authorize dropping a payload.
 
 Receiver endpoint authorization failures SHOULD avoid revealing whether the drop point ID, pickup token, expiry state, or status caused the rejection.
 
@@ -133,6 +143,7 @@ Capability tokens and public IDs SHOULD use type prefixes for operator readabili
 | Value | Prefix |
 | --- | --- |
 | Drop point ID | `dp_` |
+| Submission ID | `sub_` |
 | Drop token | `drop_` |
 | Pickup token | `pick_` |
 | API token | `api_` |
@@ -161,8 +172,7 @@ Request:
 {
   "client_name": "generic-client",
   "ttl_seconds": 600,
-  "max_bytes": 52428800,
-  "single_use": true
+  "max_bytes": 52428800
 }
 ```
 
@@ -170,7 +180,6 @@ Rules:
 
 - The body MUST be one non-null JSON object sent as `application/json`; media-type parameters such as `charset=utf-8` MAY be accepted.
 - Omitted `ttl_seconds` and `max_bytes` use the configured defaults. When present, either field MUST be a non-null positive integer and MUST NOT exceed its configured maximum; explicit zero and `null` are invalid.
-- DropPoint is always single-use. Omitted `single_use` means `true`; when present it MUST be the boolean `true`, and `false` or `null` are invalid.
 - `client_name` is optional. When present it MUST be a non-null, non-blank string of at most 128 UTF-8 bytes and MUST NOT contain Unicode control (`Cc`) or format (`Cf`) characters.
 - The authenticated API token's active-drop-point quota MUST be enforced.
 - The relay MUST generate a human-readable `display_name` for the drop point using an adjective-noun style such as `calm-otter`.
@@ -185,7 +194,9 @@ Response:
   "drop_link": "https://drop.example.com/drop/drop_...",
   "pickup_token": "pick_...",
   "expires_at": "2026-06-30T12:15:00Z",
-  "max_bytes": 52428800
+  "max_bytes": 52428800,
+  "max_pending_submissions": 10,
+  "max_pending_bytes": 524288000
 }
 ```
 
@@ -224,7 +235,9 @@ Response:
 {
   "display_name": "calm-otter",
   "expires_at": "2026-06-30T12:15:00Z",
-  "max_bytes": 52428800
+  "max_bytes": 52428800,
+  "max_pending_submissions": 10,
+  "max_pending_bytes": 524288000
 }
 ```
 
@@ -234,12 +247,12 @@ Rules:
 - The endpoint MUST expose only sender-safe metadata needed by the static drop page.
 - The returned `display_name` is authoritative for the drop token and is the value the sender page displays.
 - The endpoint MUST NOT expose pickup tokens, drop point IDs, encrypted size, pickup timestamps, storage paths, or receiver-only status details.
-- Unknown, expired, closed, failed, ready, or otherwise unavailable drop points SHOULD avoid exposing their display names.
+- Unknown, expired, closed, failed, or otherwise unavailable drop points SHOULD avoid exposing their display names.
 
 ### 7.4 Submit encrypted drop
 
 ```http
-PUT /api/drops/:drop_token
+PUT /api/drops/:drop_token/submissions/:submission_id
 Content-Type: multipart/form-data; boundary=...
 ```
 
@@ -255,8 +268,11 @@ Rules:
 - The drop token is the only sender-side authorization requirement.
 - Framing is normatively envelope-first and contains exactly two parts: `envelope`, then `payload`; reordered, missing, duplicated, or additional parts are malformed.
 - The envelope part MUST NOT exceed 1048576 bytes (1 MiB). The relay permits at most 65536 bytes (64 KiB) of multipart framing overhead beyond `max_bytes` plus that envelope cap.
-- The relay MUST reject drops for closed, expired, ready, failed, or unknown drop points.
-- Concurrent drop attempts for the same drop point MUST result in at most one committed drop.
+- `submission_id` MUST use the `sub_` prefix and carry 128 to 256 bits of sender-generated CSPRNG entropy encoded as base64url without padding.
+- The relay MUST reject submissions for closed, expired, failed, or unknown drop points.
+- Concurrent attempts for one submission ID MUST result in at most one committed immutable submission.
+- Retrying an already-ready or acknowledged submission ID returns its existing status without replacing ciphertext.
+- The relay MUST reject new submissions with `429 Too Many Requests` while either queue bound is reached. The response is retryable after the receiver acknowledges pending submissions.
 - `max_bytes` applies to the encrypted `payload` part.
 - A committed drop stores one envelope and one encrypted payload.
 - The relay MUST NOT decrypt or require plaintext metadata.
@@ -271,13 +287,14 @@ Rules:
 Response:
 
 ```json
-{ "status": "ready" }
+{ "submission_id": "sub_...", "status": "ready" }
 ```
 
 Error status rules:
 
 - malformed envelope or multipart input: `400 Bad Request`;
 - encrypted payload or request-size violation: `413 Request Entity Too Large`;
+- pending submission count or byte capacity reached: `429 Too Many Requests`;
 - known storage capacity exhaustion, including disk full: `507 Insufficient Storage`;
 - known transient storage unavailability: `503 Service Unavailable`;
 - other durable-storage or internal finalization failures: `500 Internal Server Error`.
@@ -295,21 +312,46 @@ Response:
 
 ```json
 {
-  "status": "ready",
+  "status": "open",
   "display_name": "calm-otter",
-  "encrypted_size": 2849123,
-  "dropped_at": "2026-06-30T12:03:12Z",
-  "first_picked_up_at": null,
-  "expires_at": "2026-06-30T12:15:00Z"
+  "expires_at": "2026-06-30T12:15:00Z",
+  "pending_submissions": 2,
+  "pending_bytes": 5698246,
+  "max_pending_submissions": 10,
+  "max_pending_bytes": 524288000
 }
 ```
 
 The pickup token MUST authorize only its own drop point.
 
-### 7.6 Pick up encrypted payload
+### 7.6 List ready submissions
 
 ```http
-GET /api/drop-points/:drop_point_id/pickup
+GET /api/drop-points/:drop_point_id/submissions
+Authorization: Bearer <pickup-token>
+```
+
+Response:
+
+```json
+{
+  "submissions": [
+    {
+      "submission_id": "sub_...",
+      "encrypted_size": 2849123,
+      "dropped_at": "2026-06-30T12:03:12Z",
+      "first_picked_up_at": null
+    }
+  ]
+}
+```
+
+The response contains all ready submissions ordered by `dropped_at`, then `submission_id`. The queue is bounded, so this endpoint does not paginate in the first implementation.
+
+### 7.7 Pick up encrypted submission
+
+```http
+GET /api/drop-points/:drop_point_id/submissions/:submission_id/pickup
 Authorization: Bearer <pickup-token>
 ```
 
@@ -322,24 +364,33 @@ The response is `multipart/mixed` containing:
 
 Rules:
 
-- Pickup is allowed only for `ready` drop points that have not expired.
-- Pickup is idempotent and repeatable until close or expiry.
+- Pickup is allowed only for ready submissions of an open, unexpired drop point.
+- Pickup is idempotent and repeatable until acknowledgement, close, or expiry.
 - A successful pickup means the relay completed writing the full GET multipart response without a `ResponseWriter` error; it does not claim that the remote client durably received the bytes.
 - After that final write, the relay MUST record `first_picked_up_at` if it was not already set, using a bounded context detached from request cancellation.
 - A concurrent close or expiry MUST NOT erase or prevent recording a pickup whose response write already completed.
 - HEAD requests and failed or partial response writes MUST NOT record a pickup.
-- Pickup MUST NOT delete payload files and MUST NOT close the drop point.
+- Pickup MUST NOT delete payload files, acknowledge the submission, or close the drop point.
 
-### 7.7 Close drop point
+### 7.8 Acknowledge submission
+
+```http
+DELETE /api/drop-points/:drop_point_id/submissions/:submission_id
+Authorization: Bearer <pickup-token>
+```
+
+The relay first durably marks the submission `acknowledged`, then deletes its stored envelope and payload and clears its pointers. Retrying acknowledgement is safe, including after a prior deletion failure. An acknowledged submission no longer counts against queue limits but its metadata row is retained until its parent drop point is purged so a sender retry using the same ID cannot create a replacement.
+
+### 7.9 Close drop point
 
 ```http
 DELETE /api/drop-points/:drop_point_id
 Authorization: Bearer <pickup-token>
 ```
 
-Close deletes stored envelope and payload data if present and marks the drop point `closed`. Close SHOULD be idempotent enough for receiver cleanup flows and MUST tolerate already-deleted envelope or payload files.
+Close marks the drop point `closed` and deletes all child ciphertext if present. Close SHOULD be idempotent enough for receiver cleanup flows and MUST tolerate already-deleted files.
 
-### 7.8 Health check
+### 7.10 Health check
 
 ```http
 GET /health
@@ -360,17 +411,30 @@ A drop point record contains at least:
 | `drop_token_hash` | Hash of sender-side capability token. |
 | `pickup_token_hash` | Hash of receiver-side capability token. |
 | `status` | One of the status values in Section 5. |
+| `created_at` | Drop point creation timestamp. |
+| `closed_at` | Explicit close timestamp. |
+| `failed_at` | Terminal parent-level failure timestamp. |
+| `expires_at` | TTL expiry timestamp. |
+| `max_bytes` | Max encrypted payload size for each submission. |
+| `max_pending_submissions` | Max combined count of receiving and ready children. |
+| `max_pending_bytes` | Max combined encrypted bytes of ready children. |
+
+A submission record contains at least:
+
+| Field | Meaning |
+| --- | --- |
+| `id` | Sender-generated public submission ID, unique within its parent. |
+| `drop_point_id` | Parent drop point ID. |
+| `status` | One of the submission status values in Section 5. |
 | `payload_path` | Storage location for encrypted payload, if present. |
 | `envelope_path` | Storage location for envelope JSON, if present. |
 | `encrypted_size` | Encrypted payload byte length. |
-| `created_at` | Drop point creation timestamp. |
-| `dropped_at` | Durable drop completion timestamp. |
-| `receiving_started_at` | Internal start timestamp for recovery of interrupted receiving attempts. |
+| `created_at` | Submission creation timestamp. |
+| `receiving_started_at` | Start timestamp for interrupted-upload recovery. |
+| `dropped_at` | Durable submission completion timestamp. |
 | `first_picked_up_at` | First successful pickup timestamp. |
-| `closed_at` | Explicit close timestamp. |
-| `failed_at` | Terminal internal inconsistency/corruption timestamp. |
-| `expires_at` | TTL expiry timestamp. |
-| `max_bytes` | Max encrypted payload size for this drop point. |
+| `acknowledged_at` | Receiver acknowledgement timestamp. |
+| `failed_at` | Terminal child failure timestamp. |
 
 The default local implementation uses SQLite for relay metadata and API token hashes. It MUST enable WAL journal mode, foreign-key enforcement, and a busy timeout, and it SHOULD apply the current versioned schema automatically before serving requests, running cleanup, or running token-management CLI commands. DropPoint is unreleased and has no supported legacy databases; an unversioned database containing legacy relay tables MUST be rejected rather than add a `display_name` column with invalid empty values.
 
@@ -385,17 +449,13 @@ CREATE TABLE drop_points (
   drop_token_hash TEXT NOT NULL UNIQUE,
   pickup_token_hash TEXT NOT NULL,
   status TEXT NOT NULL,
-  payload_path TEXT,
-  envelope_path TEXT,
-  encrypted_size INTEGER,
   created_at TEXT NOT NULL,
-  dropped_at TEXT,
-  receiving_started_at TEXT,
-  first_picked_up_at TEXT,
   closed_at TEXT,
   failed_at TEXT,
   expires_at TEXT NOT NULL,
-  max_bytes INTEGER NOT NULL
+  max_bytes INTEGER NOT NULL,
+  max_pending_submissions INTEGER NOT NULL,
+  max_pending_bytes INTEGER NOT NULL
 );
 
 CREATE INDEX idx_drop_points_status_expires_at
@@ -403,6 +463,28 @@ CREATE INDEX idx_drop_points_status_expires_at
 
 CREATE INDEX idx_drop_points_api_token_status
   ON drop_points (api_token_id, status);
+
+CREATE TABLE submissions (
+  id TEXT NOT NULL,
+  drop_point_id TEXT NOT NULL REFERENCES drop_points(id) ON DELETE CASCADE,
+  status TEXT NOT NULL,
+  envelope_path TEXT,
+  payload_path TEXT,
+  encrypted_size INTEGER,
+  created_at TEXT NOT NULL,
+  receiving_started_at TEXT NOT NULL,
+  dropped_at TEXT,
+  first_picked_up_at TEXT,
+  acknowledged_at TEXT,
+  failed_at TEXT,
+  PRIMARY KEY (drop_point_id, id)
+);
+
+CREATE INDEX idx_submissions_drop_point_status_dropped
+  ON submissions (drop_point_id, status, dropped_at, id);
+
+CREATE INDEX idx_submissions_status_receiving_started
+  ON submissions (status, receiving_started_at);
 
 CREATE TABLE api_tokens (
   id TEXT PRIMARY KEY,
@@ -422,15 +504,16 @@ The default local storage layout is:
 ├── relay.db  # drop point metadata and API token hashes
 └── drop-points/
     └── <drop-point-id>/
-        ├── payload.bin
-        └── envelope.json
+        └── <submission-id>/
+            ├── payload.bin
+            └── envelope.json
 ```
 
 `payload.bin` and `envelope.json` are protocol/storage terms and SHOULD keep these names.
 
-The local implementation MUST create the configured data directory and `drop-points/` subdirectory with owner-only permissions. The SQLite main database, live WAL/shared-memory sidecars, stored blob files, and per-drop directories MUST use restrictive owner-only permissions. The database mode MUST be established before WAL mode can create sidecars.
+The local implementation MUST create the configured data directory and `drop-points/` subdirectory with owner-only permissions. The SQLite main database, live WAL/shared-memory sidecars, stored blob files, and per-drop-point and per-submission directories MUST use restrictive owner-only permissions. The database mode MUST be established before WAL mode can create sidecars.
 
-Filesystem blob writes MUST be atomic from the repository point of view: write temporary files, flush file contents where supported, rename into place only after successful writes, and flush the containing directory where supported. Creating a per-drop-point directory MUST be followed by flushing the parent `drop-points/` directory before metadata can commit `ready`; removing a per-drop-point directory MUST be followed by flushing that parent before file pointers are cleared. Close and expiry cleanup MUST be safe to repeat when blob directories or files are already gone. Terminal rows are the durable cleanup queue: every cleanup run MUST reconcile all `closed`, `expired`, and `failed` rows with receiver-owned blob storage, including terminal rows whose file pointers were already cleared. Cleanup MUST also remove receiver-owned drop-point blob directories for which no metadata row exists. A deletion or pointer-clear failure MUST leave work retryable by a later cleanup run.
+Filesystem blob writes MUST be atomic from the repository point of view: write temporary files, flush file contents where supported, rename into place only after successful writes, and flush the containing directory where supported. Creating a per-drop-point directory MUST be followed by flushing the parent `drop-points/` directory, and creating a per-submission directory MUST be followed by flushing its parent before metadata can commit that child `ready`. Removing a submission or drop-point directory MUST likewise flush its parent before file pointers are cleared. Acknowledgement, close, and expiry cleanup MUST be safe to repeat when blob directories or files are already gone. Terminal rows are the durable cleanup queue: cleanup MUST reconcile acknowledged or failed submissions and all `closed`, `expired`, and `failed` parents with receiver-owned blob storage, including rows whose file pointers were already cleared. Cleanup MUST also remove receiver-owned drop-point blob directories for which no metadata row exists. A deletion or pointer-clear failure MUST leave work retryable by a later cleanup run.
 
 ## 9. Configuration surface
 
@@ -829,11 +912,11 @@ Recommended structured log events include:
 ```
 
 ```json
-{ "event": "drop.completed", "drop_point_id": "dp_...", "encrypted_size": 2849123, "dropped_at": "2026-06-30T12:03:12Z" }
+{ "event": "submission.completed", "drop_point_id": "dp_...", "submission_id": "sub_...", "encrypted_size": 2849123, "dropped_at": "2026-06-30T12:03:12Z" }
 ```
 
 ```json
-{ "event": "payload.picked_up", "drop_point_id": "dp_...", "first_pickup": true }
+{ "event": "submission.picked_up", "drop_point_id": "dp_...", "submission_id": "sub_...", "first_pickup": true }
 ```
 
 Metrics SHOULD avoid high-cardinality or sensitive labels such as drop point IDs, token prefixes, IP addresses, filenames, MIME types, and storage paths.
@@ -844,8 +927,8 @@ Recommended metric names include:
 - `droppoint_drop_points_open`
 - `droppoint_drop_points_expired_total`
 - `droppoint_drop_points_closed_total`
-- `droppoint_drops_completed_total`
-- `droppoint_drops_failed_total`
+- `droppoint_submissions_completed_total`
+- `droppoint_submissions_failed_total`
 - `droppoint_pickups_total`
 - `droppoint_payload_bytes_total`
 - `droppoint_cleanup_runs_total`
@@ -864,6 +947,8 @@ The drop page MUST:
 - Let the sender remove individual files from the current selection before dropping.
 - Use the protocol in Section 10.
 - Submit a single envelope and a single encrypted payload.
+- Generate a fresh submission ID and clear the current selection after each successful submission.
+- Remain usable for additional submissions while the parent drop point is open.
 - Display clear states for missing key, unsupported browser, encrypting, dropping, success, expiry, and failure.
 - Use no third-party scripts.
 - Avoid leaking plaintext metadata into URLs, logs, local storage, analytics, or error reporting.
@@ -873,7 +958,7 @@ Recommended English UI copy:
 | UI element | Copy |
 | --- | --- |
 | Page title | `Drop files` |
-| Intro | `This drop point accepts one encrypted file bundle.` |
+| Intro | `Send encrypted file bundles through this drop point while it remains open.` |
 | File picker | `Choose files` |
 | Submit | `Drop encrypted files` |
 | In progress | `Encrypting and dropping files...` |
@@ -887,7 +972,8 @@ Recommended English UI copy:
 The reference `droppoint` binary serves plain HTTP and does not provide certificate/key or built-in TLS configuration. Public/browser deployments MUST use an external TLS terminator such as a reverse proxy, tunnel, CDN, or container ingress. Localhost HTTP remains supported through browser secure-context exceptions. These externally visible requirements hold:
 
 - `/drop/:drop_token` is reachable by sender browsers.
-- `/api/drops/:drop_token` is reachable by sender browsers for metadata lookup and encrypted upload.
+- `/api/drops/:drop_token` is reachable by sender browsers for metadata lookup.
+- `/api/drops/:drop_token/submissions/:submission_id` is reachable by sender browsers for encrypted upload.
 - Sender browsers see an HTTPS origin or another browser-recognized secure context.
 - Receiver APIs are reachable by receiver clients.
 - Request body size limits at the application and every edge layer are compatible with configured `max_bytes` plus multipart overhead.
@@ -907,6 +993,6 @@ Client integrations MUST append durable local records only after:
 5. The complete bundle is staged in an owner-only receiver-controlled directory and every plaintext file is flushed.
 6. A durable bundle identity/receipt and the staging directory are flushed.
 7. The complete bundle directory is atomically published without merging into or overwriting a different existing bundle, and its parent directory is flushed.
-8. Private receiver state durably records enough identity information for a retry to verify the already-installed identical bundle and resume remote close.
+8. Private receiver state durably records enough identity information keyed by submission ID for a retry to verify the already-installed identical bundle and resume acknowledgement.
 
-Only after those steps SHOULD the receiver close the remote drop point. The receiver private key and local recovery state MUST NOT be removed before the bundle and private state are durable and remote close has succeeded.
+Only after those steps SHOULD the receiver acknowledge that submission. It SHOULD then continue processing new submissions while the reusable session is active. The receiver SHOULD close the parent only when it should stop accepting submissions. The receiver private key and local recovery state MUST NOT be removed until the parent has closed or expired and every needed bundle and private-state record is durable.

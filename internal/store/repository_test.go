@@ -3,7 +3,6 @@ package store
 import (
 	"context"
 	"errors"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -12,324 +11,180 @@ import (
 	"github.com/shunichironomura/droppoint/internal/token"
 )
 
-func TestRepositoryCreateLookup(t *testing.T) {
+const (
+	testSubmissionOne = "sub_AAAAAAAAAAAAAAAAAAAAAA"
+	testSubmissionTwo = "sub_AQEBAQEBAQEBAQEBAQEBAQ"
+)
+
+func TestRepositoryCreatesAndAuthorizesReusableDropPoint(t *testing.T) {
 	repo := newTestRepository(t)
 	now := testNow()
 	dp := testDropPoint(t, "dp_one", "drop_one", "pick_one", now)
-
 	insertTestDropPoint(t, repo, dp)
 
-	got, err := repo.FindDropPointByID(context.Background(), dp.ID)
-	if err != nil {
-		t.Fatalf("FindDropPointByID: %v", err)
-	}
-	if got.ID != dp.ID || got.DisplayName != dp.DisplayName || got.DropTokenHash != dp.DropTokenHash || got.PickupTokenHash != dp.PickupTokenHash {
-		t.Fatalf("loaded drop point mismatch: %+v", got)
-	}
-}
-
-func TestRepositoryCreateDropPointWithinQuota(t *testing.T) {
-	repo := newTestRepository(t)
-	now := testNow()
-	first := testDropPoint(t, "dp_quota_one", "drop_quota_one", "pick_quota_one", now)
-	second := testDropPoint(t, "dp_quota_two", "drop_quota_two", "pick_quota_two", now)
-
-	if err := repo.CreateDropPointWithinQuota(context.Background(), first, 1, now); err != nil {
-		t.Fatalf("CreateDropPointWithinQuota first: %v", err)
-	}
-	if err := repo.CreateDropPointWithinQuota(context.Background(), second, 1, now); !errors.Is(err, droppoint.ErrActiveDropPointQuotaExceeded) {
-		t.Fatalf("CreateDropPointWithinQuota second err = %v, want ErrActiveDropPointQuotaExceeded", err)
-	}
-	if _, err := repo.FindDropPointByID(context.Background(), first.ID); err != nil {
-		t.Fatalf("FindDropPointByID first: %v", err)
-	}
-}
-
-func TestRepositoryCreateDropPointWithinQuotaConcurrent(t *testing.T) {
-	repo := newTestRepository(t)
-	now := testNow()
-	const attempts = 8
-
-	dropPoints := make([]droppoint.DropPoint, 0, attempts)
-	for i := range attempts {
-		suffix := string(rune('a' + i))
-		dropPoints = append(dropPoints, testDropPoint(t, "dp_quota_race_"+suffix, "drop_quota_race_"+suffix, "pick_quota_race_"+suffix, now))
-	}
-
-	var wg sync.WaitGroup
-	errs := make(chan error, attempts)
-	for _, dp := range dropPoints {
-		wg.Add(1)
-		go func(dp droppoint.DropPoint) {
-			defer wg.Done()
-			errs <- repo.CreateDropPointWithinQuota(context.Background(), dp, 1, now)
-		}(dp)
-	}
-	wg.Wait()
-	close(errs)
-
-	successes := 0
-	quotaExceeded := 0
-	for err := range errs {
-		switch {
-		case err == nil:
-			successes++
-		case errors.Is(err, droppoint.ErrActiveDropPointQuotaExceeded):
-			quotaExceeded++
-		default:
-			t.Fatalf("unexpected create error: %v", err)
-		}
-	}
-	if successes != 1 || quotaExceeded != attempts-1 {
-		t.Fatalf("successes=%d quotaExceeded=%d, want 1/%d", successes, quotaExceeded, attempts-1)
-	}
-}
-
-func TestRepositoryDetectsUniqueConstraintStructurally(t *testing.T) {
-	repo := newTestRepository(t)
-	now := testNow()
-	dp := testDropPoint(t, "dp_unique", "drop_unique", "pick_unique", now)
-	insertTestDropPoint(t, repo, dp)
-
-	duplicateID := testDropPoint(t, "dp_unique", "drop_unique_other", "pick_unique_other", now)
-	if err := repo.CreateDropPointWithinQuota(context.Background(), duplicateID, 1_000_000, now); !IsUniqueConstraint(err) {
-		t.Fatalf("duplicate ID err = %v, want structural unique constraint", err)
-	}
-
-	duplicateDropToken := testDropPoint(t, "dp_unique_other", "drop_unique", "pick_unique_other_two", now)
-	if err := repo.CreateDropPointWithinQuota(context.Background(), duplicateDropToken, 1_000_000, now); !IsUniqueConstraint(err) {
-		t.Fatalf("duplicate drop token err = %v, want structural unique constraint", err)
-	}
-}
-
-func TestRepositoryDropTokenLookupAndReceivingAbort(t *testing.T) {
-	repo := newTestRepository(t)
-	now := testNow()
-	dp := testDropPoint(t, "dp_drop", "drop_secret", "pick_secret", now)
-	insertTestDropPoint(t, repo, dp)
-
-	open, err := repo.FindOpenDropPointByDropTokenHash(context.Background(), token.HashSecret("drop_secret"), now)
+	got, err := repo.FindOpenDropPointByDropTokenHash(context.Background(), token.HashSecret("drop_one"), now)
 	if err != nil {
 		t.Fatalf("FindOpenDropPointByDropTokenHash: %v", err)
 	}
-	if open.ID != dp.ID {
-		t.Fatalf("open ID = %q, want %q", open.ID, dp.ID)
+	if got.ID != dp.ID || got.MaxPendingSubmissions != 2 || got.MaxPendingBytes != 12 {
+		t.Fatalf("drop point = %+v", got)
 	}
-	if _, err := repo.FindOpenDropPointByDropTokenHash(context.Background(), token.HashSecret("wrong"), now); !errors.Is(err, droppoint.ErrDropTokenInvalid) {
-		t.Fatalf("wrong drop token err = %v, want ErrDropTokenInvalid", err)
+	if _, err := repo.AuthorizePickupToken(context.Background(), dp.ID, token.HashSecret("pick_one"), now); err != nil {
+		t.Fatalf("AuthorizePickupToken: %v", err)
 	}
-
-	if err := repo.BeginReceivingDrop(context.Background(), dp.ID, now); err != nil {
-		t.Fatalf("BeginReceivingDrop: %v", err)
-	}
-	receiving, err := repo.FindDropPointByID(context.Background(), dp.ID)
-	if err != nil {
-		t.Fatalf("Find receiving: %v", err)
-	}
-	if receiving.ReceivingStartedAt == nil || !receiving.ReceivingStartedAt.Equal(now) {
-		t.Fatalf("receiving_started_at = %v, want %v", receiving.ReceivingStartedAt, now)
-	}
-	if err := repo.BeginReceivingDrop(context.Background(), dp.ID, now); !errors.Is(err, droppoint.ErrDropPointNotOpen) {
-		t.Fatalf("second BeginReceivingDrop err = %v, want ErrDropPointNotOpen", err)
-	}
-	if err := repo.ResetReceivingDrop(context.Background(), dp.ID, now.Add(time.Second)); err != nil {
-		t.Fatalf("ResetReceivingDrop: %v", err)
-	}
-	again, err := repo.FindOpenDropPointByDropTokenHash(context.Background(), token.HashSecret("drop_secret"), now.Add(2*time.Second))
-	if err != nil {
-		t.Fatalf("FindOpen after reset: %v", err)
-	}
-	if again.Status != droppoint.StatusOpen || again.ReceivingStartedAt != nil {
-		t.Fatalf("row after reset = %+v, want open without receiving lease", again)
+	if _, err := repo.AuthorizePickupToken(context.Background(), dp.ID, token.HashSecret("wrong"), now); !errors.Is(err, droppoint.ErrPickupTokenInvalid) {
+		t.Fatalf("wrong pickup token error = %v", err)
 	}
 }
 
-func TestRepositoryPickupAuthorizationIsScopedToDropPoint(t *testing.T) {
+func TestRepositoryEnforcesActiveDropPointQuotaConcurrently(t *testing.T) {
 	repo := newTestRepository(t)
 	now := testNow()
-	dp1 := testDropPoint(t, "dp_one", "drop_one", "pick_one", now)
-	dp2 := testDropPoint(t, "dp_two", "drop_two", "pick_two", now)
-	for _, dp := range []droppoint.DropPoint{dp1, dp2} {
-		insertTestDropPoint(t, repo, dp)
+	const attempts = 8
+	var wg sync.WaitGroup
+	errs := make(chan error, attempts)
+	for i := range attempts {
+		dp := testDropPoint(t, "dp_quota_"+string(rune('a'+i)), "drop_quota_"+string(rune('a'+i)), "pick_quota_"+string(rune('a'+i)), now)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			errs <- repo.CreateDropPointWithinQuota(context.Background(), dp, 1, now)
+		}()
 	}
-
-	if _, err := repo.AuthorizePickupToken(context.Background(), dp1.ID, token.HashSecret("pick_one"), now); err != nil {
-		t.Fatalf("AuthorizePickupToken own token: %v", err)
+	wg.Wait()
+	close(errs)
+	successes := 0
+	for err := range errs {
+		if err == nil {
+			successes++
+		} else if !errors.Is(err, droppoint.ErrActiveDropPointQuotaExceeded) {
+			t.Fatalf("unexpected error: %v", err)
+		}
 	}
-	if _, err := repo.AuthorizePickupToken(context.Background(), dp1.ID, token.HashSecret("pick_two"), now); !errors.Is(err, droppoint.ErrPickupTokenInvalid) {
-		t.Fatalf("cross pickup token err = %v, want ErrPickupTokenInvalid", err)
+	if successes != 1 {
+		t.Fatalf("successful creates = %d, want 1", successes)
 	}
 }
 
-func TestRepositoryCommitCloseExpireAndPickupTimestamp(t *testing.T) {
+func TestRepositorySubmissionQueueLifecycle(t *testing.T) {
 	repo := newTestRepository(t)
 	now := testNow()
-	dp := testDropPoint(t, "dp_ready", "drop_ready", "pick_ready", now)
+	dp := testDropPoint(t, "dp_queue", "drop_queue", "pick_queue", now)
 	insertTestDropPoint(t, repo, dp)
-	if err := repo.BeginReceivingDrop(context.Background(), dp.ID, now); err != nil {
-		t.Fatalf("BeginReceivingDrop: %v", err)
+
+	if err := repo.BeginSubmission(context.Background(), dp.ID, testSubmissionOne, now); err != nil {
+		t.Fatalf("BeginSubmission: %v", err)
 	}
-	if err := repo.CommitReceivedDrop(context.Background(), dp.ID, droppoint.CommitDropResult{EnvelopePath: "drop-points/dp_ready/envelope.json", PayloadPath: "drop-points/dp_ready/payload.bin", EncryptedSize: 42}, now.Add(time.Second)); err != nil {
-		t.Fatalf("CommitReceivedDrop: %v", err)
+	stored := droppoint.CommitSubmissionResult{EnvelopePath: "drop-points/dp_queue/sub/envelope.json", PayloadPath: "drop-points/dp_queue/sub/payload.bin", EncryptedSize: 5}
+	if err := repo.CommitSubmission(context.Background(), dp.ID, testSubmissionOne, stored, now.Add(time.Second)); err != nil {
+		t.Fatalf("CommitSubmission: %v", err)
 	}
-	ready, err := repo.FindDropPointByID(context.Background(), dp.ID)
-	if err != nil {
-		t.Fatalf("Find ready: %v", err)
+	ready, err := repo.ListReadySubmissions(context.Background(), dp.ID)
+	if err != nil || len(ready) != 1 || ready[0].ID != testSubmissionOne {
+		t.Fatalf("ready submissions = %+v, err=%v", ready, err)
 	}
-	if ready.Status != droppoint.StatusReady || ready.DroppedAt == nil || ready.EncryptedSize != 42 {
-		t.Fatalf("ready row mismatch: %+v", ready)
+	stats, err := repo.PendingStats(context.Background(), dp.ID)
+	if err != nil || stats.Submissions != 1 || stats.Bytes != 5 {
+		t.Fatalf("pending stats = %+v, err=%v", stats, err)
 	}
 
-	firstPickup := now.Add(2 * time.Second)
-	if err := repo.MarkFirstPickedUp(context.Background(), dp.ID, firstPickup); err != nil {
-		t.Fatalf("MarkFirstPickedUp: %v", err)
+	pickedAt := now.Add(2 * time.Second)
+	if err := repo.MarkSubmissionPickedUp(context.Background(), dp.ID, testSubmissionOne, pickedAt); err != nil {
+		t.Fatalf("MarkSubmissionPickedUp: %v", err)
 	}
-	if err := repo.MarkFirstPickedUp(context.Background(), dp.ID, now.Add(3*time.Second)); err != nil {
-		t.Fatalf("MarkFirstPickedUp again: %v", err)
+	if err := repo.AcknowledgeSubmission(context.Background(), dp.ID, testSubmissionOne, now.Add(3*time.Second)); err != nil {
+		t.Fatalf("AcknowledgeSubmission: %v", err)
 	}
-	picked, err := repo.FindDropPointByID(context.Background(), dp.ID)
-	if err != nil {
-		t.Fatalf("Find picked: %v", err)
+	if err := repo.AcknowledgeSubmission(context.Background(), dp.ID, testSubmissionOne, now.Add(4*time.Second)); err != nil {
+		t.Fatalf("AcknowledgeSubmission retry: %v", err)
 	}
-	if picked.FirstPickedUpAt == nil || !picked.FirstPickedUpAt.Equal(firstPickup) {
-		t.Fatalf("first pickup = %v, want %v", picked.FirstPickedUpAt, firstPickup)
+	acknowledged, err := repo.FindSubmission(context.Background(), dp.ID, testSubmissionOne)
+	if err != nil || acknowledged.Status != droppoint.SubmissionStatusAcknowledged || acknowledged.FirstPickedUpAt == nil || !acknowledged.FirstPickedUpAt.Equal(pickedAt) {
+		t.Fatalf("acknowledged submission = %+v, err=%v", acknowledged, err)
 	}
+	stats, err = repo.PendingStats(context.Background(), dp.ID)
+	if err != nil || stats.Submissions != 0 || stats.Bytes != 0 {
+		t.Fatalf("pending stats after ack = %+v, err=%v", stats, err)
+	}
+	if err := repo.BeginSubmission(context.Background(), dp.ID, testSubmissionOne, now.Add(5*time.Second)); !errors.Is(err, droppoint.ErrSubmissionAlreadyExists) {
+		t.Fatalf("reused immutable ID error = %v", err)
+	}
+	if _, err := repo.FindOpenDropPointByDropTokenHash(context.Background(), dp.DropTokenHash, now.Add(5*time.Second)); err != nil {
+		t.Fatalf("parent session is no longer reusable: %v", err)
+	}
+}
 
-	if err := repo.CloseDropPoint(context.Background(), dp.ID, now.Add(4*time.Second)); err != nil {
+func TestRepositoryEnforcesSubmissionCountAndByteBounds(t *testing.T) {
+	t.Run("count", func(t *testing.T) {
+		repo := newTestRepository(t)
+		now := testNow()
+		dp := testDropPoint(t, "dp_count", "drop_count", "pick_count", now)
+		dp.MaxPendingSubmissions = 1
+		insertTestDropPoint(t, repo, dp)
+		if err := repo.BeginSubmission(context.Background(), dp.ID, testSubmissionOne, now); err != nil {
+			t.Fatal(err)
+		}
+		stored := droppoint.CommitSubmissionResult{EnvelopePath: "e", PayloadPath: "p", EncryptedSize: 4}
+		if err := repo.CommitSubmission(context.Background(), dp.ID, testSubmissionOne, stored, now); err != nil {
+			t.Fatal(err)
+		}
+		if err := repo.BeginSubmission(context.Background(), dp.ID, testSubmissionOne, now); !errors.Is(err, droppoint.ErrSubmissionAlreadyExists) {
+			t.Fatalf("immutable retry at count limit error = %v", err)
+		}
+		if err := repo.BeginSubmission(context.Background(), dp.ID, testSubmissionTwo, now); !errors.Is(err, droppoint.ErrPendingSubmissionQuotaExceeded) {
+			t.Fatalf("second submission error = %v", err)
+		}
+	})
+
+	t.Run("bytes", func(t *testing.T) {
+		repo := newTestRepository(t)
+		now := testNow()
+		dp := testDropPoint(t, "dp_bytes", "drop_bytes", "pick_bytes", now)
+		dp.MaxPendingBytes = 6
+		insertTestDropPoint(t, repo, dp)
+		for _, id := range []string{testSubmissionOne, testSubmissionTwo} {
+			if err := repo.BeginSubmission(context.Background(), dp.ID, id, now); err != nil {
+				t.Fatal(err)
+			}
+		}
+		stored := droppoint.CommitSubmissionResult{EnvelopePath: "e", PayloadPath: "p", EncryptedSize: 4}
+		if err := repo.CommitSubmission(context.Background(), dp.ID, testSubmissionOne, stored, now); err != nil {
+			t.Fatal(err)
+		}
+		if err := repo.CommitSubmission(context.Background(), dp.ID, testSubmissionTwo, stored, now); !errors.Is(err, droppoint.ErrPendingBytesQuotaExceeded) {
+			t.Fatalf("byte quota error = %v", err)
+		}
+	})
+}
+
+func TestRepositoryCloseAndExpireSessions(t *testing.T) {
+	repo := newTestRepository(t)
+	now := testNow()
+	closed := testDropPoint(t, "dp_closed", "drop_closed", "pick_closed", now)
+	expired := testDropPoint(t, "dp_expired", "drop_expired", "pick_expired", now.Add(-20*time.Minute))
+	insertTestDropPoint(t, repo, closed)
+	insertTestDropPoint(t, repo, expired)
+	if err := repo.CloseDropPoint(context.Background(), closed.ID, now); err != nil {
 		t.Fatalf("CloseDropPoint: %v", err)
 	}
-	if err := repo.CloseDropPoint(context.Background(), dp.ID, now.Add(5*time.Second)); err != nil {
-		t.Fatalf("CloseDropPoint retry: %v", err)
-	}
-	closed, err := repo.FindDropPointByID(context.Background(), dp.ID)
-	if err != nil {
-		t.Fatalf("Find closed: %v", err)
-	}
-	if closed.Status != droppoint.StatusClosed || closed.ClosedAt == nil {
-		t.Fatalf("closed row mismatch: %+v", closed)
-	}
-}
-
-func TestRepositoryFailDropPointRecordsTerminalTimestamp(t *testing.T) {
-	repo := newTestRepository(t)
-	now := testNow()
-	dp := testDropPoint(t, "dp_failed", "drop_failed", "pick_failed", now)
-	insertTestDropPoint(t, repo, dp)
-	failedAt := now.Add(time.Second)
-	if err := repo.FailDropPoint(context.Background(), dp.ID, failedAt); err != nil {
-		t.Fatalf("FailDropPoint: %v", err)
-	}
-	if err := repo.FailDropPoint(context.Background(), dp.ID, now.Add(2*time.Second)); err != nil {
-		t.Fatalf("FailDropPoint retry: %v", err)
-	}
-	row, err := repo.FindDropPointByID(context.Background(), dp.ID)
-	if err != nil {
-		t.Fatalf("FindDropPointByID: %v", err)
-	}
-	if row.Status != droppoint.StatusFailed || row.FailedAt == nil || !row.FailedAt.Equal(failedAt) {
-		t.Fatalf("failed row = %+v", row)
-	}
-	if _, err := repo.FindOpenDropPointByDropTokenHash(context.Background(), dp.DropTokenHash, now); !errors.Is(err, droppoint.ErrDropPointFailed) {
-		t.Fatalf("FindOpen failed err = %v, want ErrDropPointFailed", err)
-	}
-}
-
-func TestRepositoryPickupTimestampSurvivesCloseAndExpiry(t *testing.T) {
-	now := testNow()
-	for _, terminalStatus := range []droppoint.Status{droppoint.StatusClosed, droppoint.StatusExpired} {
-		t.Run(string(terminalStatus), func(t *testing.T) {
-			repo := newTestRepository(t)
-			dp := testDropPoint(t, "dp_pickup_race_"+string(terminalStatus), "drop_pickup_race_"+string(terminalStatus), "pick_pickup_race_"+string(terminalStatus), now)
-			insertTestDropPoint(t, repo, dp)
-			if err := repo.BeginReceivingDrop(context.Background(), dp.ID, now); err != nil {
-				t.Fatalf("BeginReceivingDrop: %v", err)
-			}
-			if err := repo.CommitReceivedDrop(context.Background(), dp.ID, droppoint.CommitDropResult{EnvelopePath: "envelope", PayloadPath: "payload", EncryptedSize: 1}, now); err != nil {
-				t.Fatalf("CommitReceivedDrop: %v", err)
-			}
-			switch terminalStatus {
-			case droppoint.StatusClosed:
-				if err := repo.CloseDropPoint(context.Background(), dp.ID, now.Add(time.Second)); err != nil {
-					t.Fatalf("CloseDropPoint: %v", err)
-				}
-			case droppoint.StatusExpired:
-				if _, err := repo.ExpireDropPoints(context.Background(), now.Add(20*time.Minute)); err != nil {
-					t.Fatalf("ExpireDropPoints: %v", err)
-				}
-			}
-			pickedAt := now.Add(2 * time.Second)
-			if err := repo.MarkFirstPickedUp(context.Background(), dp.ID, pickedAt); err != nil {
-				t.Fatalf("MarkFirstPickedUp: %v", err)
-			}
-			row, err := repo.FindDropPointByID(context.Background(), dp.ID)
-			if err != nil {
-				t.Fatalf("FindDropPointByID: %v", err)
-			}
-			if row.Status != terminalStatus || row.FirstPickedUpAt == nil || !row.FirstPickedUpAt.Equal(pickedAt) {
-				t.Fatalf("row after pickup finalization race = %+v", row)
-			}
-		})
-	}
-}
-
-func TestRepositoryExpireDropPoints(t *testing.T) {
-	repo := newTestRepository(t)
-	now := testNow()
-	expired := testDropPoint(t, "dp_expired", "drop_expired", "pick_expired", now.Add(-20*time.Minute))
-	active := testDropPoint(t, "dp_active", "drop_active", "pick_active", now)
-	for _, dp := range []droppoint.DropPoint{expired, active} {
-		insertTestDropPoint(t, repo, dp)
-	}
-
 	affected, err := repo.ExpireDropPoints(context.Background(), now)
-	if err != nil {
-		t.Fatalf("ExpireDropPoints: %v", err)
+	if err != nil || len(affected) != 1 || affected[0].ID != expired.ID {
+		t.Fatalf("expired = %+v, err=%v", affected, err)
 	}
-	if len(affected) != 1 || affected[0].ID != expired.ID {
-		t.Fatalf("affected = %+v, want only %s", affected, expired.ID)
+	if err := repo.BeginSubmission(context.Background(), closed.ID, testSubmissionOne, now); !errors.Is(err, droppoint.ErrDropPointClosed) {
+		t.Fatalf("closed begin error = %v", err)
 	}
-	gotExpired, err := repo.FindDropPointByID(context.Background(), expired.ID)
-	if err != nil {
-		t.Fatalf("Find expired: %v", err)
-	}
-	if gotExpired.Status != droppoint.StatusExpired {
-		t.Fatalf("expired status = %q, want expired", gotExpired.Status)
-	}
-}
-
-func TestRepositoryPropagatesMarkExpiredFailure(t *testing.T) {
-	repo := newTestRepository(t)
-	now := testNow()
-	dp := testDropPoint(t, "dp_expire_failure", "drop_expire_failure", "pick_expire_failure", now.Add(-20*time.Minute))
-	insertTestDropPoint(t, repo, dp)
-	if _, err := repo.db.ExecContext(context.Background(), `
-CREATE TRIGGER fail_mark_expired
-BEFORE UPDATE OF status ON drop_points
-WHEN OLD.id = 'dp_expire_failure' AND NEW.status = 'expired'
-BEGIN
-  SELECT RAISE(FAIL, 'injected mark-expired failure');
-END`); err != nil {
-		t.Fatalf("create trigger: %v", err)
-	}
-
-	if _, err := repo.FindDropPointByDropTokenHash(context.Background(), token.HashSecret("drop_expire_failure"), now); err == nil || !strings.Contains(err.Error(), "mark drop point expired") {
-		t.Fatalf("FindDropPointByDropTokenHash err = %v, want persisted expiry error", err)
-	}
-	row, err := repo.FindDropPointByID(context.Background(), dp.ID)
-	if err != nil {
-		t.Fatalf("FindDropPointByID: %v", err)
-	}
-	if row.Status != droppoint.StatusOpen {
-		t.Fatalf("status = %q, want open after failed expiry update", row.Status)
+	if err := repo.BeginSubmission(context.Background(), expired.ID, testSubmissionOne, now); !errors.Is(err, droppoint.ErrDropPointExpired) {
+		t.Fatalf("expired begin error = %v", err)
 	}
 }
 
 func TestParseTimeRequiresSQLiteFormat(t *testing.T) {
 	if _, err := parseTime(testNow().Format(time.RFC3339Nano)); err == nil {
-		t.Fatal("parseTime accepted broad RFC3339Nano timestamp, want strict sqlite format")
+		t.Fatal("parseTime accepted broad RFC3339Nano timestamp")
 	}
 	if _, err := parseTime(formatTime(testNow())); err != nil {
-		t.Fatalf("parseTime rejected formatTime output: %v", err)
+		t.Fatalf("parseTime: %v", err)
 	}
 }
 
@@ -351,16 +206,18 @@ func testNow() time.Time {
 	return time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
 }
 
-func testDropPoint(t *testing.T, id string, dropPlain string, pickupPlain string, now time.Time) droppoint.DropPoint {
+func testDropPoint(t *testing.T, id, dropPlain, pickupPlain string, now time.Time) droppoint.DropPoint {
 	t.Helper()
 	dp, err := droppoint.New(droppoint.CreateDropPointRequest{
-		ID:              id,
-		APITokenID:      "desktop-main",
-		DisplayName:     "calm-otter",
-		DropTokenHash:   token.HashSecret(dropPlain),
-		PickupTokenHash: token.HashSecret(pickupPlain),
-		TTL:             10 * time.Minute,
-		MaxBytes:        1024,
+		ID:                    id,
+		APITokenID:            "desktop-main",
+		DisplayName:           "calm-otter",
+		DropTokenHash:         token.HashSecret(dropPlain),
+		PickupTokenHash:       token.HashSecret(pickupPlain),
+		TTL:                   10 * time.Minute,
+		MaxBytes:              6,
+		MaxPendingSubmissions: 2,
+		MaxPendingBytes:       12,
 	}, now)
 	if err != nil {
 		t.Fatalf("droppoint.New: %v", err)
