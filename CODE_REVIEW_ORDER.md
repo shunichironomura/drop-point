@@ -139,7 +139,8 @@ This document lists repository files in dependency-first review order. Local scr
     - Sender-facing drop page styles.
 
 45. `web/drop-page/app.js`
-    - Browser WebCrypto bundle encryption, canonical filename disambiguation, sender metadata lookup, random submission IDs, and reusable encrypted submission flow.
+    - Browser WebCrypto encryption, sender metadata, immutable retries, bounded page-local sent history, and reusable encrypted submission flow.
+    - `web/drop-page/app.test.cjs`: Node built-in tests for repeated sends, retries, in-flight exclusion, expiry, and local history. Run with `node --test web/drop-page/app.test.cjs`.
 
 46. `web/drop-page/assets.go`
     - Embedded static asset filesystem for the drop page.

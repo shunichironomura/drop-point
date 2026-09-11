@@ -28,6 +28,11 @@ const state = {
   countdownTimer: null,
   selectedFiles: [],
   pendingSubmissionID: null,
+  pendingBundle: null,
+  busy: false,
+  terminal: false,
+  retry: false,
+  sentCount: 0,
   thumbnailURLs: new Map(),
   dropToken: location.pathname.split('/').pop(),
 };
@@ -60,6 +65,9 @@ const countdownText = document.getElementById('countdown');
 const dropZone = document.getElementById('drop-zone');
 const selectionBox = document.getElementById('selection');
 const selectedFilesList = document.getElementById('selected-files');
+const historyBox = document.getElementById('history');
+const sentList = document.getElementById('sent-submissions');
+const sentCount = document.getElementById('sent-count');
 
 init().catch((error) => showError(userErrorMessage(error, 'This drop point cannot be used.')));
 
@@ -70,7 +78,13 @@ dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-ove
 dropZone.addEventListener('drop', handleDroppedFiles);
 window.addEventListener('dragover', preventFileNavigation);
 window.addEventListener('drop', preventFileNavigation);
-window.addEventListener('pagehide', revokeAllThumbnailURLs);
+window.addEventListener('pagehide', () => {
+  revokeAllThumbnailURLs();
+  state.sentCount = 0;
+  sentCount.textContent = '0';
+  sentList.replaceChildren();
+  historyBox.hidden = true;
+});
 
 submitButton.addEventListener('click', () => {
   dropSelectedFiles().catch((error) => {
@@ -97,6 +111,7 @@ async function init() {
     throw userError('This drop point has expired.');
   }
   await assertX25519Support(state.recipientPublicKey);
+  if (isExpired(state.expiresAt)) throw userError('This drop point has expired.');
   renderDropName();
   startExpiryCountdown(state.expiresAt);
   filesInput.disabled = false;
@@ -128,8 +143,11 @@ function handleDroppedFiles(event) {
 }
 
 function setSelectedFiles(files) {
+  if (state.busy || state.terminal) return;
   state.selectedFiles = files;
   state.pendingSubmissionID = null;
+  state.pendingBundle = null;
+  state.retry = false;
   filesInput.value = '';
   updateSelectedFiles();
 }
@@ -143,8 +161,10 @@ function preventFileNavigation(event) {
 function updateSelectedFiles() {
   const files = [...state.selectedFiles];
   const limitMessage = selectedFilesLimitMessage(files);
-  submitButton.disabled = files.length === 0 || limitMessage !== null;
+  submitButton.disabled = state.busy || state.terminal || files.length === 0 || limitMessage !== null;
+  submitButton.textContent = state.busy ? 'Sending…' : state.retry ? 'Retry send' : 'Send files';
   renderSelectedFiles(files);
+  if (state.terminal) return;
   if (files.length === 0) {
     showStatus(state.displayName ? `Choose files for ${state.displayName}` : 'Choose files');
     return;
@@ -153,7 +173,7 @@ function updateSelectedFiles() {
     showSelectionError(limitMessage);
     return;
   }
-  showStatus(`${files.length} ${files.length === 1 ? 'file' : 'files'} selected for ${state.displayName}. Ready to drop encrypted files.`);
+  showStatus(`${files.length} ${files.length === 1 ? 'file' : 'files'} selected for ${state.displayName}. Ready to send.`);
 }
 
 function renderSelectedFiles(files) {
@@ -244,13 +264,12 @@ function removeSelectedFile(index) {
   if (filesInput.disabled) {
     return;
   }
-  state.selectedFiles = state.selectedFiles.filter((_file, fileIndex) => fileIndex !== index);
-  state.pendingSubmissionID = null;
-  filesInput.value = '';
-  updateSelectedFiles();
+  setSelectedFiles(state.selectedFiles.filter((_file, fileIndex) => fileIndex !== index));
 }
 
 async function dropSelectedFiles() {
+  if (state.busy || state.terminal) return;
+  if (isExpired(state.expiresAt)) throw terminalError('This drop point has expired.');
   const files = [...state.selectedFiles];
   if (files.length === 0) {
     throw userError('Choose files before dropping.');
@@ -260,14 +279,18 @@ async function dropSelectedFiles() {
     showSelectionError(limitMessage);
     return;
   }
+  state.busy = true;
   filesInput.disabled = true;
   submitButton.disabled = true;
+  submitButton.textContent = 'Sending…';
   dropZone.classList.add('disabled');
   renderSelectedFiles(files);
   try {
-    showStatus(`Encrypting and dropping files for ${state.displayName}...`);
-    const bundle = await buildEncryptedBundle(files, state.recipientPublicKey);
-    showStatus(`Dropping encrypted files for ${state.displayName}...`);
+    showStatus(`Encrypting files for ${state.displayName}...`);
+    state.pendingBundle ??= await buildEncryptedBundle(files, state.recipientPublicKey);
+    if (state.terminal || isExpired(state.expiresAt)) throw terminalError('This drop point has expired.');
+    const bundle = state.pendingBundle;
+    showStatus(`Sending encrypted files to ${state.displayName}...`);
     const form = new FormData();
     form.append('envelope', new Blob([JSON.stringify(bundle.envelope)], { type: 'application/json' }));
     form.append('payload', new Blob([bundle.encryptedPayload], { type: 'application/octet-stream' }));
@@ -281,7 +304,7 @@ async function dropSelectedFiles() {
     });
     if (!response.ok) {
       if (response.status === 404 || response.status === 410) {
-        throw terminalError('This drop point has expired.');
+        throw terminalError('This session has ended. Ask the receiver for a new QR code.');
       }
       if (response.status === 409) {
         throw userError('This submission is already being received. Try again.');
@@ -292,27 +315,52 @@ async function dropSelectedFiles() {
       if (response.status === 413) {
         throw userError(`Encrypted files exceeded the ${formatBytes(state.maxBytes)} drop point limit.`);
       }
-      throw userError('Network failure or drop point rejected the encrypted files.');
+      throw userError('Could not confirm delivery. Retry send uses the same submission. Changing the selection starts a new submission.');
     }
+    recordSentSubmission(files);
     state.selectedFiles = [];
     state.pendingSubmissionID = null;
+    state.pendingBundle = null;
+    state.retry = false;
     filesInput.value = '';
-    filesInput.disabled = false;
-    dropZone.classList.remove('disabled');
-    updateSelectedFiles();
-    showSuccess(`Files dropped successfully for ${state.displayName}. You can send more files.`);
+    if (!state.terminal && !isExpired(state.expiresAt)) {
+      showSuccess(`Sent to ${state.displayName}. You can send more files from this page.`);
+    } else {
+      showError('This drop point has expired. Your last submission was accepted by the relay.');
+    }
   } catch (error) {
     if (error instanceof DropPointTerminalError) {
+      showError(error.message);
       throw error;
     }
     if (isExpired(state.expiresAt)) {
       throw terminalError('This drop point has expired.');
     }
-    filesInput.disabled = false;
-    dropZone.classList.remove('disabled');
-    updateSelectedFiles();
-    throw error;
+    state.retry = true;
+    throw error instanceof DropPointUserError ? error : userError('Could not confirm delivery. Retry send uses the same submission. Changing the selection starts a new submission.');
+  } finally {
+    state.busy = false;
+    filesInput.disabled = state.terminal;
+    dropZone.classList.toggle('disabled', state.terminal);
+    submitButton.disabled = state.terminal || state.selectedFiles.length === 0;
+    submitButton.textContent = state.retry ? 'Retry send' : 'Send files';
+    renderSelectedFiles(state.selectedFiles);
   }
+}
+
+function recordSentSubmission(files) {
+  state.sentCount += 1;
+  sentCount.textContent = String(state.sentCount);
+  historyBox.hidden = false;
+  const item = document.createElement('li');
+  const summary = document.createElement('strong');
+  summary.textContent = `${files.length} ${files.length === 1 ? 'file' : 'files'} · ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
+  const names = document.createElement('span');
+  names.textContent = files.map((file) => file.name).join(', ');
+  item.append(summary, names);
+  sentList.prepend(item);
+  // Keep only a bounded, page-local history, not files or ciphertext.
+  while (sentList.children.length > 20) sentList.lastElementChild.remove();
 }
 
 function selectedFilesLimitMessage(files) {
@@ -679,7 +727,10 @@ function showSelectionError(message) {
 }
 
 function showError(message) {
+  state.terminal = true;
+  state.pendingBundle = null;
   stopExpiryCountdown();
+  expiryBox.hidden = true;
   filesInput.disabled = true;
   submitButton.disabled = true;
   dropZone.classList.add('disabled');
