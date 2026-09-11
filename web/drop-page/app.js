@@ -29,6 +29,8 @@ const state = {
   selectedFiles: [],
   pendingSubmissionID: null,
   pendingBundle: null,
+  ready: false,
+  cameraMode: false,
   busy: false,
   terminal: false,
   retry: false,
@@ -56,6 +58,12 @@ function userErrorMessage(error, fallback) {
 }
 
 const filesInput = document.getElementById('files');
+const cameraInput = document.getElementById('camera');
+const filesModeButton = document.getElementById('files-mode');
+const cameraModeButton = document.getElementById('camera-mode');
+const cameraPicker = document.getElementById('camera-picker');
+const filesPicker = document.getElementById('files-picker');
+const cameraHelp = document.getElementById('camera-help');
 const submitButton = document.getElementById('submit');
 const statusBox = document.getElementById('status');
 const dropNameBox = document.getElementById('drop-name');
@@ -72,6 +80,9 @@ const sentCount = document.getElementById('sent-count');
 init().catch((error) => showError(userErrorMessage(error, 'This drop point cannot be used.')));
 
 filesInput.addEventListener('change', () => setSelectedFiles([...state.selectedFiles, ...filesInput.files]));
+cameraInput.addEventListener('change', capturePhoto);
+filesModeButton.addEventListener('click', () => setCameraMode(false));
+cameraModeButton.addEventListener('click', () => setCameraMode(true));
 dropZone.addEventListener('dragenter', handleDragOverFiles);
 dropZone.addEventListener('dragover', handleDragOverFiles);
 dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
@@ -86,16 +97,56 @@ window.addEventListener('pagehide', () => {
   historyBox.hidden = true;
 });
 
-submitButton.addEventListener('click', () => {
-  dropSelectedFiles().catch((error) => {
+submitButton.addEventListener('click', sendSelectedFiles);
+
+async function sendSelectedFiles() {
+  try {
+    await dropSelectedFiles();
+  } catch (error) {
     const message = userErrorMessage(error, 'Dropping files failed.');
     if (error instanceof DropPointTerminalError) {
       showError(message);
       return;
     }
     showSelectionError(message);
-  });
-});
+  }
+}
+
+function setCameraMode(enabled) {
+  if (!state.ready || state.busy || state.terminal || state.selectedFiles.length > 0) return;
+  state.cameraMode = enabled;
+  updateSelectedFiles();
+}
+
+function updateCaptureControls() {
+  const disabled = !state.ready || state.busy || state.terminal;
+  const hasSelection = state.selectedFiles.length > 0;
+  filesModeButton.disabled = cameraModeButton.disabled = disabled || hasSelection;
+  filesModeButton.setAttribute('aria-pressed', String(!state.cameraMode));
+  cameraModeButton.setAttribute('aria-pressed', String(state.cameraMode));
+  cameraPicker.hidden = cameraHelp.hidden = !state.cameraMode;
+  filesPicker.hidden = dropZone.hidden = state.cameraMode;
+  filesInput.disabled = disabled || state.cameraMode;
+  cameraInput.disabled = disabled || !state.cameraMode || hasSelection;
+  submitButton.hidden = state.cameraMode && !hasSelection;
+}
+
+async function capturePhoto() {
+  const files = Array.from(cameraInput.files || []);
+  cameraInput.value = '';
+  if (cameraInput.disabled || !state.cameraMode || files.length === 0) return;
+  if (isExpired(state.expiresAt)) {
+    showError('This drop point has expired.');
+    return;
+  }
+  const photo = files[0];
+  if (files.length !== 1 || !(photo.type.startsWith(IMAGE_TYPE_PREFIX) || (!photo.type && IMAGE_NAME_PATTERN.test(photo.name)))) {
+    showSelectionError('Choose a single photo, or switch to Files mode for other files.');
+    return;
+  }
+  setSelectedFiles([photo]);
+  await sendSelectedFiles();
+}
 
 async function init() {
   if (!window.isSecureContext || !crypto?.subtle) {
@@ -114,6 +165,7 @@ async function init() {
   if (isExpired(state.expiresAt)) throw userError('This drop point has expired.');
   renderDropName();
   startExpiryCountdown(state.expiresAt);
+  state.ready = true;
   filesInput.disabled = false;
   dropZone.classList.remove('disabled');
   updateSelectedFiles();
@@ -161,12 +213,13 @@ function preventFileNavigation(event) {
 function updateSelectedFiles() {
   const files = [...state.selectedFiles];
   const limitMessage = selectedFilesLimitMessage(files);
+  updateCaptureControls();
   submitButton.disabled = state.busy || state.terminal || files.length === 0 || limitMessage !== null;
   submitButton.textContent = state.busy ? 'Sending…' : state.retry ? 'Retry send' : 'Send files';
   renderSelectedFiles(files);
   if (state.terminal) return;
   if (files.length === 0) {
-    showStatus(state.displayName ? `Choose files for ${state.displayName}` : 'Choose files');
+    showStatus(state.cameraMode ? `Ready for a photo for ${state.displayName}.` : state.displayName ? `Choose files for ${state.displayName}` : 'Choose files');
     return;
   }
   if (limitMessage !== null) {
@@ -203,7 +256,7 @@ function renderSelectedFiles(files) {
     removeButton.type = 'button';
     removeButton.className = 'remove-file';
     removeButton.textContent = 'Remove';
-    removeButton.disabled = filesInput.disabled;
+    removeButton.disabled = state.busy || state.terminal;
     removeButton.setAttribute('aria-label', `Remove ${file.name || 'file'} from selected files`);
     removeButton.addEventListener('click', () => removeSelectedFile(index));
 
@@ -261,7 +314,7 @@ function revokeAllThumbnailURLs() {
 }
 
 function removeSelectedFile(index) {
-  if (filesInput.disabled) {
+  if (state.busy || state.terminal) {
     return;
   }
   setSelectedFiles(state.selectedFiles.filter((_file, fileIndex) => fileIndex !== index));
@@ -280,6 +333,7 @@ async function dropSelectedFiles() {
     return;
   }
   state.busy = true;
+  updateCaptureControls();
   filesInput.disabled = true;
   submitButton.disabled = true;
   submitButton.textContent = 'Sending…';
@@ -341,6 +395,7 @@ async function dropSelectedFiles() {
   } finally {
     state.busy = false;
     filesInput.disabled = state.terminal;
+    updateCaptureControls();
     dropZone.classList.toggle('disabled', state.terminal);
     submitButton.disabled = state.terminal || state.selectedFiles.length === 0;
     submitButton.textContent = state.retry ? 'Retry send' : 'Send files';
@@ -730,6 +785,7 @@ function showError(message) {
   state.terminal = true;
   state.pendingBundle = null;
   stopExpiryCountdown();
+  updateCaptureControls();
   expiryBox.hidden = true;
   filesInput.disabled = true;
   submitButton.disabled = true;

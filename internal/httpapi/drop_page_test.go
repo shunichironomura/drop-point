@@ -19,7 +19,7 @@ func TestServeDropPageHasSecurityHeadersAndCopy(t *testing.T) {
 		t.Fatalf("status = %d body=%s", recorder.Code, recorder.Body.String())
 	}
 	body := recorder.Body.String()
-	for _, want := range []string{"Drop files", "Drop name", "Choose files", "Expires in", "Or drag files here", "Selected files", "Send files", "Sent this visit"} {
+	for _, want := range []string{"Drop files", "Drop name", "Choose files", "Expires in", "Or drag files here", "Selected files", "Send files", "Sent this visit", "Camera mode", `accept="image/*"`, `capture="environment"`, "Confirming a photo"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("body missing %q: %s", want, body)
 		}

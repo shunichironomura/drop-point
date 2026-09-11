@@ -40,6 +40,7 @@ function page() {
   vm.runInContext(readFileSync(`${__dirname}/app.js`, 'utf8'), context);
   vm.runInContext(`
     state.displayName = 'calm-otter';
+    state.ready = true;
     state.expiresAt = new Date(Date.now() + 600000);
     state.maxBytes = 10000;
     buildEncryptedBundle = async () => ({ envelope: { test: true }, encryptedPayload: new Uint8Array([1, 2, 3]) });
@@ -152,4 +153,71 @@ test('recent send history is bounded and rendered as text', () => {
   assert.equal(p.elements.get('sent-submissions').children.length, 20);
   assert.equal(p.elements.get('sent-count').textContent, '25');
   assert.equal(p.elements.get('sent-submissions').children[0].children[1].textContent, '<script>not markup</script>');
+});
+
+function photo(p) {
+  return p.run(`cameraInput.files = [Object.assign(new Blob(['photo'], {type: 'image/jpeg'}), {name: 'photo.jpg'})]; capturePhoto()`);
+}
+
+test('camera mode automatically sends successive confirmed photos, not cancelled pickers', async () => {
+  const p = page();
+  let calls = 0;
+  p.context.fetch = async () => { calls++; return { ok: true }; };
+  p.run('setCameraMode(true)');
+  await p.run('cameraInput.files = []; capturePhoto()');
+  assert.equal(calls, 0);
+  for (let i = 0; i < 2; i++) {
+    await photo(p);
+    assert.equal(p.elements.get('camera').disabled, false);
+    assert.equal(p.elements.get('camera').value, '');
+    assert.equal(p.elements.get('submit').hidden, true);
+    assert.equal(p.elements.get('files').disabled, true);
+  }
+  assert.equal(calls, 2);
+  assert.equal(p.run('state.sentCount'), 2);
+  p.run('setCameraMode(false)');
+  assert.equal(p.elements.get('files').disabled, false);
+});
+
+test('failed camera sends retain the photo for retry and cannot be replaced by another capture', async () => {
+  const p = page();
+  p.context.fetch = async () => ({ ok: false, status: 429 });
+  p.run('setCameraMode(true)');
+  await photo(p);
+  const id = p.run('state.pendingSubmissionID');
+  assert.equal(p.elements.get('camera').disabled, true);
+  assert.equal(p.elements.get('files-mode').disabled, true);
+  assert.equal(p.elements.get('submit').textContent, 'Retry send');
+  await photo(p);
+  assert.equal(p.run('state.pendingSubmissionID'), id);
+  p.run('setCameraMode(false)');
+  assert.equal(p.run('state.cameraMode'), true);
+  p.context.fetch = async () => ({ ok: true });
+  await p.run('sendSelectedFiles()');
+  assert.equal(p.elements.get('camera').disabled, false);
+  assert.equal(p.run('state.sentCount'), 1);
+});
+
+test('oversized camera photos are retained for removal, not sent', async () => {
+  const p = page();
+  let calls = 0;
+  p.context.fetch = async () => { calls++; return { ok: true }; };
+  p.run('state.maxBytes = 16; setCameraMode(true)');
+  await photo(p);
+  assert.equal(calls, 0);
+  assert.equal(p.elements.get('camera').disabled, true);
+  p.run('removeSelectedFile(0)');
+  assert.equal(p.elements.get('camera').disabled, false);
+});
+
+test('camera callback after expiry or outside camera mode cannot send', async () => {
+  const p = page();
+  let calls = 0;
+  p.context.fetch = async () => { calls++; return { ok: true }; };
+  await photo(p);
+  p.run('setCameraMode(true); state.expiresAt = new Date(0)');
+  await photo(p);
+  assert.equal(calls, 0);
+  assert.equal(p.elements.get('camera').disabled, true);
+  assert.equal(p.elements.get('camera-mode').disabled, true);
 });
