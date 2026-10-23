@@ -3,7 +3,7 @@ module github.com/shunichironomura/droppoint
 go 1.26.6
 
 require (
-	github.com/dustinkirkland/golang-petname v0.0.0-20260929120758-6e3915f1a6a8
+	github.com/dustinkirkland/golang-petname v0.0.0-20261016130456-fdd95a3d0543
 	golang.org/x/text v0.43.0
 	modernc.org/sqlite v1.60.1
 )
