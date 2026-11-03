@@ -98,7 +98,7 @@ jobs:
     steps:
       - name: Check results
         run: |
-          results=("${{ needs.checks.result }}" "${{ needs.govulncheck.result }}")
+          results=("${{ needs.checks.result }}" "${{ needs.govulncheck.result }}" "${{ needs.actions-lock.result }}")
           for result in "${results[@]}"; do
             if [[ "$result" != "success" ]]; then
               echo "One or more jobs failed"
